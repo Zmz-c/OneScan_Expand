@@ -106,14 +106,34 @@ public abstract class BaseConfigTab extends BaseTab {
      * @param configKey 配置文件中的 Key
      */
     protected void addFileConfigPanel(String title, String subTitle, String configKey) {
+        addFileConfigPanel(title, subTitle, configKey, false);
+    }
+
+    /**
+     * 娣诲姞鏂囦欢閰嶇疆椤?
+     *
+     * @param title     閰嶇疆椤规爣棰?
+     * @param subTitle  閰嶇疆椤硅鏄?
+     * @param configKey 閰嶇疆鏂囦欢涓殑 Key
+     * @param editable  鏄惁鍏佽鎵嬪姩缂栬緫璺緞
+     */
+    protected void addFileConfigPanel(String title, String subTitle, String configKey, boolean editable) {
         JPanel panel = new JPanel(new HLayout(3));
-        String filePath = Config.getFilePath(configKey);
+        String filePath = editable ? Config.get(configKey) : Config.getFilePath(configKey);
         JTextField textField = new JTextField(filePath, 35);
-        textField.setEditable(false);
+        textField.setEditable(editable);
         panel.add(textField);
+        if (editable) {
+            JButton saveButton = new JButton(L.get("save"));
+            saveButton.addActionListener(e -> {
+                Config.put(configKey, textField.getText().trim());
+                UIHelper.showTipsDialog(L.get("save_success"));
+            });
+            panel.add(saveButton);
+        }
         JButton button = new JButton(L.get("select_file"));
         button.addActionListener((e) -> {
-            String oldPath = Config.getFilePath(configKey);
+            String oldPath = editable ? textField.getText().trim() : Config.getFilePath(configKey);
             String newPath = UIHelper.selectFileDialog(L.get("select_a_file"), oldPath);
             if (!StringUtils.isEmpty(newPath) && !oldPath.equals(newPath)) {
                 textField.setText(newPath);

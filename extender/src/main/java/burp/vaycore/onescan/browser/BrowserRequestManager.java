@@ -9,19 +9,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.io.*;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 public class BrowserRequestManager {
@@ -32,6 +21,7 @@ public class BrowserRequestManager {
     private static final String PROFILE_DIR_NAME = "profile";
     private static final String STATE_FILE_NAME = "state.json";
     private static final int DEBUG_PORT = 9777;
+    private static final long DISCOVERY_COMMAND_TIMEOUT_MILLIS = 1500L;
     private static final String OS_NAME = System.getProperty("os.name", "").toLowerCase();
     private final String mSessionId = "session-" + Long.toHexString(System.currentTimeMillis())
             + "-" + Integer.toHexString(System.identityHashCode(this));
@@ -159,8 +149,8 @@ public class BrowserRequestManager {
         List<List<String>> commands = new ArrayList<>();
         Set<String> added = new HashSet<>();
         if (StringUtils.isNotEmpty(pythonPath)) {
-            addCommand(commands, added,
-                    buildCommand(Arrays.asList(pythonPath), scriptFile, profileDir, stateFile, arguments));
+            addWindowsPythonCommand(commands, added, normalizePythonCommand(pythonPath),
+                    scriptFile, profileDir, stateFile, arguments);
         }
         if (isMac()) {
             addCommand(commands, added,
@@ -169,15 +159,15 @@ public class BrowserRequestManager {
                     buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments));
         } else if (isWindows()) {
             for (String candidate : findWindowsPythonExecutables()) {
-                addCommand(commands, added,
-                        buildCommand(Arrays.asList(candidate), scriptFile, profileDir, stateFile, arguments));
+                addWindowsPythonCommand(commands, added, normalizePythonCommand(candidate),
+                        scriptFile, profileDir, stateFile, arguments);
             }
-            addCommand(commands, added,
-                    buildCommand(Arrays.asList("py", "-3"), scriptFile, profileDir, stateFile, arguments));
-            addCommand(commands, added,
-                    buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments));
-            addCommand(commands, added,
-                    buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments));
+            addWindowsPythonCommand(commands, added, Arrays.asList("py", "-3"),
+                    scriptFile, profileDir, stateFile, arguments);
+            addWindowsPythonCommand(commands, added, Arrays.asList("python"),
+                    scriptFile, profileDir, stateFile, arguments);
+            addWindowsPythonCommand(commands, added, Arrays.asList("python3"),
+                    scriptFile, profileDir, stateFile, arguments);
         } else {
             addCommand(commands, added,
                     buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments));
@@ -199,8 +189,28 @@ public class BrowserRequestManager {
         }
     }
 
+    private void addWindowsPythonCommand(List<List<String>> commands, Set<String> added, List<String> pythonCommand,
+                                         File scriptFile, File profileDir, File stateFile, List<String> arguments) {
+        if (pythonCommand == null || pythonCommand.isEmpty()) {
+            return;
+        }
+        addCommand(commands, added, buildCommand(pythonCommand, scriptFile, profileDir, stateFile, arguments));
+        String executable = pythonCommand.get(0);
+        if (pythonCommand.size() == 1 && isPythonLauncher(executable)) {
+            List<String> launcherCommand = new ArrayList<>(pythonCommand);
+            launcherCommand.add("-3");
+            addCommand(commands, added, buildCommand(launcherCommand, scriptFile, profileDir, stateFile, arguments));
+        }
+    }
+
     private List<String> findWindowsPythonExecutables() {
-        List<String> result = new ArrayList<>();
+        Set<String> result = new LinkedHashSet<>();
+        addProcessOutputCandidates(result, "where.exe", "python.exe");
+        addProcessOutputCandidates(result, "where.exe", "python3.exe");
+        addProcessOutputCandidates(result, "where.exe", "py.exe");
+        addPythonLauncherCandidates(result);
+        addPathCandidates(result);
+
         List<File> searchRoots = new ArrayList<>();
         addSearchRoot(searchRoots, System.getenv("LOCALAPPDATA"), "Programs", "Python");
         addSearchRoot(searchRoots, System.getenv("PROGRAMFILES"), "Python");
@@ -212,13 +222,12 @@ public class BrowserRequestManager {
             }
             Arrays.sort(subDirs, (a, b) -> b.getName().compareToIgnoreCase(a.getName()));
             for (File dir : subDirs) {
-                File pythonExe = new File(dir, "python.exe");
-                if (pythonExe.isFile()) {
-                    result.add(pythonExe.getAbsolutePath());
-                }
+                addFileIfExists(result, new File(dir, "python.exe"));
+                addFileIfExists(result, new File(dir, "python3.exe"));
+                addFileIfExists(result, new File(dir, "py.exe"));
             }
         }
-        return result;
+        return new ArrayList<>(result);
     }
 
     private void addSearchRoot(List<File> roots, String parentPath, String... children) {
@@ -232,6 +241,151 @@ public class BrowserRequestManager {
         if (root.isDirectory()) {
             roots.add(root);
         }
+    }
+
+    private void addPythonLauncherCandidates(Set<String> result) {
+        for (String line : runProcessAndCollectOutput(Arrays.asList("py", "-0p"))) {
+            String candidate = line.trim();
+            if (candidate.startsWith("-")) {
+                int separator = candidate.indexOf('-');
+                candidate = separator >= 0 ? candidate.substring(separator + 1).trim() : candidate;
+            }
+            int separator = candidate.indexOf(" *");
+            if (separator >= 0) {
+                candidate = candidate.substring(separator + 2).trim();
+            }
+            separator = candidate.indexOf("  ");
+            if (separator >= 0) {
+                candidate = candidate.substring(separator).trim();
+            }
+            addCandidate(result, candidate);
+        }
+    }
+
+    private void addPathCandidates(Set<String> result) {
+        String pathValue = System.getenv("Path");
+        if (StringUtils.isEmpty(pathValue)) {
+            return;
+        }
+        for (String item : pathValue.split(File.pathSeparator)) {
+            if (StringUtils.isEmpty(item)) {
+                continue;
+            }
+            File dir = new File(stripWrappingQuotes(item.trim()));
+            addFileIfExists(result, new File(dir, "python.exe"));
+            addFileIfExists(result, new File(dir, "python3.exe"));
+            addFileIfExists(result, new File(dir, "py.exe"));
+        }
+    }
+
+    private void addProcessOutputCandidates(Set<String> result, String... command) {
+        for (String line : runProcessAndCollectOutput(Arrays.asList(command))) {
+            addCandidate(result, line);
+        }
+    }
+
+    private List<String> runProcessAndCollectOutput(List<String> command) {
+        List<String> lines = new ArrayList<>();
+        Process process = null;
+        try {
+            process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (StringUtils.isNotEmpty(line)) {
+                        lines.add(line.trim());
+                    }
+                }
+            }
+            if (!process.waitFor(DISCOVERY_COMMAND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (Exception ignored) {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return lines;
+    }
+
+    private void addCandidate(Set<String> result, String candidate) {
+        String normalized = normalizeCandidatePath(candidate);
+        if (StringUtils.isEmpty(normalized)) {
+            return;
+        }
+        File file = new File(normalized);
+        if (file.isFile()) {
+            result.add(file.getAbsolutePath());
+        }
+    }
+
+    private void addFileIfExists(Set<String> result, File file) {
+        if (file != null && file.isFile()) {
+            result.add(file.getAbsolutePath());
+        }
+    }
+
+    private List<String> normalizePythonCommand(String pythonPath) {
+        String normalized = normalizeCandidatePath(pythonPath);
+        if (StringUtils.isEmpty(normalized)) {
+            return Arrays.asList(pythonPath);
+        }
+        File file = new File(normalized);
+        if (file.isDirectory() && isWindows()) {
+            File pythonExe = new File(file, "python.exe");
+            if (pythonExe.isFile()) {
+                return Arrays.asList(pythonExe.getAbsolutePath());
+            }
+            File python3Exe = new File(file, "python3.exe");
+            if (python3Exe.isFile()) {
+                return Arrays.asList(python3Exe.getAbsolutePath());
+            }
+            File launcherExe = new File(file, "py.exe");
+            if (launcherExe.isFile()) {
+                return Arrays.asList(launcherExe.getAbsolutePath());
+            }
+        }
+        return Arrays.asList(normalized);
+    }
+
+    private String normalizeCandidatePath(String candidate) {
+        if (StringUtils.isEmpty(candidate)) {
+            return null;
+        }
+        String normalized = stripWrappingQuotes(candidate.trim());
+        if (StringUtils.isEmpty(normalized)) {
+            return null;
+        }
+        if (normalized.startsWith("*")) {
+            normalized = normalized.substring(1).trim();
+        }
+        if (normalized.startsWith("-")) {
+            int index = normalized.indexOf('\\');
+            if (index > 0) {
+                normalized = normalized.substring(index);
+            }
+        }
+        return stripWrappingQuotes(normalized);
+    }
+
+    private String stripWrappingQuotes(String value) {
+        if (StringUtils.isEmpty(value)) {
+            return value;
+        }
+        String result = value;
+        if ((result.startsWith("\"") && result.endsWith("\""))
+                || (result.startsWith("'") && result.endsWith("'"))) {
+            result = result.substring(1, result.length() - 1);
+        }
+        return result.trim();
+    }
+
+    private boolean isPythonLauncher(String executable) {
+        if (StringUtils.isEmpty(executable)) {
+            return false;
+        }
+        String lower = executable.toLowerCase();
+        return "py".equals(lower) || "py.exe".equals(lower) || lower.endsWith("\\py.exe");
     }
 
     private boolean isWindows() {

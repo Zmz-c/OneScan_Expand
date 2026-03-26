@@ -55,7 +55,7 @@ public class RequestTab extends BaseConfigTab {
         addFileConfigPanel(L.get("browser_binary_path"), L.get("browser_binary_path_sub_title"),
                 Config.KEY_BROWSER_BINARY_PATH);
         addFileConfigPanel(L.get("browser_python_path"), L.get("browser_python_path_sub_title"),
-                Config.KEY_BROWSER_PYTHON_PATH);
+                Config.KEY_BROWSER_PYTHON_PATH, true);
         addTextConfigPanel(L.get("include_method"), L.get("include_method_sub_title"), 20, Config.KEY_INCLUDE_METHOD);
         // 根据后缀过滤请求包
         addTextConfigPanel(L.get("exclude_suffix"), L.get("exclude_suffix_sub_title"), 50, Config.KEY_EXCLUDE_SUFFIX);
