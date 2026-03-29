@@ -4,12 +4,9 @@ import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.FileUtils;
 import burp.vaycore.common.utils.IOUtils;
 import burp.vaycore.common.utils.StringUtils;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -19,10 +16,14 @@ public class BrowserRequestManager {
     private static final String SCRIPT_DIR_NAME = "browser";
     private static final String SCRIPT_FILE_NAME = "drission_request.py";
     private static final String PROFILE_DIR_NAME = "profile";
-    private static final String STATE_FILE_NAME = "state.json";
+    private static final String STATE_FILE_NAME = "state.txt";
+    private static final String REQUEST_FILE_PREFIX = "request-";
     private static final int DEBUG_PORT = 9777;
     private static final long DISCOVERY_COMMAND_TIMEOUT_MILLIS = 1500L;
+    private static final long DEFAULT_BRIDGE_TIMEOUT_EXTRA_MILLIS = 5000L;
+    private static final long NAVIGATION_POST_BRIDGE_TIMEOUT_EXTRA_MILLIS = 20000L;
     private static final String OS_NAME = System.getProperty("os.name", "").toLowerCase();
+
     private final String mSessionId = "session-" + Long.toHexString(System.currentTimeMillis())
             + "-" + Integer.toHexString(System.identityHashCode(this));
     private final Object mProcessLock = new Object();
@@ -30,27 +31,70 @@ public class BrowserRequestManager {
 
     public synchronized BrowserResult navigate(String url, String browserType, String browserBinaryPath,
                                                long timeoutMillis, String workDir, String pythonPath) {
-        if (StringUtils.isEmpty(url)) {
+        BrowserRequest request = BrowserRequest.of("GET", url, Collections.<String>emptyList(), new byte[0]);
+        return navigate(request, browserType, browserBinaryPath, timeoutMillis, workDir, pythonPath, false);
+    }
+
+    public synchronized BrowserResult navigate(BrowserRequest request, String browserType, String browserBinaryPath,
+                                               long timeoutMillis, String workDir, String pythonPath,
+                                               boolean loadStaticResources) {
+        if (request == null) {
+            throw new IllegalArgumentException("browser request is null");
+        }
+        if (StringUtils.isEmpty(request.getUrl())) {
             throw new IllegalArgumentException("browser request url is empty");
         }
         if (StringUtils.isEmpty(workDir)) {
             throw new IllegalArgumentException("browser request workdir is empty");
         }
-        List<String> arguments = new ArrayList<>();
-        arguments.add("--action");
-        arguments.add("navigate");
-        arguments.add("--url");
-        arguments.add(url);
-        arguments.add("--browser-type");
-        arguments.add(StringUtils.isEmpty(browserType) ? "edge" : browserType);
-        if (StringUtils.isNotEmpty(browserBinaryPath)) {
-            arguments.add("--browser-path");
-            arguments.add(browserBinaryPath);
+
+        File scriptFile = ensureScriptFile(workDir);
+        File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
+        File sessionDir = new File(browserWorkDir, mSessionId);
+        File profileDir = new File(sessionDir, PROFILE_DIR_NAME);
+        File stateFile = new File(sessionDir, STATE_FILE_NAME);
+        if (!sessionDir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            sessionDir.mkdirs();
         }
-        arguments.add("--timeout-ms");
-        arguments.add(String.valueOf(timeoutMillis));
-        String output = execute(arguments, timeoutMillis + 5000L, workDir, pythonPath);
-        return parseBrowserResult(output);
+        if (!profileDir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            profileDir.mkdirs();
+        }
+
+        File requestFile = null;
+        try {
+            requestFile = File.createTempFile(REQUEST_FILE_PREFIX, ".txt", sessionDir);
+            writeRequestFile(requestFile, request);
+
+            List<String> arguments = new ArrayList<String>();
+            arguments.add("--action");
+            arguments.add("navigate");
+            arguments.add("--request-file");
+            arguments.add(requestFile.getAbsolutePath());
+            arguments.add("--browser-type");
+            arguments.add(StringUtils.isEmpty(browserType) ? "edge" : browserType);
+            if (StringUtils.isNotEmpty(browserBinaryPath)) {
+                arguments.add("--browser-path");
+                arguments.add(browserBinaryPath);
+            }
+            arguments.add("--timeout-ms");
+            arguments.add(String.valueOf(timeoutMillis));
+            if (loadStaticResources) {
+                arguments.add("--load-static-resources");
+            }
+
+            String output = execute(arguments, timeoutMillis + bridgeTimeoutExtraMillis(request), workDir, pythonPath,
+                    scriptFile, profileDir, stateFile);
+            return parseBrowserResult(output);
+        } catch (IOException e) {
+            throw new IllegalStateException("browser bridge prepare failed: " + e.getMessage(), e);
+        } finally {
+            if (requestFile != null && requestFile.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                requestFile.delete();
+            }
+        }
     }
 
     public synchronized void close(String workDir, String pythonPath, String browserType, String browserBinaryPath) {
@@ -58,7 +102,27 @@ public class BrowserRequestManager {
             return;
         }
         try {
-            List<String> arguments = new ArrayList<>();
+            File scriptFile = ensureScriptFile(workDir);
+            File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
+            File sessionDir = new File(browserWorkDir, mSessionId);
+            File profileDir = new File(sessionDir, PROFILE_DIR_NAME);
+            File stateFile = new File(sessionDir, STATE_FILE_NAME);
+            if (!profileDir.exists()) {
+                return;
+            }
+
+            List<String> arguments = new ArrayList<String>();
+            arguments.add("--action");
+            arguments.add("cleanup");
+            arguments.add("--browser-type");
+            arguments.add(StringUtils.isEmpty(browserType) ? "edge" : browserType);
+            if (StringUtils.isNotEmpty(browserBinaryPath)) {
+                arguments.add("--browser-path");
+                arguments.add(browserBinaryPath);
+            }
+            execute(arguments, 8000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
+
+            arguments = new ArrayList<String>();
             arguments.add("--action");
             arguments.add("close");
             arguments.add("--browser-type");
@@ -67,7 +131,7 @@ public class BrowserRequestManager {
                 arguments.add("--browser-path");
                 arguments.add(browserBinaryPath);
             }
-            execute(arguments, 10000L, workDir, pythonPath);
+            execute(arguments, 10000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
         } catch (Exception e) {
             Logger.debug("Close browser bridge error: %s", e.getMessage());
         }
@@ -98,20 +162,32 @@ public class BrowserRequestManager {
         }
     }
 
-    private String execute(List<String> arguments, long timeoutMillis, String workDir, String pythonPath) {
-        File scriptFile = ensureScriptFile(workDir);
-        File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
-        File sessionDir = new File(browserWorkDir, mSessionId);
-        File profileDir = new File(sessionDir, PROFILE_DIR_NAME);
-        File stateFile = new File(sessionDir, STATE_FILE_NAME);
-        if (!sessionDir.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            sessionDir.mkdirs();
+    private void writeRequestFile(File requestFile, BrowserRequest request) throws IOException {
+        BufferedWriter writer = null;
+        try {
+            writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(requestFile),
+                    StandardCharsets.UTF_8));
+            writeLine(writer, "METHOD", encodeString(request.getMethod()));
+            writeLine(writer, "URL", encodeString(request.getUrl()));
+            writeLine(writer, "HEADER_COUNT", String.valueOf(request.getHeaders().size()));
+            for (int i = 0; i < request.getHeaders().size(); i++) {
+                writeLine(writer, "HEADER_" + i, encodeString(request.getHeaders().get(i)));
+            }
+            writeLine(writer, "BODY", encodeBytes(request.getBody()));
+        } finally {
+            IOUtils.closeIO(writer);
         }
-        if (!profileDir.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            profileDir.mkdirs();
-        }
+    }
+
+    private void writeLine(BufferedWriter writer, String key, String value) throws IOException {
+        writer.write(key);
+        writer.write('=');
+        writer.write(value == null ? "" : value);
+        writer.newLine();
+    }
+
+    private String execute(List<String> arguments, long timeoutMillis, String workDir, String pythonPath,
+                           File scriptFile, File profileDir, File stateFile) {
         List<List<String>> commands = buildPythonCommands(scriptFile, profileDir, stateFile, arguments, pythonPath);
         Exception lastError = null;
         for (List<String> command : commands) {
@@ -146,8 +222,8 @@ public class BrowserRequestManager {
 
     private List<List<String>> buildPythonCommands(File scriptFile, File profileDir, File stateFile,
                                                    List<String> arguments, String pythonPath) {
-        List<List<String>> commands = new ArrayList<>();
-        Set<String> added = new HashSet<>();
+        List<List<String>> commands = new ArrayList<List<String>>();
+        Set<String> added = new HashSet<String>();
         if (StringUtils.isNotEmpty(pythonPath)) {
             addWindowsPythonCommand(commands, added, normalizePythonCommand(pythonPath),
                     scriptFile, profileDir, stateFile, arguments);
@@ -197,21 +273,21 @@ public class BrowserRequestManager {
         addCommand(commands, added, buildCommand(pythonCommand, scriptFile, profileDir, stateFile, arguments));
         String executable = pythonCommand.get(0);
         if (pythonCommand.size() == 1 && isPythonLauncher(executable)) {
-            List<String> launcherCommand = new ArrayList<>(pythonCommand);
+            List<String> launcherCommand = new ArrayList<String>(pythonCommand);
             launcherCommand.add("-3");
             addCommand(commands, added, buildCommand(launcherCommand, scriptFile, profileDir, stateFile, arguments));
         }
     }
 
     private List<String> findWindowsPythonExecutables() {
-        Set<String> result = new LinkedHashSet<>();
+        Set<String> result = new LinkedHashSet<String>();
         addProcessOutputCandidates(result, "where.exe", "python.exe");
         addProcessOutputCandidates(result, "where.exe", "python3.exe");
         addProcessOutputCandidates(result, "where.exe", "py.exe");
         addPythonLauncherCandidates(result);
         addPathCandidates(result);
 
-        List<File> searchRoots = new ArrayList<>();
+        List<File> searchRoots = new ArrayList<File>();
         addSearchRoot(searchRoots, System.getenv("LOCALAPPDATA"), "Programs", "Python");
         addSearchRoot(searchRoots, System.getenv("PROGRAMFILES"), "Python");
         addSearchRoot(searchRoots, System.getenv("PROGRAMFILES(X86)"), "Python");
@@ -227,7 +303,7 @@ public class BrowserRequestManager {
                 addFileIfExists(result, new File(dir, "py.exe"));
             }
         }
-        return new ArrayList<>(result);
+        return new ArrayList<String>(result);
     }
 
     private void addSearchRoot(List<File> roots, String parentPath, String... children) {
@@ -285,17 +361,21 @@ public class BrowserRequestManager {
     }
 
     private List<String> runProcessAndCollectOutput(List<String> command) {
-        List<String> lines = new ArrayList<>();
+        List<String> lines = new ArrayList<String>();
         Process process = null;
         try {
             process = new ProcessBuilder(command).redirectErrorStream(true).start();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            BufferedReader reader = null;
+            try {
+                reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (StringUtils.isNotEmpty(line)) {
                         lines.add(line.trim());
                     }
                 }
+            } finally {
+                IOUtils.closeIO(reader);
             }
             if (!process.waitFor(DISCOVERY_COMMAND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
@@ -398,7 +478,7 @@ public class BrowserRequestManager {
 
     private List<String> buildCommand(List<String> pythonCommand, File scriptFile,
                                       File profileDir, File stateFile, List<String> arguments) {
-        List<String> command = new ArrayList<>(pythonCommand);
+        List<String> command = new ArrayList<String>(pythonCommand);
         command.add(scriptFile.getAbsolutePath());
         command.add("--port");
         command.add(String.valueOf(DEBUG_PORT));
@@ -426,7 +506,7 @@ public class BrowserRequestManager {
         try {
             boolean completed;
             try {
-                completed = process.waitFor(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+                completed = process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 process.destroyForcibly();
                 Thread.currentThread().interrupt();
@@ -461,7 +541,7 @@ public class BrowserRequestManager {
         Thread thread = new Thread(() -> {
             BufferedReader reader = null;
             try {
-                reader = new BufferedReader(new InputStreamReader(is));
+                reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
                 String line;
                 while ((line = reader.readLine()) != null) {
                     synchronized (output) {
@@ -497,81 +577,90 @@ public class BrowserRequestManager {
         if (StringUtils.isEmpty(output)) {
             throw new IllegalStateException("python browser bridge output is empty");
         }
-        JsonObject object = JsonParser.parseString(output).getAsJsonObject();
-        int status = getAsInt(object, "status", -1);
-        String reason = getAsString(object, "reason");
-        String finalUrl = getAsString(object, "final_url");
-        String title = getAsString(object, "title");
-        byte[] bodyBytes = decodeBody(object.get("body_base64"));
-        Map<String, String> headers = parseHeaders(object.get("headers"));
-        return new BrowserResult(status, reason, headers, bodyBytes, finalUrl, title);
+        Map<String, String> lines = parseKeyValueLines(output);
+        int headerCount = parseInt(lines.get("HEADER_COUNT"), 0);
+        Map<String, String> headers = new LinkedHashMap<String, String>();
+        for (int i = 0; i < headerCount; i++) {
+            String header = decodeString(lines.get("HEADER_" + i));
+            int index = header.indexOf(':');
+            if (index <= 0) {
+                continue;
+            }
+            headers.put(header.substring(0, index).trim(), header.substring(index + 1).trim());
+        }
+        return new BrowserResult(
+                parseInt(lines.get("STATUS"), -1),
+                decodeString(lines.get("REASON")),
+                headers,
+                decodeBytes(lines.get("BODY")),
+                decodeString(lines.get("FINAL_URL")),
+                decodeString(lines.get("TITLE"))
+        );
     }
 
-    private int getAsInt(JsonObject object, String key, int defValue) {
-        if (object == null || !object.has(key) || object.get(key).isJsonNull()) {
-            return defValue;
+    private Map<String, String> parseKeyValueLines(String output) {
+        Map<String, String> result = new LinkedHashMap<String, String>();
+        String[] lines = output.split("\\r?\\n");
+        for (String line : lines) {
+            int index = line.indexOf('=');
+            if (index <= 0) {
+                continue;
+            }
+            result.put(line.substring(0, index), line.substring(index + 1));
         }
-        try {
-            return object.get(key).getAsInt();
-        } catch (Exception e) {
-            return defValue;
-        }
+        return result;
     }
 
-    private String getAsString(JsonObject object, String key) {
-        if (object == null || !object.has(key) || object.get(key).isJsonNull()) {
+    private String encodeString(String value) {
+        return Base64.getEncoder().encodeToString((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String encodeBytes(byte[] value) {
+        return Base64.getEncoder().encodeToString(value == null ? new byte[0] : value);
+    }
+
+    private String decodeString(String value) {
+        if (StringUtils.isEmpty(value)) {
             return "";
         }
         try {
-            return object.get(key).getAsString();
-        } catch (Exception e) {
+            return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
             return "";
         }
     }
 
-    private byte[] decodeBody(JsonElement element) {
-        if (element == null || element.isJsonNull()) {
+    private byte[] decodeBytes(String value) {
+        if (StringUtils.isEmpty(value)) {
             return new byte[0];
         }
         try {
-            String value = element.getAsString();
-            if (StringUtils.isEmpty(value)) {
-                return new byte[0];
-            }
             return Base64.getDecoder().decode(value);
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return new byte[0];
         }
     }
 
-    private Map<String, String> parseHeaders(JsonElement element) {
-        Map<String, String> headers = new LinkedHashMap<>();
-        if (element == null || element.isJsonNull()) {
-            return headers;
+    private int parseInt(String value, int defValue) {
+        if (StringUtils.isEmpty(value)) {
+            return defValue;
         }
-        if (element.isJsonArray()) {
-            JsonArray array = element.getAsJsonArray();
-            for (JsonElement item : array) {
-                if (item == null || item.isJsonNull()) {
-                    continue;
-                }
-                String header = item.getAsString();
-                int index = header.indexOf(':');
-                if (index <= 0) {
-                    continue;
-                }
-                headers.put(header.substring(0, index).trim(), header.substring(index + 1).trim());
-            }
-            return headers;
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (Exception ignored) {
+            return defValue;
         }
-        if (!element.isJsonObject()) {
-            return headers;
+    }
+
+    private long bridgeTimeoutExtraMillis(BrowserRequest request) {
+        if (request == null) {
+            return DEFAULT_BRIDGE_TIMEOUT_EXTRA_MILLIS;
         }
-        JsonObject object = element.getAsJsonObject();
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            headers.put(entry.getKey(), entry.getValue().isJsonNull() ? "" : entry.getValue().getAsString());
+        String method = request.getMethod();
+        if ("POST".equalsIgnoreCase(method) || request.getBody().length > 0) {
+            return NAVIGATION_POST_BRIDGE_TIMEOUT_EXTRA_MILLIS;
         }
-        return headers;
+        return DEFAULT_BRIDGE_TIMEOUT_EXTRA_MILLIS;
     }
 
     public static class BrowserResult {
@@ -585,11 +674,11 @@ public class BrowserRequestManager {
         private BrowserResult(int status, String reason, Map<String, String> headers,
                               byte[] bodyBytes, String finalUrl, String title) {
             this.status = status;
-            this.reason = reason;
-            this.headers = headers;
+            this.reason = reason == null ? "" : reason;
+            this.headers = headers == null ? new LinkedHashMap<String, String>() : headers;
             this.bodyBytes = bodyBytes == null ? new byte[0] : bodyBytes;
-            this.finalUrl = finalUrl;
-            this.title = title;
+            this.finalUrl = finalUrl == null ? "" : finalUrl;
+            this.title = title == null ? "" : title;
         }
 
         public int getStatus() {

@@ -11,7 +11,7 @@ public interface Constants {
 
     // 插件信息
     String PLUGIN_NAME = "OneScan_Expand";
-    String PLUGIN_VERSION = "1.0";
+    String PLUGIN_VERSION = "1.1.0";
     boolean DEBUG = false;
 
     // 插件启动显示的信息
@@ -22,7 +22,7 @@ public interface Constants {
             "  Developer: vaycore\n" +
             "  Developer: Rural.Dog\n" +
             "  Developer:人间小福星\n"+
-            "  Github: https://github.com/vaycore/OneScan\n" +
+            "  Github: https://github.com/Zmz-c/OneScan_Expand\n" +
             "  Note:修正死锁导致的卡顿问题，新增MAC兼容，新增自由选择驱动，内容不再写死\n"+
             "#############################################\n";
 

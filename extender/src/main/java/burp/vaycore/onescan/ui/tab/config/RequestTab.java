@@ -12,6 +12,8 @@ import burp.vaycore.onescan.ui.base.BaseConfigTab;
 import javax.swing.*;
 import java.awt.event.ItemEvent;
 import java.util.Vector;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Request设置
@@ -49,6 +51,9 @@ public class RequestTab extends BaseConfigTab {
         // 过滤请求方法
         addEnabledConfigPanel(L.get("browser_request"), L.get("browser_request_sub_title"),
                 Config.KEY_ENABLE_BROWSER_REQUEST);
+        addEnabledConfigPanel(L.get("browser_load_static_resources"),
+                L.get("browser_load_static_resources_sub_title"),
+                Config.KEY_BROWSER_LOAD_STATIC_RESOURCES);
         addBrowserTypeConfigPanel();
         addTextConfigPanel(L.get("browser_timeout"), L.get("browser_timeout_sub_title"),
                 20, Config.KEY_BROWSER_TIMEOUT).addKeyListener(new NumberFilter(6));
@@ -56,6 +61,8 @@ public class RequestTab extends BaseConfigTab {
                 Config.KEY_BROWSER_BINARY_PATH);
         addFileConfigPanel(L.get("browser_python_path"), L.get("browser_python_path_sub_title"),
                 Config.KEY_BROWSER_PYTHON_PATH, true);
+        addTextConfigPanel(L.get("browser_target_host_regex"),
+                L.get("browser_target_host_regex_sub_title"), 35, Config.KEY_BROWSER_TARGET_HOST_REGEX);
         addTextConfigPanel(L.get("include_method"), L.get("include_method_sub_title"), 20, Config.KEY_INCLUDE_METHOD);
         // 根据后缀过滤请求包
         addTextConfigPanel(L.get("exclude_suffix"), L.get("exclude_suffix_sub_title"), 50, Config.KEY_EXCLUDE_SUFFIX);
@@ -182,6 +189,16 @@ public class RequestTab extends BaseConfigTab {
                 return false;
             }
             text = String.valueOf(value);
+        } else if (Config.KEY_BROWSER_TARGET_HOST_REGEX.equals(configKey)) {
+            text = text == null ? "" : text.trim();
+            if (StringUtils.isNotEmpty(text)) {
+                try {
+                    Pattern.compile(text);
+                } catch (PatternSyntaxException e) {
+                    UIHelper.showTipsDialog(L.get("browser_target_host_regex_invalid"));
+                    return false;
+                }
+            }
         }
         return super.onTextConfigSave(configKey, text);
     }

@@ -51,6 +51,8 @@ public class Config {
     public static final String KEY_BROWSER_BINARY_PATH = "browser-binary-path";
     public static final String KEY_BROWSER_TYPE = "browser-type";
     public static final String KEY_BROWSER_TIMEOUT = "browser-timeout";
+    public static final String KEY_BROWSER_LOAD_STATIC_RESOURCES = "browser-load-static-resources";
+    public static final String KEY_BROWSER_TARGET_HOST_REGEX = "browser-target-host-regex";
     public static final String KEY_ENABLE_REMOVE_HEADER = "enable-remove-header";
     public static final String KEY_ENABLE_REPLACE_HEADER = "enable-replace-header";
     public static final String KEY_ENABLE_DIR_SCAN = "enable-dir-scan";
@@ -97,6 +99,8 @@ public class Config {
         initDefaultConfig(Config.KEY_BROWSER_BINARY_PATH, "");
         initDefaultConfig(Config.KEY_BROWSER_TYPE, Config.BROWSER_TYPE_EDGE);
         initDefaultConfig(Config.KEY_BROWSER_TIMEOUT, "15000");
+        initDefaultConfig(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES, "false");
+        initDefaultConfig(Config.KEY_BROWSER_TARGET_HOST_REGEX, "");
         initDefaultConfig(Config.KEY_ENABLE_REMOVE_HEADER, "false");
         initDefaultConfig(Config.KEY_ENABLE_REPLACE_HEADER, "true");
         initDefaultConfig(Config.KEY_ENABLE_DIR_SCAN, "true");
