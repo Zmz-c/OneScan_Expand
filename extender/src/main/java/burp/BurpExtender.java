@@ -40,6 +40,8 @@ import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 /**
@@ -1093,7 +1095,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
         String method = info.getMethod();
-        return "GET".equalsIgnoreCase(method) || "POST".equalsIgnoreCase(method);
+        if (!"GET".equalsIgnoreCase(method) && !"POST".equalsIgnoreCase(method)) {
+            return false;
+        }
+        return matchesBrowserRequestTarget(service, info);
     }
 
     private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes) throws MalformedURLException {
@@ -1106,6 +1111,29 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 ? Arrays.copyOfRange(reqRawBytes, bodyOffset, reqRawBytes.length)
                 : EMPTY_BYTES;
         return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes);
+    }
+
+    private boolean matchesBrowserRequestTarget(IHttpService service, IRequestInfo info) {
+        String targetRegex = Config.get(Config.KEY_BROWSER_TARGET_HOST_REGEX);
+        if (StringUtils.isEmpty(targetRegex)) {
+            return true;
+        }
+        String host = service == null ? null : service.getHost();
+        if (StringUtils.isEmpty(host) && info != null) {
+            URL url = getUrlByRequestInfo(info);
+            if (url != null) {
+                host = url.getHost();
+            }
+        }
+        if (StringUtils.isEmpty(host)) {
+            return false;
+        }
+        try {
+            return Pattern.compile(targetRegex).matcher(host).find();
+        } catch (PatternSyntaxException e) {
+            Logger.debug("Browser target host regex invalid: %s", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -1785,8 +1813,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         int bodyOffset = info.getBodyOffset();
         int bodySize = requestBytes.length - bodyOffset;
         String url = getReqPathByRequestInfo(info);
-        String header = new String(requestBytes, 0, bodyOffset - 4);
-        String body = bodySize <= 0 ? "" : new String(requestBytes, bodyOffset, bodySize);
+        byte[] headerBytes = Arrays.copyOfRange(requestBytes, 0, Math.max(0, bodyOffset - 4));
+        byte[] bodyBytes = bodySize <= 0 ? EMPTY_BYTES : Arrays.copyOfRange(requestBytes, bodyOffset, requestBytes.length);
+        String header = mHelpers.bytesToString(headerBytes);
+        String body = bodyBytes.length == 0 ? "" : mHelpers.bytesToString(bodyBytes);
         String request = mHelpers.bytesToString(requestBytes);
         for (PayloadItem item : list) {
             // 只调用启用的规则
@@ -1846,29 +1876,40 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @return 更新后的数据包
      */
     private byte[] updateContentLength(byte[] rawBytes) {
-        String temp = new String(rawBytes, StandardCharsets.US_ASCII);
-        int bodyOffset = temp.indexOf("\r\n\r\n");
-        if (bodyOffset == -1) {
-            Logger.error("Handle payload process error: bodyOffset is -1");
+        if (rawBytes == null || rawBytes.length == 0) {
+            return rawBytes;
+        }
+        IRequestInfo info;
+        try {
+            info = mHelpers.analyzeRequest(rawBytes);
+        } catch (Exception e) {
+            Logger.error("Handle payload process error: analyze request failed");
             return null;
         }
-        bodyOffset += 4;
+        int bodyOffset = info.getBodyOffset();
         int bodySize = rawBytes.length - bodyOffset;
         if (bodySize < 0) {
             Logger.error("Handle payload process error: bodySize < 0");
             return null;
-        } else if (bodySize == 0) {
-            return rawBytes;
         }
-        String header = new String(rawBytes, 0, bodyOffset - 4);
-        if (!header.contains("Content-Length")) {
-            header += "\r\nContent-Length: " + bodySize;
-        } else {
-            header = header.replaceAll("Content-Length:.*", "Content-Length: " + bodySize);
+        byte[] bodyBytes = bodySize == 0
+                ? EMPTY_BYTES
+                : Arrays.copyOfRange(rawBytes, bodyOffset, rawBytes.length);
+        List<String> headers = new ArrayList<>();
+        boolean hadContentLength = false;
+        for (String header : info.getHeaders()) {
+            if (header.regionMatches(true, 0, "Content-Length:", 0, "Content-Length:".length())) {
+                hadContentLength = true;
+                continue;
+            }
+            headers.add(header);
         }
-        String body = new String(rawBytes, bodyOffset, bodySize);
-        String result = header + "\r\n\r\n" + body;
-        return result.getBytes(StandardCharsets.UTF_8);
+        String method = info.getMethod();
+        if (bodyBytes.length == 0
+                && (hadContentLength || !"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method))) {
+            headers.add("Content-Length: 0");
+        }
+        return mHelpers.buildHttpMessage(headers, bodyBytes);
     }
 
     /**
@@ -2248,6 +2289,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         mCallbacks.removeContextMenuFactory(this);
         // 停止状态栏刷新定时器
         mStatusRefresh.stop();
+        mRefreshMsgTask.shutdownNow();
         // 关闭任务线程池
         int count = mTaskThreadPool.shutdownNow().size();
         Logger.info("Close: task thread pool completed. Task %d records.", count);
