@@ -1,4 +1,4 @@
-﻿package burp;
+package burp;
 
 import burp.vaycore.common.helper.DomainHelper;
 import burp.vaycore.common.helper.QpsLimiter;
@@ -6,6 +6,7 @@ import burp.vaycore.common.helper.UIHelper;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
 import burp.vaycore.onescan.OneScan;
+import burp.vaycore.onescan.bean.FpData;
 import burp.vaycore.onescan.bean.TaskData;
 import burp.vaycore.onescan.browser.BrowserRequest;
 import burp.vaycore.onescan.browser.BrowserRequestManager;
@@ -39,177 +40,138 @@ import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
-// 閫夋嫨 Payload 鎵弿
-        List<String> payloadList = WordlistManager.getItemList(WordlistManager.KEY_PAYLOAD);
-ActionListener listener = (event) -> new Thread(() -> {
-                String action = event.getActionCommand();
-                IHttpRequestResponse[] messages = invocation.getSelectedMessages();
-                for (IHttpRequestResponse httpReqResp : messages) {
-                    doScan(httpReqResp, FROM_SEND, action);
-                    // 绾跨▼姹犲叧闂悗锛屽仠姝㈠彂閫佹壂鎻忎换鍔?                    if (isTaskThreadPoolShutdown() || isTaskStopVersionExpired(taskStopVersion)) {
-                        Logger.debug("usePayloadScan: thread pool is shutdown, stop sending scan task");
-                        return;
-                    }
-                }
-            ).start());
-// 鑾峰彇涓€涓嬭姹傛暟鎹寘涓殑璇锋眰璺緞
-        String reqPath = getReqPathByRequestInfo(info);
-        if (!payloadList.isEmpty() && payloadList.size() > 1) {
-            JMenu menu = new JMenu(L.get("use_payload_scan"));
-            items.add(menu);
-            // 浠庤姹傝矾寰勪腑锛屽皾璇曡幏鍙栬姹備富鏈哄湴鍧€
-        String reqHost = getReqHostByReqPath(reqPath);}).start();
-            for (String itemName : payloadList) {
-                JMenuItem item = new JMenuItem(itemName);
-                item.setActionCommand(itemName);
-                item.addActionListener(listener);
-                menu.add(item);
-            }
-        }
-        return items;
-    }
-
-    @Override
-    public String getTabCaption() {
-        return Constants.PLUGIN_NAME;
-    }
-
-    @Override
-    public Component getUiComponent() {
-        return mOneScan;
-    }
-// 鍑嗗鐢熸垚浠诲姟
-        URL url = getUrlByRequestInfo(info);
-// 妫€娴嬪紑鍏崇姸鎬?        if (!mDataBoardTab.hasListenProxyMessage()) {
-            return;
-        }
-        IHttpRequestResponse httpReqResp = message.getMessageInfo();
-        if (handleBrowserProxyResponse(httpReqResp)) {
-            return;
-        }
-// 璇锋眰澶存瀯寤哄畬鎴愬悗锛屽閲岄潰鍖呭惈鐨勫姩鎬佸彉閲忚繘琛岃祴鍊?        IHttpService service = httpReqResp.getHttpService();
-        URL url = getUrlByRequestInfo(info);
-    }
-
-    private void doScan(IHttpRequestResponse httpReqResp, String from) {
-        String item = WordlistManager.getItem(WordlistManager.KEY_PAYLOAD);
-        doScan(httpReqResp, from, item);
-    }
-// 鏍规嵁*鍙蜂綅缃紝杩涜鍖归厤
-        String ruleValue = rule.replace("*", "");
-// 鏀堕泦鏁版嵁锛堝彧鏀堕泦浠ｇ悊娴侀噺鐨勬暟鎹級
-            CollectManager.collect(true, host, request);
-            CollectManager.collect(false, host, response);
-        }
-                // 濡傛灉鍚敤锛屽鏉ヨ嚜閲嶅畾鍚戠殑鍖呰繘琛屾娴?        if (from.startsWith(FROM_REDIRECT) && Config.getBoolean(Config.KEY_REDIRECT_TARGET_HOST_LIMIT)) {
-                // 妫€娴?Host 鏄惁鍦ㄧ櫧鍚嶅崟銆侀粦鍚嶅崟涓?            if (hostAllowlistFilter(host) || hostBlocklistFilter(host)) {
-                Logger.debug("doScan allowlist and blocklist filter host: %s", host);
-                return;
-            }
-        }
-                        // 寮€鍚嚎绋嬭瘑鍒寚绾癸紝灏嗚瘑鍒粨鏋滅紦瀛樿捣鏉?        if (!mFpThreadPool.isShutdown()) {
-            mFpThreadPool.execute(() -> FpManager.check(request, response));
-        }
-// 妫€娴嬫槸鍚︽湭杩涜浠讳綍澶勭悊
-            boolean equals = Arrays.equals(reqRawBytes, resultBytes);
-// 鍘熷璇锋眰涔熼渶瑕佺粡杩?Payload Process 澶勭悊锛堜笉杩囬渶瑕佽繃婊や竴浜涘悗缂€鐨勬祦閲忥級
-        if (!proxyExcludeSuffixFilter(url.getPath())) {
-// 妫€娴嬫寚绾规暟鎹?        List<FpData> checkResult = FpManager.check(httpReqResp.getRequest(), httpReqResp.getResponse());
-// 鏋勫缓琛ㄦ牸瀵硅薄
-        TaskData data = new TaskData();
-        } else {
-            Logger.debug("proxyExcludeSuffixFilter filter request path: %s", url.getPath());
-        }
-        // 妫€娴嬫槸鍚︾鐢ㄩ€掑綊鎵弿
-        if (!mDataBoardTab.hasDirScan()) {
-            return;
-        }
-// 鎵弿浠诲姟
-        doScan(httpReqResp, FROM_PROXY);
-runScanTask(httpReqResp, info, null,from, taskStopVersion);
-        Logger.debug("doScan receive: %s", url.toString());
-        ArrayList<String> pathDict = getUrlPathDict(url.getPath());
-        List<String> payloads = WordlistManager.getPayload(payloadItem);
-// 涓€绾х洰褰曚竴绾х洰褰曢€掑噺璁块棶
-        for (int i = pathDict.size() - 1; i >= 0; i--) {
-            String path = pathDict.get(i);
-// 鍘婚櫎缁撳熬鐨?'/' 绗﹀彿
-            if (path.endsWith("/")) {
-                path = path.substring(0, path.length() - 1);
-            }
-        // 鎷兼帴瀛楀吀锛屽彂璧疯姹?            for (String item : payloads) {
-        // 绾跨▼姹犲叧闂悗锛屽仠姝㈢户缁敓鎴愪换鍔?                if (isTaskThreadPoolShutdown() || isTaskStopVersionExpired(taskStopVersion)) {
-                    return;
-                }
-        // 瀵瑰畬鏁?Host 鍦板潃鐨勫瓧鍏稿彇娑堥€掑綊鎵弿锛堢洿鎺ユ浛鎹㈣姹傝矾寰勬壂鎻忥級
-                if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(item)) {
-                    continue;
-                }
-                String urlPath = path + item;
-// 濡傛灉閰嶇疆鐨勫瓧鍏镐笉鍚?'/' 鍓嶇紑锛屽湪鏍圭洰褰曚笅鎵弿鏃讹紝鑷姩娣诲姞 '/' 绗﹀彿
-                if (StringUtils.isEmpty(path) && !item.startsWith("/") && !UrlUtils.isHTTP(item)) {
-                    urlPath = "/" + item;
-                }
-// 妫€娴嬩竴涓嬫槸鍚︽惡甯﹀畬鏁寸殑 Host 鍦板潃锛堝吋瀹逛竴涓嬫惡甯︿簡瀹屾暣鐨?Host 鍦板潃鐨勬儏鍐碉級
-// 浣嗘湁涓墠鎻愶細濡傛灉瀛楀吀瀛樺湪瀹屾暣鐨?Host 鍦板潃锛岀洿鎺ヤ笉鍋氬鐞?                if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(item)) {
-                    urlPath = reqHost + urlPath;
-                }
-
-runScanTask(httpReqResp, info, urlPath, FROM_SCAN, taskStopVersion);
-            }
-        }
-    }
-
-doBurpRequest(service, reqId, request, from, taskStopVersion);
-
-// 杩愯宸茬粡鍚敤骞朵笖闇€瑕佸悎骞剁殑浠诲姟
-runEnableAndMergeTask(service, reqId, request, from, taskStopVersion);
-
-// 杩愯宸茬粡鍚敤骞朵笖涓嶉渶瑕佸悎骞剁殑浠诲姟
-runEnabledWithoutMergeProcessingTask(service, reqId, request, taskStopVersion);
-
-// 鏈繘琛屼换浣曞鐞嗘椂锛屼笉鍙樻洿 from 鍊?            String newFrom = equals ? from : from + "锛? + FROM_PROCESS + "锛?;
-doBurpRequest(service, reqId, resultBytes, newFrom, taskStopVersion);
-
-// 濡傛灉瑙勫垯澶勭悊寮傚父瀵艰嚧鏁版嵁杩斿洖涓虹┖锛屽垯鍙戦€佸師鏉ョ殑璇锋眰
-doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
+/**
+ * 插件入口
+ * <p>
+ * Created by vaycore on 2022-08-07.
+ */
+public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
+        TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
+        IExtensionStateListener, IContextMenuFactory {
 
     /**
-     * 妫€娴?Host 鏄惁鍖归厤瑙勫垯
+     * 任务线程数量
+     */
+    private static final int TASK_THREAD_COUNT = 50;
+
+    /**
+     * 低频任务线程数量
+     */
+    private static final int LF_TASK_THREAD_COUNT = 25;
+
+    /**
+     * 指纹识别线程数量
+     */
+    private static final int FP_THREAD_COUNT = 10;
+
+    /**
+     * 空字节数组常量（防止频繁创建）
+     */
+    private static final byte[] EMPTY_BYTES = new byte[0];
+
+    /**
+     * 请求来源：代理
+     */
+    private static final String FROM_PROXY = "Proxy";
+
+    /**
+     * ç’‡é”‹çœ°é€šè¿‡æµè§ˆå™¨å‘èµ·
+     */
+    private static final String FROM_BROWSER = "Browser";
+
+    /**
+     * æµè§ˆå™¨è¯·æ±‚ç­‰å¾…è¶…æ—¶æ—¶é—´ï¼ˆæ¯«ç§’ï¼‰
+     */
+
+    /**
+     * æµè§ˆå™¨è¯·æ±‚ç¨³å®šç­‰å¾…æ—¶é—´ï¼ˆæ¯«ç§’ï¼‰
+     */
+    private static final long BROWSER_REQUEST_SETTLE_TIME = 1500L;
+    private static final long BROWSER_TRAFFIC_SUPPRESS_TTL = 5000L;
+    private static final long BROWSER_PROXY_CACHE_TTL = 30000L;
+
+    /**
+     * 请求来源：发送到 OneScan 扫描
+     */
+    private static final String FROM_SEND = "Send";
+
+    /**
+     * 请求来源：Payload Processing
+     */
+    private static final String FROM_PROCESS = "Process";
+
+    /**
+     * 请求来源：导入
+     */
+    private static final String FROM_IMPORT = "Import";
+
+    /**
+     * 请求来源：扫描
+     */
+    private static final String FROM_SCAN = "Scan";
+
+    /**
+     * 请求来源：重定向
+     */
+    private static final String FROM_REDIRECT = "Redirect";
+
+    /**
+     * 去重过滤集合
+     */
+    private final Set<String> sRepeatFilter = ConcurrentHashMap.newKeySet(500000);
+
+    /**
+     * 超时的请求主机集合
+     */
+    private final Set<String> sTimeoutReqHost = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, BrowserRequestTask> mBrowserRequestTasks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> mBrowserExpectedRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, BrowserResponseCacheEntry> mBrowserResponseCache = new ConcurrentHashMap<>();
+    private final Object mBrowserRequestLock = new Object();
+    private final BrowserRequestManager mBrowserRequestManager = new BrowserRequestManager();
+    private final ExecutorService mBrowserCloseExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicInteger mTaskOverCounter = new AtomicInteger(0);
+    private final AtomicInteger mTaskCommitCounter = new AtomicInteger(0);
+    private final AtomicInteger mLFTaskOverCounter = new AtomicInteger(0);
+    private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
+    private IBurpExtenderCallbacks mCallbacks;
+    private IExtensionHelpers mHelpers;
+    private OneScan mOneScan;
+    private DataBoardTab mDataBoardTab;
+    private IMessageEditor mRequestTextEditor;
+    private IMessageEditor mResponseTextEditor;
+    private ExecutorService mTaskThreadPool;
+    private ExecutorService mLFTaskThreadPool;
+    private ExecutorService mFpThreadPool;
+    private ExecutorService mRefreshMsgTask;
+    private IHttpRequestResponse mCurrentReqResp;
+    private QpsLimiter mQpsLimit;
+    private volatile BrowserTrafficScope mBrowserTrafficScope;
+    private Timer mStatusRefresh;
+
+    /**
+     * 检测 Host 是否匹配规则
      *
-     * @param host Host锛堜笉鍖呭惈鍗忚銆佺鍙ｅ彿锛?     * @param rule 瑙勫垯
-     * @return true=鍖归厤锛沠alse=涓嶅尮閰?     */
+     * @param host Host（不包含协议、端口号）
+     * @param rule 规则
+     * @return true=匹配；false=不匹配
+     */
     private static boolean matchHost(String host, String rule) {
         if (StringUtils.isEmpty(host)) {
             return StringUtils.isEmpty(rule);
         }
-        // 瑙勫垯灏辨槸*鍙凤紝鐩存帴杩斿洖true
+        // 规则就是*号，直接返回true
         if (rule.equals("*")) {
             return true;
         }
-        // 涓嶅寘鍚?鍙凤紝妫€娴?Host 涓庤鍒欐槸鍚︾浉绛?        if (!rule.contains("*")) {
+        // 不包含*号，检测 Host 与规则是否相等
+        if (!rule.contains("*")) {
             return host.equals(rule);
         }
-
-    /**
-     * 閫氳繃 IHttpService 瀹炰緥锛岃幏鍙栬姹傜殑 Host 鍊硷紙绀轰緥鏍煎紡锛歺.x.x.x銆亁.x.x.x:8080锛?     *
-     * @return 澶辫触杩斿洖null
-     */
-    public static String getHostByHttpService(IHttpService service) {
-        if (service == null) {
-            return null;
-        }
-        String host = service.getHost();
-        int port = service.getPort();
-        if (Utils.isIgnorePort(port)) {
-            return host;
-        }
-        return host + ":" + port;
-    }
+        // 根据*号位置，进行匹配
+        String ruleValue = rule.replace("*", "");
         if (rule.startsWith("*") && rule.endsWith("*")) {
             return host.contains(ruleValue);
         } else if (rule.startsWith("*")) {
@@ -223,9 +185,26 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
     }
 
     /**
-     * 閫氳繃 URL 瀹炰緥锛屾瀯寤?IHttpService 瀹炰緥
+     * 通过 IHttpService 实例，获取请求的 Host 值（示例格式：x.x.x.x、x.x.x.x:8080）
      *
-     * @return 澶辫触杩斿洖null
+     * @return 失败返回null
+     */
+    public static String getHostByHttpService(IHttpService service) {
+        if (service == null) {
+            return null;
+        }
+        String host = service.getHost();
+        int port = service.getPort();
+        if (Utils.isIgnorePort(port)) {
+            return host;
+        }
+        return host + ":" + port;
+    }
+
+    /**
+     * 通过 URL 实例，构建 IHttpService 实例
+     *
+     * @return 失败返回null
      */
     public static IHttpService buildHttpServiceByURL(URL url) {
         if (url == null) {
@@ -253,44 +232,172 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
             }
         };
     }
-        String[] split = suffix.split("\\|");
-        for (String item : split) {
-            if (path.endsWith("." + item)) {
-                return true;
-            }
-        }
-        return false;
+
+    @Override
+    public void registerExtenderCallbacks(IBurpExtenderCallbacks callbacks) {
+        initData(callbacks);
+        initView();
+        initEvent();
+        Logger.debug("register Extender ok! Log: %b", Constants.DEBUG);
     }
 
-@Override
+    private void initData(IBurpExtenderCallbacks callbacks) {
+        this.mCallbacks = callbacks;
+        this.mHelpers = callbacks.getHelpers();
+        this.mTaskThreadPool = Executors.newFixedThreadPool(TASK_THREAD_COUNT);
+        this.mLFTaskThreadPool = Executors.newFixedThreadPool(LF_TASK_THREAD_COUNT);
+        this.mFpThreadPool = Executors.newFixedThreadPool(FP_THREAD_COUNT);
+        this.mRefreshMsgTask = Executors.newSingleThreadExecutor();
+        this.mCallbacks.setExtensionName(Constants.PLUGIN_NAME + " v" + Constants.PLUGIN_VERSION);
+        // 初始化日志打印
+        Logger.init(Constants.DEBUG, mCallbacks.getStdout(), mCallbacks.getStderr());
+        // 初始化默认配置
+        Config.init(getWorkDir());
+        // 初始化域名辅助类
+        DomainHelper.init("public_suffix_list.json");
+        // 初始化QPS限制器
+        initQpsLimiter();
+        // 注册 OneScan 信息辅助面板
+        this.mCallbacks.registerMessageEditorTabFactory(this);
+        // 注册插件卸载监听器
+        this.mCallbacks.registerExtensionStateListener(this);
+    }
+
+    /**
+     * 获取工作目录路径（优先获取当前插件 jar 包所在目录配置文件，如果配置不存在，则使用默认工作目录）
+     */
+    private String getWorkDir() {
+        String workDir = Paths.get(mCallbacks.getExtensionFilename())
+                .getParent().toString() + File.separator + "OneScan" + File.separator;
+        if (FileUtils.isDir(workDir)) {
+            return workDir;
+        }
+        return null;
+    }
+
+    /**
+     * 初始化 QPS 限制器
+     */
+    private void initQpsLimiter() {
+        // 检测范围，如果不符合条件，不创建限制器
+        int limit = Config.getInt(Config.KEY_QPS_LIMIT);
+        int delay = Config.getInt(Config.KEY_REQUEST_DELAY);
+        if (limit > 0 && limit <= 9999) {
+            this.mQpsLimit = new QpsLimiter(limit, delay);
+        }
+    }
+
+    private void initView() {
+        mOneScan = new OneScan();
+        mDataBoardTab = mOneScan.getDataBoardTab();
+        // 注册事件
+        mDataBoardTab.setOnTabEventListener(this);
+        mOneScan.getConfigPanel().setOnTabEventListener(this);
+        // 将页面添加到 BurpSuite
+        mCallbacks.addSuiteTab(this);
+        // 创建请求和响应控件
+        mRequestTextEditor = mCallbacks.createMessageEditor(this, false);
+        mResponseTextEditor = mCallbacks.createMessageEditor(this, false);
+        mDataBoardTab.init(mRequestTextEditor.getComponent(), mResponseTextEditor.getComponent());
+        mDataBoardTab.getTaskTable().setOnTaskTableEventListener(this);
+    }
+
+    private void initEvent() {
+        // 监听代理的包
+        mCallbacks.registerProxyListener(this);
+        // 注册菜单
+        mCallbacks.registerContextMenuFactory(this);
+        // 状态栏刷新定时器
+        mStatusRefresh = new Timer(1000, e -> {
+            if (mDataBoardTab == null) {
+                return;
+            }
+            mDataBoardTab.refreshTaskStatus(mTaskOverCounter.get(), mTaskCommitCounter.get());
+            mDataBoardTab.refreshLFTaskStatus(mLFTaskOverCounter.get(), mLFTaskCommitCounter.get());
+            mDataBoardTab.refreshTaskHistoryStatus();
+            mDataBoardTab.refreshFpCacheStatus();
+        });
+        mStatusRefresh.start();
+    }
+
+    @Override
     public List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
         ArrayList<JMenuItem> items = new ArrayList<>();
-        // 鎵弿閫夊畾鐩爣
+        // 扫描选定目标
         JMenuItem sendToOneScanItem = new JMenuItem(L.get("send_to_plugin"));
         items.add(sendToOneScanItem);
         sendToOneScanItem.addActionListener((event) -> new Thread(() -> {
             IHttpRequestResponse[] messages = invocation.getSelectedMessages();
             for (IHttpRequestResponse httpReqResp : messages) {
                 doScan(httpReqResp, FROM_SEND);
-                // 绾跨▼姹犲叧闂悗锛屽仠姝㈠彂閫佹壂鎻忎换鍔?                if (isTaskThreadPoolShutdown() || isTaskStopVersionExpired(taskStopVersion)) {
+                // 线程池关闭后，停止发送扫描任务
+                if (isTaskThreadPoolShutdown()) {
                     Logger.debug("sendToPlugin: thread pool is shutdown, stop sending scan task");
                     return;
                 }
             }
+        }).start());
+        // 选择 Payload 扫描
+        List<String> payloadList = WordlistManager.getItemList(WordlistManager.KEY_PAYLOAD);
+        if (!payloadList.isEmpty() && payloadList.size() > 1) {
+            JMenu menu = new JMenu(L.get("use_payload_scan"));
+            items.add(menu);
+            ActionListener listener = (event) -> new Thread(() -> {
+                String action = event.getActionCommand();
+                IHttpRequestResponse[] messages = invocation.getSelectedMessages();
+                for (IHttpRequestResponse httpReqResp : messages) {
+                    doScan(httpReqResp, FROM_SEND, action);
+                    // 线程池关闭后，停止发送扫描任务
+                    if (isTaskThreadPoolShutdown()) {
+                        Logger.debug("usePayloadScan: thread pool is shutdown, stop sending scan task");
+                        return;
+                    }
+                }
+            }).start();
+            for (String itemName : payloadList) {
+                JMenuItem item = new JMenuItem(itemName);
+                item.setActionCommand(itemName);
+                item.addActionListener(listener);
+                menu.add(item);
+            }
         }
-        return result;
+        return items;
+    }
+
+    @Override
+    public String getTabCaption() {
+        return Constants.PLUGIN_NAME;
+    }
+
+    @Override
+    public Component getUiComponent() {
+        return mOneScan;
     }
 
     @Override
     public void processProxyMessage(boolean messageIsRequest, IInterceptedProxyMessage message) {
-        // 褰撹姹傚拰鍝嶅簲閮芥湁鐨勬椂鍊欙紝鎵嶈繘琛屼笅涓€姝ユ搷浣?        if (messageIsRequest) {
+        // 当请求和响应都有的时候，才进行下一步操作
+        if (messageIsRequest) {
             return;
         }
-// 濡傛灉鏈惎鐢ㄢ€滆姹傚寘澶勭悊鈥濆姛鑳斤紝鐩存帴瀵规壂鎻忕殑浠诲姟鍙戣捣璇锋眰
-        if (!mDataBoardTab.hasPayloadProcessing()) {
+        // 检测开关状态
+        if (!mDataBoardTab.hasListenProxyMessage()) {
+            return;
+        }
+        IHttpRequestResponse httpReqResp = message.getMessageInfo();
+        if (handleBrowserProxyResponse(httpReqResp)) {
+            return;
+        }
+        // 扫描任务
+        doScan(httpReqResp, FROM_PROXY);
+    }
+
+    private void doScan(IHttpRequestResponse httpReqResp, String from) {
+        String item = WordlistManager.getItem(WordlistManager.KEY_PAYLOAD);
+        doScan(httpReqResp, from, item);
+    }
 
     private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem) {
-        int taskStopVersion = captureTaskStopVersion();
         if (httpReqResp == null || httpReqResp.getHttpService() == null) {
             return;
         }
@@ -298,30 +405,98 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
         String host = httpReqResp.getHttpService().getHost();
         byte[] request = httpReqResp.getRequest();
         byte[] response = httpReqResp.getResponse();
-        // 瀵规潵鑷唬鐞嗙殑鍖呰繘琛屾娴嬶紝妫€娴嬭姹傛柟娉曟槸鍚﹂渶瑕佹嫤鎴?        if (from.equals(FROM_PROXY)) {
+        // 对来自代理的包进行检测，检测请求方法是否需要拦截
+        if (from.equals(FROM_PROXY)) {
             String method = info.getMethod();
             if (includeMethodFilter(method)) {
-                // 鎷︽埅涓嶅尮閰嶇殑璇锋眰鏂规硶
+                // 拦截不匹配的请求方法
                 Logger.debug("doScan filter request method: %s, host: %s", method, host);
                 return;
             }
-        // 妫€娴?Host 鏄惁鍦ㄧ櫧鍚嶅崟銆侀粦鍚嶅崟涓?            if (hostAllowlistFilter(host) || hostBlocklistFilter(host)) {
+            // 检测 Host 是否在白名单、黑名单中
+            if (hostAllowlistFilter(host) || hostBlocklistFilter(host)) {
                 Logger.debug("doScan allowlist and blocklist filter host: %s", host);
                 return;
             }
+            // 收集数据（只收集代理流量的数据）
+            CollectManager.collect(true, host, request);
+            CollectManager.collect(false, host, response);
+        }
+        // 如果启用，对来自重定向的包进行检测
+        if (from.startsWith(FROM_REDIRECT) && Config.getBoolean(Config.KEY_REDIRECT_TARGET_HOST_LIMIT)) {
+            // 检测 Host 是否在白名单、黑名单中
+            if (hostAllowlistFilter(host) || hostBlocklistFilter(host)) {
+                Logger.debug("doScan allowlist and blocklist filter host: %s", host);
+                return;
+            }
+        }
+        // 开启线程识别指纹，将识别结果缓存起来
+        if (!mFpThreadPool.isShutdown()) {
+            mFpThreadPool.execute(() -> FpManager.check(request, response));
+        }
+        // 准备生成任务
+        URL url = getUrlByRequestInfo(info);
+        // 原始请求也需要经过 Payload Process 处理（不过需要过滤一些后缀的流量）
+        if (!proxyExcludeSuffixFilter(url.getPath())) {
+            runScanTask(httpReqResp, info, null, from);
+        } else {
+            Logger.debug("proxyExcludeSuffixFilter filter request path: %s", url.getPath());
+        }
+        // 检测是否禁用递归扫描
+        if (!mDataBoardTab.hasDirScan()) {
             return;
         }
+        // 获取一下请求数据包中的请求路径
+        String reqPath = getReqPathByRequestInfo(info);
+        // 从请求路径中，尝试获取请求主机地址
+        String reqHost = getReqHostByReqPath(reqPath);
+        Logger.debug("doScan receive: %s", url.toString());
+        ArrayList<String> pathDict = getUrlPathDict(url.getPath());
+        List<String> payloads = WordlistManager.getPayload(payloadItem);
+        // 一级目录一级目录递减访问
+        for (int i = pathDict.size() - 1; i >= 0; i--) {
+            String path = pathDict.get(i);
+            // 去除结尾的 '/' 符号
+            if (path.endsWith("/")) {
+                path = path.substring(0, path.length() - 1);
+            }
+            // 拼接字典，发起请求
+            for (String item : payloads) {
+                // 线程池关闭后，停止继续生成任务
+                if (isTaskThreadPoolShutdown()) {
+                    return;
+                }
+                // 对完整 Host 地址的字典取消递归扫描（直接替换请求路径扫描）
+                if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(item)) {
+                    continue;
+                }
+                String urlPath = path + item;
+                // 如果配置的字典不含 '/' 前缀，在根目录下扫描时，自动添加 '/' 符号
+                if (StringUtils.isEmpty(path) && !item.startsWith("/") && !UrlUtils.isHTTP(item)) {
+                    urlPath = "/" + item;
+                }
+                // 检测一下是否携带完整的 Host 地址（兼容一下携带了完整的 Host 地址的情况）
+                // 但有个前提：如果字典存在完整的 Host 地址，直接不做处理
+                if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(item)) {
+                    urlPath = reqHost + urlPath;
+                }
+                runScanTask(httpReqResp, info, urlPath, FROM_SCAN);
+            }
+        }
+    }
 
     /**
-     * 浠?IRequestInfo 瀹炰緥涓鍙栬姹傝涓殑璇锋眰璺緞
+     * 从 IRequestInfo 实例中读取请求行中的请求路径
      *
-     * @param info IRequestInfo 瀹炰緥
-     * @return 涓嶅瓨鍦ㄨ繑鍥炵┖瀛楃涓?     */
+     * @param info IRequestInfo 实例
+     * @return 不存在返回空字符串
+     */
     private String getReqPathByRequestInfo(IRequestInfo info) {
         if (info == null) {
             return "";
         }
-        // 鑾峰彇璇锋眰琛?        List<String> headers = info.getHeaders();
+        // 获取请求行
+        List<String> headers = info.getHeaders();
         if (!headers.isEmpty()) {
             String reqLine = headers.get(0);
             Matcher matcher = Constants.REGEX_REQ_LINE_URL.matcher(reqLine);
@@ -333,10 +508,11 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
     }
 
     /**
-     * 浠庤姹傝矾寰勪腑锛堟湁浜涚珯鐐硅姹傝矾寰勪腑鍖呭惈瀹屾暣鐨?Host 鍦板潃锛夎幏鍙栬姹傜殑 Host 鍦板潃
+     * 从请求路径中（有些站点请求路径中包含完整的 Host 地址）获取请求的 Host 地址
      *
-     * @param reqPath 璇锋眰璺緞
-     * @return 涓嶅寘鍚?Host 鍦板潃锛岃繑鍥炵┖瀛楃涓?     */
+     * @param reqPath 请求路径
+     * @return 不包含 Host 地址，返回空字符串
+     */
     private String getReqHostByReqPath(String reqPath) {
         if (StringUtils.isEmpty(reqPath) || !UrlUtils.isHTTP(reqPath)) {
             return "";
@@ -348,16 +524,16 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
             return "";
         }
     }
-    }
 
     /**
-     * 杩囨护璇锋眰鏂规硶
+     * 过滤请求方法
      *
-     * @param method 璇锋眰鏂规硶
-     * @return true=鎷︽埅锛沠alse=涓嶆嫤鎴?     */
+     * @param method 请求方法
+     * @return true=拦截；false=不拦截
+     */
     private boolean includeMethodFilter(String method) {
         String includeMethod = Config.get(Config.KEY_INCLUDE_METHOD);
-        // 濡傛灉閰嶇疆涓虹┖锛屼笉鎷︽埅浠讳綍璇锋眰鏂规硶
+        // 如果配置为空，不拦截任何请求方法
         if (StringUtils.isNotEmpty(includeMethod)) {
             String[] split = includeMethod.split("\\|");
             boolean hasFilter = true;
@@ -371,21 +547,16 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
         }
         return false;
     }
-        URL url = getUrlByRequestInfo(info);
-        String reqHost = UrlUtils.getReqHostByURL(url);
-// 鐢熸垚閲嶅畾鍚戣姹傜殑璇锋眰 ID 鍊?        if (from.startsWith(FROM_REDIRECT)) {
-            return reqHost + reqPath;
-        }
-                // 榛樿浣跨敤 http://x.x.x.x/path/to/index.html 鏍煎紡浣滀负璇锋眰 ID 鍊?        return reqHost + url.getPath();
-    }
 
     /**
-     * Host 鐧藉悕鍗曡繃婊?     *
+     * Host 白名单过滤
+     *
      * @param host Host
-     * @return true=鎷︽埅锛沠alse=涓嶆嫤鎴?     */
+     * @return true=拦截；false=不拦截
+     */
     private boolean hostAllowlistFilter(String host) {
         List<String> list = WordlistManager.getHostAllowlist();
-        // 鐧藉悕鍗曚负绌猴紝涓嶅惎鐢ㄧ櫧鍚嶅崟
+        // 白名单为空，不启用白名单
         if (list.isEmpty()) {
             return false;
         }
@@ -399,51 +570,61 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
     }
 
     /**
-     * Host 榛戝悕鍗曡繃婊?     *
+     * Host 黑名单过滤
+     *
      * @param host Host
-     * @return true=鎷︽埅锛沠alse=涓嶆嫤鎴?     */
+     * @return true=拦截；false=不拦截
+     */
     private boolean hostBlocklistFilter(String host) {
         List<String> list = WordlistManager.getHostBlocklist();
-        // 榛戝悕鍗曚负绌猴紝涓嶅惎鐢ㄩ粦鍚嶅崟
+        // 黑名单为空，不启用黑名单
         if (list.isEmpty()) {
             return false;
         }
         for (String item : list) {
             if (matchHost(host, item)) {
-                Logger.debug("hostBlocklistFilter filter host: %s 锛坮ule: %s锛?, host, item);
+                Logger.debug("hostBlocklistFilter filter host: %s （rule: %s）", host, item);
                 return true;
             }
         }
         return false;
     }
-        byte[] resultBytes = reqRawBytes;
-        for (ProcessingItem item : processList) {
-            ArrayList<PayloadItem> items = item.getItems();
-            resultBytes = handlePayloadProcess(service, resultBytes, items);
-        }
-        if (resultBytes != null) {
 
     /**
-     * 浠ｇ悊璇锋眰鐨勫悗缂€杩囨护
+     * 代理请求的后缀过滤
      *
-     * @param reqPath 璇锋眰璺緞锛堜笉鍖呭惈 Query 鍙傛暟锛?     * @return true=鎷︽埅锛沠alse=涓嶆嫤鎴?     */
+     * @param reqPath 请求路径（不包含 Query 参数）
+     * @return true=拦截；false=不拦截
+     */
     private boolean proxyExcludeSuffixFilter(String reqPath) {
         if (StringUtils.isEmpty(reqPath) || "/".equals(reqPath)) {
             return false;
         }
-        // 缁熶竴杞崲涓哄皬鍐?        String suffix = Config.get(Config.KEY_EXCLUDE_SUFFIX).toLowerCase();
+        // 统一转换为小写
+        String suffix = Config.get(Config.KEY_EXCLUDE_SUFFIX).toLowerCase();
         String path = reqPath.toLowerCase();
         if (StringUtils.isEmpty(suffix)) {
             return false;
         }
-        // 閰嶇疆涓笉瀛樺湪澶氫釜杩囨护鐨勫悗缂€鍚嶏紝鐩存帴妫€娴?        if (!suffix.contains("|") && path.endsWith("." + suffix)) {
+        // 配置中不存在多个过滤的后缀名，直接检测
+        if (!suffix.contains("|") && path.endsWith("." + suffix)) {
             return true;
         }
+        String[] split = suffix.split("\\|");
+        for (String item : split) {
+            if (path.endsWith("." + item)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
-     * 浣跨敤 '/' 鍒嗗壊 URL 瀹炰緥鐨?path 鏁版嵁锛岄€氳繃缁勫悎绗竴灞傜骇鐩綍锛岀敓鎴愬瓧鍏稿垪琛?     *
-     * @param urlPath URL 瀹炰緥鐨?path 鏁版嵁
-     * @return 澶辫触杩斿洖绌哄垪琛?     */
+     * 使用 '/' 分割 URL 实例的 path 数据，通过组合第一层级目录，生成字典列表
+     *
+     * @param urlPath URL 实例的 path 数据
+     * @return 失败返回空列表
+     */
     private ArrayList<String> getUrlPathDict(String urlPath) {
         String direct = Config.get(Config.KEY_SCAN_LEVEL_DIRECT);
         int scanLevel = Config.getInt(Config.KEY_SCAN_LEVEL);
@@ -452,11 +633,11 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
         if (StringUtils.isEmpty(urlPath) || "/".equals(urlPath)) {
             return result;
         }
-        // 闄愬埗鏂瑰悜浠庡乏寰€鍙筹紝骞朵笖鎵弿灞傜骇涓?
+        // 限制方向从左往右，并且扫描层级为1
         if (Config.DIRECT_LEFT.equals(direct) && scanLevel <= 1) {
             return result;
         }
-        // 缁撳熬濡傛灉涓嶆槸'/'绗﹀彿锛屽幓鎺夎闂殑鏂囦欢
+        // 结尾如果不是'/'符号，去掉访问的文件
         if (!urlPath.endsWith("/")) {
             urlPath = urlPath.substring(0, urlPath.lastIndexOf("/") + 1);
         }
@@ -464,7 +645,7 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
         if (splitDirname.length == 0) {
             return result;
         }
-        // 闄愬埗鏂瑰悜浠庡彸寰€宸︼紝榛樿涓嶆壂鎻忔牴鐩綍
+        // 限制方向从右往左，默认不扫描根目录
         if (Config.DIRECT_RIGHT.equals(direct) && scanLevel < splitDirname.length) {
             result.remove("/");
         }
@@ -473,7 +654,8 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
             if (StringUtils.isNotEmpty(dirname)) {
                 sb.append(dirname).append("/");
                 int level = StringUtils.countMatches(sb.toString(), "/");
-                // 鏍规嵁涓嶅悓鏂瑰悜锛岄檺鍒剁洰褰曞眰绾?                if (Config.DIRECT_LEFT.equals(direct) && level > scanLevel) {
+                // 根据不同方向，限制目录层级
+                if (Config.DIRECT_LEFT.equals(direct) && level > scanLevel) {
                     continue;
                 } else if (Config.DIRECT_RIGHT.equals(direct)) {
                     level = splitDirname.length - level;
@@ -484,52 +666,76 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
                 result.add(sb.toString());
             }
         }
-        } else {
+        return result;
+    }
 
     /**
-     * 杩愯鎵弿浠诲姟
+     * 运行扫描任务
      *
-     * @param httpReqResp   璇锋眰鍝嶅簲瀹炰緥
-     * @param info          IRequestInfo 瀹炰緥
-     * @param pathWithQuery 璺緞+query鍙傛暟
-     * @param from          璇锋眰鏉ユ簮
+     * @param httpReqResp   请求响应实例
+     * @param info          IRequestInfo 实例
+     * @param pathWithQuery 路径+query参数
+     * @param from          请求来源
      */
-    private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from, int taskStopVersion) {
+    private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from) {
         IHttpService service = httpReqResp.getHttpService();
-        // 澶勭悊璇锋眰澶?        byte[] request = handleHeader(httpReqResp, info, pathWithQuery, from);
-        // 澶勭悊璇锋眰澶村け璐ユ椂锛屼涪寮冭浠诲姟
+        // 处理请求头
+        byte[] request = handleHeader(httpReqResp, info, pathWithQuery, from);
+        // 处理请求头失败时，丢弃该任务
         if (request == null) {
             return;
         }
         IRequestInfo newInfo = mHelpers.analyzeRequest(service, request);
         String reqId = generateReqId(newInfo, from);
-        // 濡傛灉褰撳墠 URL 宸茬粡鎵弿锛屼腑姝换鍔?        if (checkRepeatFilterByReqId(reqId)) {
+        // 如果当前 URL 已经扫描，中止任务
+        if (checkRepeatFilterByReqId(reqId)) {
             return;
         }
+        // 如果未启用“请求包处理”功能，直接对扫描的任务发起请求
+        if (!mDataBoardTab.hasPayloadProcessing()) {
+            doBurpRequest(service, reqId, request, from);
+            return;
         }
+        // 运行已经启用并且需要合并的任务
+        runEnableAndMergeTask(service, reqId, request, from);
+        // 运行已经启用并且不需要合并的任务
+        runEnabledWithoutMergeProcessingTask(service, reqId, request);
     }
 
     /**
-     * 鐢熸垚璇锋眰 ID
+     * 生成请求 ID
      *
-     * @param info IRequestInfo 瀹炰緥
-     * @param from 璇锋眰鏉ユ簮
-     * @return 澶辫触杩斿洖 "null" 瀛楃涓?     */
+     * @param info IRequestInfo 实例
+     * @param from 请求来源
+     * @return 失败返回 "null" 字符串
+     */
     private String generateReqId(IRequestInfo info, String from) {
         if (info == null || StringUtils.isEmpty(from)) {
             return "null";
         }
         String reqPath = getReqPathByRequestInfo(info);
-        // 鐢熸垚鎼哄甫瀹屾暣鐨?Host 鍦板潃璇锋眰鐨勮姹?ID 鍊?        if (UrlUtils.isHTTP(reqPath)) {
+        // 生成携带完整的 Host 地址请求的请求 ID 值
+        if (UrlUtils.isHTTP(reqPath)) {
             URL originUrl = info.getUrl();
             String originReqHost = UrlUtils.getReqHostByURL(originUrl);
             return originReqHost + "->" + reqPath;
         }
+        URL url = getUrlByRequestInfo(info);
+        String reqHost = UrlUtils.getReqHostByURL(url);
+        // 生成重定向请求的请求 ID 值
+        if (from.startsWith(FROM_REDIRECT)) {
+            return reqHost + reqPath;
+        }
+        // 默认使用 http://x.x.x.x/path/to/index.html 格式作为请求 ID 值
+        return reqHost + url.getPath();
+    }
 
     /**
-     * 鏍规嵁 Url 妫€娴嬫槸鍚﹂噸澶嶆壂鎻?     *
-     * @param reqId 璇锋眰 ID
-     * @return true=閲嶅锛沠alse=涓嶉噸澶?     */
+     * 根据 Url 检测是否重复扫描
+     *
+     * @param reqId 请求 ID
+     * @return true=重复；false=不重复
+     */
     private synchronized boolean checkRepeatFilterByReqId(String reqId) {
         if (sRepeatFilter.contains(reqId)) {
             return true;
@@ -538,93 +744,123 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
     }
 
     /**
-     * 杩愯宸茬粡鍚敤骞朵笖闇€瑕佸悎骞剁殑浠诲姟
+     * 运行已经启用并且需要合并的任务
      *
-     * @param service     璇锋眰鐩爣鏈嶅姟瀹炰緥
-     * @param reqId       璇锋眰 ID
-     * @param reqRawBytes 璇锋眰鏁版嵁鍖?     * @param from        璇锋眰鏉ユ簮
+     * @param service     请求目标服务实例
+     * @param reqId       请求 ID
+     * @param reqRawBytes 请求数据包
+     * @param from        请求来源
      */
-    private void runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from, int taskStopVersion) {
-        // 鑾峰彇宸茬粡鍚敤骞朵笖闇€瑕佸悎骞剁殑鈥滆姹傚寘澶勭悊鈥濊鍒?        List<ProcessingItem> processList = getPayloadProcess()
+    private void runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from) {
+        // 获取已经启用并且需要合并的“请求包处理”规则
+        List<ProcessingItem> processList = getPayloadProcess()
                 .stream().filter(ProcessingItem::isEnabledAndMerge)
                 .collect(Collectors.toList());
-        // 濡傛灉瑙勫垯涓虹┖锛岀洿鎺ュ彂璧疯姹?        if (processList.isEmpty()) {
-        doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
+        // 如果规则为空，直接发起请求
+        if (processList.isEmpty()) {
+            doBurpRequest(service, reqId, reqRawBytes, from);
             return;
         }
+        byte[] resultBytes = reqRawBytes;
+        for (ProcessingItem item : processList) {
+            ArrayList<PayloadItem> items = item.getItems();
+            resultBytes = handlePayloadProcess(service, resultBytes, items);
+        }
+        if (resultBytes != null) {
+            // 检测是否未进行任何处理
+            boolean equals = Arrays.equals(reqRawBytes, resultBytes);
+            // 未进行任何处理时，不变更 from 值
+            String newFrom = equals ? from : from + "（" + FROM_PROCESS + "）";
+            doBurpRequest(service, reqId, resultBytes, newFrom);
+        } else {
+            // 如果规则处理异常导致数据返回为空，则发送原来的请求
+            doBurpRequest(service, reqId, reqRawBytes, from);
+        }
+    }
 
     /**
-     * 杩愯宸茬粡鍚敤骞朵笖涓嶉渶瑕佸悎骞剁殑浠诲姟
+     * 运行已经启用并且不需要合并的任务
      *
-     * @param service     璇锋眰鐩爣鏈嶅姟瀹炰緥
-     * @param reqId       璇锋眰 ID
-     * @param reqRawBytes 璇锋眰鏁版嵁鍖?     */
-    private void runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes, int taskStopVersion) {
+     * @param service     请求目标服务实例
+     * @param reqId       请求 ID
+     * @param reqRawBytes 请求数据包
+     */
+    private void runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes) {
+        // 遍历规则列表，进行 Payload Processing 处理后，再次请求数据包
         getPayloadProcess().parallelStream().filter(ProcessingItem::isEnabledWithoutMerge)
                 .forEach((item) -> {
-                    if (isTaskStopVersionExpired(taskStopVersion)) {
-                        return;
-                    }
                     ArrayList<PayloadItem> items = item.getItems();
                     byte[] requestBytes = handlePayloadProcess(service, reqRawBytes, items);
+                    // 因为不需要合并的规则是将每条处理完成的数据包都发送请求，所以规则处理异常的请求包，不需要发送请求
                     if (requestBytes == null) {
                         return;
                     }
-                    if (Arrays.equals(reqRawBytes, requestBytes)) {
+                    // 检测是否未进行任何处理（如上所述的原因，未进行任何处理的请求包，也不需要发送请求）
+                    boolean equals = Arrays.equals(reqRawBytes, requestBytes);
+                    if (equals) {
                         return;
                     }
-                    doBurpRequest(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）", taskStopVersion);
+                    doBurpRequest(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）");
                 });
     }
 
     /**
-     * 浣跨敤 Burp 鑷甫鐨勬柟寮忚姹?     *
-     * @param service     璇锋眰鐩爣鏈嶅姟瀹炰緥
-     * @param reqId       璇锋眰 ID
-     * @param reqRawBytes 璇锋眰鏁版嵁鍖?     * @param from        璇锋眰鏉ユ簮
+     * 使用 Burp 自带的方式请求
+     *
+     * @param service     请求目标服务实例
+     * @param reqId       请求 ID
+     * @param reqRawBytes 请求数据包
+     * @param from        请求来源
      */
-    private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from, int taskStopVersion) {
-        if (isTaskThreadPoolShutdown() || isTaskStopVersionExpired(taskStopVersion)) {
+    private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from) {
+        // 线程池关闭后，不接收任何任务
+        if (isTaskThreadPoolShutdown()) {
             Logger.debug("doBurpRequest: thread pool is shutdown, intercept req id: %s", reqId);
+            // 将未执行的任务从去重过滤集合中移除
             sRepeatFilter.remove(reqId);
             return;
         }
+        // 创建任务运行实例
         TaskRunnable task = new TaskRunnable(reqId, from) {
             @Override
             public void run() {
                 String reqId = getReqId();
-                if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
-                    sRepeatFilter.remove(reqId);
-                    incrementTaskOverCounter(from);
-                    return;
-                }
+                // 低频任务不进行 QPS 限制
                 if (!isLowFrequencyTask(from) && checkQPSLimit()) {
+                    // 拦截后，将未执行的任务从去重过滤集合中移除
                     sRepeatFilter.remove(reqId);
+                    // 任务完成计数
                     incrementTaskOverCounter(from);
                     return;
                 }
                 Logger.debug("Do Send Request id: %s", reqId);
+                // 获取配置的请求重试次数
                 int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
-                IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount, taskStopVersion);
-                if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion) || newReqResp == null) {
-                    sRepeatFilter.remove(reqId);
-                    incrementTaskOverCounter(from);
-                    return;
-                }
+                // 发起请求
+                IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount);
+                // 构建展示的数据包
                 String displayFrom = isBrowserRequestResponse(newReqResp) ? appendBrowserFrom(from) : from;
                 TaskData data = buildTaskData(newReqResp, displayFrom);
                 mDataBoardTab.getTaskTable().addTaskData(data);
+                // 收集数据
                 CollectManager.collect(false, service.getHost(), newReqResp.getResponse());
-                handleFollowRedirect(data, taskStopVersion);
+                // 处理重定向
+                handleFollowRedirect(data);
+                // 任务完成计数
                 incrementTaskOverCounter(from);
             }
         };
+        // 将任务添加线程池
         try {
+            // 如果是低频任务，使用低频的任务线程池
             if (isLowFrequencyTask(from)) {
                 mLFTaskThreadPool.execute(task);
+                // 低频任务提交计数
                 mLFTaskCommitCounter.incrementAndGet();
             } else {
+                // 否则使用常规的任务线程池
                 mTaskThreadPool.execute(task);
+                // 任务提交计数
                 mTaskCommitCounter.incrementAndGet();
             }
         } catch (Exception e) {
@@ -633,69 +869,68 @@ doBurpRequest(service, reqId, reqRawBytes, from, taskStopVersion);
     }
 
     /**
-     * 浠诲姟绾跨▼姹犳槸鍚﹀叧闂?     *
-     * @return true=鏄紱false=鍚?     */
+     * 任务线程池是否关闭
+     *
+     * @return true=是；false=否
+     */
     private boolean isTaskThreadPoolShutdown() {
         return mTaskThreadPool.isShutdown() || mLFTaskThreadPool.isShutdown();
     }
 
-private int captureTaskStopVersion() {
-    return mTaskStopVersion.get();
-}
-
-private boolean isTaskStopVersionExpired(int taskStopVersion) {
-    return taskStopVersion != mTaskStopVersion.get();
-}
-
     /**
-     * 褰撳墠璇锋眰鏉ユ簮锛屾槸鍚︿负浣庨浠诲姟
+     * 当前请求来源，是否为低频任务
      *
-     * @param from 璇锋眰鏉ユ簮
-     * @return true=鏄紱false=鍚?     */
+     * @param from 请求来源
+     * @return true=是；false=否
+     */
     private boolean isLowFrequencyTask(String from) {
         if (StringUtils.isEmpty(from)) {
             return false;
         }
         return from.startsWith(FROM_PROXY) || from.startsWith(FROM_SEND) || from.startsWith(FROM_REDIRECT);
     }
-        return null;
-    }
 
     /**
-     * 澧炲姞浠诲姟瀹屾垚璁℃暟
+     * 增加任务完成计数
      *
-     * @param from 璇锋眰鏉ユ簮
+     * @param from 请求来源
      */
     private void incrementTaskOverCounter(String from) {
         if (isLowFrequencyTask(from)) {
-            // 浣庨浠诲姟瀹屾垚璁℃暟
+            // 低频任务完成计数
             mLFTaskOverCounter.incrementAndGet();
         } else {
-            // 浠诲姟瀹屾垚璁℃暟
+            // 任务完成计数
             mTaskOverCounter.incrementAndGet();
         }
     }
 
     /**
-     * 澶勭悊璺熼殢閲嶅畾鍚?     */
-    private void handleFollowRedirect(TaskData data, int taskStopVersion) {
+     * 处理跟随重定向
+     */
+    private void handleFollowRedirect(TaskData data) {
+        // 如果未启用“跟随重定向”功能，不继续执行
         if (!Config.getBoolean(Config.KEY_FOLLOW_REDIRECT)) {
             return;
         }
         int status = data.getStatus();
+        // 检测 30x 状态码
         if (status < 300 || status >= 400) {
             return;
         }
-        if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
+        // 如果线程中断，不继续往下执行
+        if (Thread.currentThread().isInterrupted()) {
             Logger.debug("handleFollowRedirect: thread pool is shutdown, intercept data id: %s", data.getId());
             return;
         }
+        // 解析响应头的 Location 值
         IHttpRequestResponse reqResp = (IHttpRequestResponse) data.getReqResp();
         IResponseInfo respInfo = mHelpers.analyzeResponse(reqResp.getResponse());
         String location = getLocationByResponseInfo(respInfo);
         if (location == null) {
             return;
         }
+        // 如果启用了 Cookie 跟随，获取响应头中的 Cookie 值
         List<String> cookies = null;
         if (Config.getBoolean(Config.KEY_REDIRECT_COOKIES_FOLLOW)) {
             cookies = getCookieByResponseInfo(respInfo);
@@ -706,6 +941,7 @@ private boolean isTaskStopVersionExpired(int taskStopVersion) {
             HttpReqRespAdapter httpReqResp;
             IRequestInfo reqInfo = mHelpers.analyzeRequest(reqResp);
             List<String> headers = reqInfo.getHeaders();
+            // 兼容完整 Host 地址
             if (UrlUtils.isHTTP(reqPath)) {
                 URL originUrl = UrlUtils.parseURL(reqPath);
                 URL redirectUrl = UrlUtils.parseRedirectTargetURL(originUrl, location);
@@ -717,63 +953,65 @@ private boolean isTaskStopVersionExpired(int taskStopVersion) {
                 IHttpService service = buildHttpServiceByURL(redirectUrl);
                 httpReqResp = HttpReqRespAdapter.from(service, UrlUtils.toPQF(redirectUrl), headers, cookies);
             }
-            if (isTaskStopVersionExpired(taskStopVersion)) {
-                return;
-            }
             doScan(httpReqResp, FROM_REDIRECT + "（" + data.getId() + "）");
-        } catch (Exception e) {
-            Logger.debug("handleFollowRedirect error: %s", e.getMessage());
+        } catch (IllegalArgumentException e) {
+            Logger.error("Follow redirect error: " + e.getMessage());
         }
     }
 
     /**
-     * 浠?IResponseInfo 瀹炰緥鑾峰彇鍝嶅簲澶?Location 鍊?     *
-     * @param info IResponseInfo 瀹炰緥
-     * @return 澶辫触杩斿洖null
+     * 从 IResponseInfo 实例获取响应头 Location 值
+     *
+     * @param info IResponseInfo 实例
+     * @return 失败返回null
      */
     private String getLocationByResponseInfo(IResponseInfo info) {
         String headerPrefix = "location: ";
         List<String> headers = info.getHeaders();
         for (int i = 1; i < headers.size(); i++) {
             String header = headers.get(i);
-            // 妫€娴嬫椂蹇界暐澶у皬鍐?            if (header.toLowerCase().startsWith(headerPrefix)) {
+            // 检测时忽略大小写
+            if (header.toLowerCase().startsWith(headerPrefix)) {
                 return header.substring(headerPrefix.length());
             }
         }
+        return null;
+    }
 
     /**
-     * 浠?IResponseInfo 瀹炰緥鑾峰彇鍝嶅簲澶?Set-Cookie 鍊硷紝骞惰浆鎹负璇锋眰澶寸殑 Cookie 鍊煎垪琛?     *
-     * @param info IResponseInfo 瀹炰緥
-     * @return 澶辫触杩斿洖绌哄垪琛?     */
+     * 从 IResponseInfo 实例获取响应头 Set-Cookie 值，并转换为请求头的 Cookie 值列表
+     *
+     * @param info IResponseInfo 实例
+     * @return 失败返回空列表
+     */
     private List<String> getCookieByResponseInfo(IResponseInfo info) {
         List<ICookie> respCookies = info.getCookies();
         List<String> cookies = new ArrayList<>();
         for (ICookie cookie : respCookies) {
             String name = cookie.getName();
             String value = cookie.getValue();
-            // 鎷兼帴鍚庯紝娣诲姞鍒板垪琛?            cookies.add(String.format("%s=%s", name, value));
+            // 拼接后，添加到列表
+            cookies.add(String.format("%s=%s", name, value));
         }
         return cookies;
     }
 
     /**
-     * 璋冪敤 BurpSuite 璇锋眰鏂瑰紡
+     * 调用 BurpSuite 请求方式
      *
-     * @param service     璇锋眰鐩爣鏈嶅姟瀹炰緥
-     * @param reqRawBytes 璇锋眰鏁版嵁鍖?     * @param retryCount  閲嶈瘯娆℃暟锛堜负0琛ㄧず涓嶉噸璇曪級
-     * @return 璇锋眰鍝嶅簲鏁版嵁
+     * @param service     请求目标服务实例
+     * @param reqRawBytes 请求数据包
+     * @param retryCount  重试次数（为0表示不重试）
+     * @return 请求响应数据
      */
-    private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount, int taskStopVersion) {
+    private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount) {
         IHttpRequestResponse reqResp;
         String reqHost = getReqHostByHttpService(service);
+        // 如果启用拦截超时主机，并检测到当前请求主机超时，直接拦截
         if (Config.getBoolean(Config.KEY_INTERCEPT_TIMEOUT_HOST) && checkTimeoutByReqHost(reqHost)) {
             return HttpReqRespAdapter.from(service, reqRawBytes);
         }
-        if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
-            Logger.debug("doMakeHttpRequest: task stop version expired, intercept task");
-            return HttpReqRespAdapter.from(service, reqRawBytes);
-        }
-        IHttpRequestResponse browserReqResp = doBrowserRequest(service, reqRawBytes, taskStopVersion);
+        IHttpRequestResponse browserReqResp = doBrowserRequest(service, reqRawBytes);
         if (browserReqResp != null) {
             return browserReqResp;
         }
@@ -787,46 +1025,47 @@ private boolean isTaskStopVersionExpired(int taskStopVersion) {
             Logger.debug("Do Request error, request host: %s", reqHost);
             reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
         }
-        if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
+        // 如果线程中断，不继续往下执行
+        if (Thread.currentThread().isInterrupted()) {
             Logger.debug("doMakeHttpRequest: thread pool is shutdown, intercept task");
             return reqResp;
         }
         Logger.debug("Check retry request host: %s, count: %d", reqHost, retryCount);
+        // 检测是否需要重试
         if (retryCount <= 0) {
+            // 超时的请求，直接添加到集合中
             sTimeoutReqHost.add(reqHost);
             return reqResp;
         }
+        // 获取配置的请求重试间隔时间
         int retryInterval = Config.getInt(Config.KEY_RETRY_INTERVAL);
         if (retryInterval > 0) {
             try {
                 Thread.sleep(retryInterval);
             } catch (InterruptedException e) {
+                // 如果线程中断，返回目前的响应结果
                 return reqResp;
             }
         }
-        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, taskStopVersion);
+        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1);
     }
 
     /**
-     * 妫€娴嬪綋鍓嶈姹備富鏈烘槸鍚﹁秴鏃?     *
-     * @param reqHost Host锛堟牸寮忥細http://x.x.x.x銆乭ttp://x.x.x.x:8080锛?     * @return true=瀛樺湪锛沠alse=涓嶅瓨鍦?     */
-    private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, int taskStopVersion) {
-        if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
-            return null;
-        }
+     * 检测当前请求主机是否超时
+     *
+     * @param reqHost Host（格式：http://x.x.x.x、http://x.x.x.x:8080）
+     * @return true=存在；false=不存在
+     */
+    private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes) {
         if (!canUseBrowserRequest(service, reqRawBytes)) {
             return null;
         }
         synchronized (mBrowserRequestLock) {
             try {
-                if (Thread.currentThread().isInterrupted() || isTaskStopVersionExpired(taskStopVersion)) {
-                    return null;
-                }
-                BrowserRequest browserRequest = buildBrowserRequest(service, reqRawBytes);
-                if (browserRequest == null) {
-                    return null;
-                }
-                Logger.debug("Do browser request: %s %s", browserRequest.getMethod(), browserRequest.getUrl());
+                IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
+                URL url = getUrlByRequestInfo(info);
+                Logger.debug("Do browser request: %s", url);
+                BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes);
                 long browserTimeout = getBrowserRequestTimeout();
                 BrowserRequestManager.BrowserResult result = mBrowserRequestManager.navigate(
                         browserRequest, Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
@@ -846,6 +1085,119 @@ private boolean isTaskStopVersionExpired(int taskStopVersion) {
                 return reqResp;
             }
         }
+    }
+
+    private boolean canUseBrowserRequest(IHttpService service, byte[] reqRawBytes) {
+        if (!Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST)) {
+            return false;
+        }
+        IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
+        String method = info.getMethod();
+        return "GET".equalsIgnoreCase(method) || "POST".equalsIgnoreCase(method);
+    }
+
+    private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes) throws MalformedURLException {
+        URL url = getUrlByRequestInfo(info);
+        if (url == null) {
+            throw new IllegalArgumentException("browser request url is empty");
+        }
+        int bodyOffset = info.getBodyOffset();
+        byte[] bodyBytes = bodyOffset >= 0 && bodyOffset < reqRawBytes.length
+                ? Arrays.copyOfRange(reqRawBytes, bodyOffset, reqRawBytes.length)
+                : EMPTY_BYTES;
+        return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes);
+    }
+
+    /**
+     * 处理请求头
+     *
+     * @param httpReqResp   Burp 的 HTTP 请求响应接口
+     * @param pathWithQuery 请求路径，或者请求路径+Query（示例：/xxx、/xxx/index?a=xxx&b=xxx）
+     * @param from          数据来源
+     * @return 处理完成的数据包，失败时返回null
+     */
+    private byte[] handleHeader(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from) {
+        // 配置的请求头
+        List<String> configHeader = getHeader();
+        // 要移除的请求头KEY列表
+        List<String> removeHeaders = getRemoveHeaders();
+        // 数据包自带的请求头
+        List<String> headers = info.getHeaders();
+        // 构建请求头
+        StringBuilder requestRaw = new StringBuilder();
+        // 根据数据来源区分两种请求头
+        if (from.equals(FROM_SCAN)) {
+            requestRaw.append("GET ").append(pathWithQuery).append(" HTTP/1.1").append("\r\n");
+        } else {
+            String reqLine = headers.get(0);
+            // 先检测一下是否包含 ' HTTP/' 字符串，再继续处理（可能有些畸形数据包不存在该内容）
+            if (reqLine.contains(" HTTP/")) {
+                int start = reqLine.lastIndexOf(" HTTP/");
+                reqLine = reqLine.substring(0, start) + " HTTP/1.1";
+            }
+            requestRaw.append(reqLine).append("\r\n");
+        }
+        // 请求头的参数处理（顺带处理移除的请求头），从 1 开始表示跳过首行（请求行）
+        for (int i = 1; i < headers.size(); i++) {
+            String item = headers.get(i);
+            String key = item.split(": ")[0];
+            // 是否需要移除当前请求头字段（优先级最高）
+            if (removeHeaders.contains(key)) {
+                continue;
+            }
+            // 如果是扫描的请求（只有 GET 请求），将 Content-Length 移除
+            if (from.equals(FROM_SCAN) && "Content-Length".equalsIgnoreCase(key)) {
+                continue;
+            }
+            // 检测配置中是否存在当前请求头字段
+            String matchItem = configHeader.stream().filter(configHeaderItem -> {
+                if (StringUtils.isNotEmpty(configHeaderItem) && configHeaderItem.contains(": ")) {
+                    String configHeaderKey = configHeaderItem.split(": ")[0];
+                    // 检测是否需要移除当前请求头字段
+                    if (removeHeaders.contains(key)) {
+                        return false;
+                    }
+                    return configHeaderKey.equals(key);
+                }
+                return false;
+            }).findFirst().orElse(null);
+            // 配置中存在匹配项，替换为配置中的数据
+            if (matchItem != null) {
+                requestRaw.append(matchItem).append("\r\n");
+                // 将已经添加的数据从列表中移除
+                configHeader.remove(matchItem);
+            } else {
+                // 不存在匹配项，填充原数据
+                requestRaw.append(item).append("\r\n");
+            }
+        }
+        // 将配置里剩下的值全部填充到请求头中
+        for (String item : configHeader) {
+            String key = item.split(": ")[0];
+            // 检测是否需要移除当前KEY
+            if (!removeHeaders.contains(key)) {
+                requestRaw.append(item).append("\r\n");
+            }
+        }
+        requestRaw.append("\r\n");
+        // 如果当前数据来源不是 Scan，可能会包含 POST 请求，判断是否存在 body 数据
+        if (!from.equals(FROM_SCAN)) {
+            byte[] httpRequest = httpReqResp.getRequest();
+            int bodyOffset = info.getBodyOffset();
+            int bodySize = httpRequest.length - bodyOffset;
+            if (bodySize > 0) {
+                requestRaw.append(new String(httpRequest, bodyOffset, bodySize));
+            }
+        }
+        // 请求头构建完成后，对里面包含的动态变量进行赋值
+        IHttpService service = httpReqResp.getHttpService();
+        URL url = getUrlByRequestInfo(info);
+        String newRequestRaw = setupVariable(service, url, requestRaw.toString());
+        if (newRequestRaw == null) {
+            return null;
+        }
+        // 更新 Content-Length
+        return updateContentLength(mHelpers.stringToBytes(newRequestRaw));
     }
 
     private boolean handleBrowserProxyResponse(IHttpRequestResponse httpReqResp) {
@@ -1172,139 +1524,9 @@ private boolean isTaskStopVersionExpired(int taskStopVersion) {
         return sTimeoutReqHost.contains(reqHost);
     }
 
-        private boolean canUseBrowserRequest(IHttpService service, byte[] reqRawBytes) {
-        if (!Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST)) {
-            return false;
-        }
-        IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
-        String method = info.getMethod();
-        if (!"GET".equalsIgnoreCase(method) && !"POST".equalsIgnoreCase(method)) {
-            return false;
-        }
-        URL url = getUrlByRequestInfo(info);
-        return url != null && matchesBrowserRequestTarget(url.getHost());
-    } else {
-            String reqLine = headers.get(0);
-// 鍏堟娴嬩竴涓嬫槸鍚﹀寘鍚?' HTTP/' 瀛楃涓诧紝鍐嶇户缁鐞嗭紙鍙兘鏈変簺鐣稿舰鏁版嵁鍖呬笉瀛樺湪璇ュ唴瀹癸級
-            if (reqLine.contains(" HTTP/")) {
-                int start = reqLine.lastIndexOf(" HTTP/");
-                reqLine = reqLine.substring(0, start) + " HTTP/1.1";
-            }
-            requestRaw.append(reqLine).append("\r\n");
-        }
-                // 璇锋眰澶寸殑鍙傛暟澶勭悊锛堥『甯﹀鐞嗙Щ闄ょ殑璇锋眰澶达級锛屼粠 1 寮€濮嬭〃绀鸿烦杩囬琛岋紙璇锋眰琛岋級
-        for (int i = 1; i < headers.size(); i++) {
-            String item = headers.get(i);
-            String key = item.split(": ")[0];
-// 鏄惁闇€瑕佺Щ闄ゅ綋鍓嶈姹傚ご瀛楁锛堜紭鍏堢骇鏈€楂橈級
-            if (removeHeaders.contains(key)) {
-                continue;
-            }
-        // 濡傛灉鏄壂鎻忕殑璇锋眰锛堝彧鏈?GET 璇锋眰锛夛紝灏?Content-Length 绉婚櫎
-            if (from.equals(FROM_SCAN) && "Content-Length".equalsIgnoreCase(key)) {
-                continue;
-            }
-        // 妫€娴嬮厤缃腑鏄惁瀛樺湪褰撳墠璇锋眰澶村瓧娈?            String matchItem = configHeader.stream().filter(configHeaderItem -> {
-                if (StringUtils.isNotEmpty(configHeaderItem) && configHeaderItem.contains(": ")) {
-                    String configHeaderKey = configHeaderItem.split(": ")[0];
-// 妫€娴嬫槸鍚﹂渶瑕佺Щ闄ゅ綋鍓嶈姹傚ご瀛楁
-                    if (removeHeaders.contains(key)) {
-                        return false;
-                    }
-                    return configHeaderKey.equals(key);
-                }
-                return false;
-            }).findFirst().orElse(null);
-// 閰嶇疆涓瓨鍦ㄥ尮閰嶉」锛屾浛鎹负閰嶇疆涓殑鏁版嵁
-            if (matchItem != null) {
-                requestRaw.append(matchItem).append("\r\n");
-// 灏嗗凡缁忔坊鍔犵殑鏁版嵁浠庡垪琛ㄤ腑绉婚櫎
-                configHeader.remove(matchItem);
-            } else {
-                    // 涓嶅瓨鍦ㄥ尮閰嶉」锛屽～鍏呭師鏁版嵁
-                requestRaw.append(item).append("\r\n");
-            }
-        }
-                    // 灏嗛厤缃噷鍓╀笅鐨勫€煎叏閮ㄥ～鍏呭埌璇锋眰澶翠腑
-        for (String item : configHeader) {
-            String key = item.split(": ")[0];
-// 妫€娴嬫槸鍚﹂渶瑕佺Щ闄ゅ綋鍓岾EY
-            if (!removeHeaders.contains(key)) {
-                requestRaw.append(item).append("\r\n");
-            }
-        }
-        requestRaw.append("\r\n");
-// 濡傛灉褰撳墠鏁版嵁鏉ユ簮涓嶆槸 Scan锛屽彲鑳戒細鍖呭惈 POST 璇锋眰锛屽垽鏂槸鍚﹀瓨鍦?body 鏁版嵁
-        if (!from.equals(FROM_SCAN)) {
-            byte[] httpRequest = httpReqResp.getRequest();
-            int bodyOffset = info.getBodyOffset();
-            int bodySize = httpRequest.length - bodyOffset;
-            if (bodySize > 0) {
-                requestRaw.append(new String(httpRequest, bodyOffset, bodySize));
-            }
-        }
-
-private BrowserRequest buildBrowserRequest(IHttpService service, byte[] reqRawBytes) {
-    IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
-    URL url = getUrlByRequestInfo(info);
-    if (url == null) {
-        return null;
-    }
-    List<String> infoHeaders = info.getHeaders();
-    List<String> headers = new ArrayList<String>();
-    for (int i = 1; i < infoHeaders.size(); i++) {
-        headers.add(infoHeaders.get(i));
-    }
-    int bodyOffset = info.getBodyOffset();
-    byte[] body = new byte[0];
-    if (reqRawBytes != null && bodyOffset >= 0 && bodyOffset < reqRawBytes.length) {
-        body = Arrays.copyOfRange(reqRawBytes, bodyOffset, reqRawBytes.length);
-    }
-    return BrowserRequest.of(info.getMethod(), url.toString(), headers, body);
-}
-        String newRequestRaw = setupVariable(service, url, requestRaw.toString());
-        if (newRequestRaw == null) {
-            return null;
-        }
-        // 鏇存柊 Content-Length
-        return updateContentLength(mHelpers.stringToBytes(newRequestRaw));
-    }
-
-private boolean matchesBrowserRequestTarget(String host) {
-    String regex = Config.get(Config.KEY_BROWSER_TARGET_HOST_REGEX);
-    if (StringUtils.isEmpty(regex)) {
-        return true;
-    }
-    if (StringUtils.isEmpty(host)) {
-        return false;
-    }
-    try {
-        return Pattern.compile(regex).matcher(host).find();
-    } catch (PatternSyntaxException e) {
-        Logger.debug("Browser target regex invalid: %s", e.getMessage());
-            return false;
-        }
-    }
-
-/**
-     * 澶勭悊璇锋眰澶?     *
-     * @param httpReqResp   Burp 鐨?HTTP 璇锋眰鍝嶅簲鎺ュ彛
-     * @param pathWithQuery 璇锋眰璺緞锛屾垨鑰呰姹傝矾寰?Query锛堢ず渚嬶細/xxx銆?xxx/index?a=xxx&b=xxx锛?     * @param from          鏁版嵁鏉ユ簮
-     * @return 澶勭悊瀹屾垚鐨勬暟鎹寘锛屽け璐ユ椂杩斿洖null
-     */
-    private byte[] handleHeader(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from) {
-        // 閰嶇疆鐨勮姹傚ご
-        List<String> configHeader = getHeader();
-        // 瑕佺Щ闄ょ殑璇锋眰澶碖EY鍒楄〃
-        List<String> removeHeaders = getRemoveHeaders();
-        // 鏁版嵁鍖呰嚜甯︾殑璇锋眰澶?        List<String> headers = info.getHeaders();
-        // 鏋勫缓璇锋眰澶?        StringBuilder requestRaw = new StringBuilder();
-        // 鏍规嵁鏁版嵁鏉ユ簮鍖哄垎涓ょ璇锋眰澶?        if (from.equals(FROM_SCAN)) {
-            requestRaw.append("GET ").append(pathWithQuery).append(" HTTP/1.1").append("\r\n");
-        }
-
     /**
-     * 鑾峰彇璇锋眰澶撮厤缃?     */
+     * 获取请求头配置
+     */
     private List<String> getHeader() {
         if (!mDataBoardTab.hasReplaceHeader()) {
             return new ArrayList<>();
@@ -1313,7 +1535,8 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鑾峰彇绉婚櫎璇锋眰澶村垪琛ㄩ厤缃?     */
+     * 获取移除请求头列表配置
+     */
     private List<String> getRemoveHeaders() {
         if (!mDataBoardTab.hasRemoveHeader()) {
             return new ArrayList<>();
@@ -1322,7 +1545,7 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鑾峰彇閰嶇疆鐨?Payload Processing 瑙勫垯
+     * 获取配置的 Payload Processing 规则
      */
     private List<ProcessingItem> getPayloadProcess() {
         ArrayList<ProcessingItem> list = Config.getPayloadProcessList();
@@ -1331,10 +1554,85 @@ private boolean matchesBrowserRequestTarget(String host) {
         }
         return list.stream().filter(ProcessingItem::isEnabled).collect(Collectors.toList());
     }
-// 濉厖闅忔満鍊肩浉鍏冲姩鎬佸彉閲?            requestRaw = fillVariable(requestRaw, "random.ip", randomIP);
+
+    /**
+     * 检测 QPS 限制
+     *
+     * @return true=拦截；false=不拦截
+     */
+    private boolean checkQPSLimit() {
+        if (mQpsLimit != null) {
+            try {
+                mQpsLimit.limit();
+            } catch (InterruptedException e) {
+                // 线程强制停止时，拦截请求
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 给数据包填充动态变量
+     *
+     * @param service    请求目标实例
+     * @param url        请求 URL 实例
+     * @param requestRaw 请求数据包字符串
+     * @return 处理失败返回null
+     */
+    private String setupVariable(IHttpService service, URL url, String requestRaw) {
+        String protocol = service.getProtocol();
+        String host = service.getHost() + ":" + service.getPort();
+        if (service.getPort() == 80 || service.getPort() == 443) {
+            host = service.getHost();
+        }
+        String domain = service.getHost();
+        String timestamp = String.valueOf(DateUtils.getTimestamp());
+        String randomIP = IPUtils.randomIPv4();
+        String randomLocalIP = IPUtils.randomIPv4ForLocal();
+        String randomUA = Utils.getRandomItem(WordlistManager.getUserAgent());
+        String domainMain = DomainHelper.getDomain(domain, null);
+        String domainName = DomainHelper.getDomainName(domain, null);
+        String subdomain = getSubdomain(domain);
+        String subdomains = getSubdomains(domain);
+        String webroot = getWebrootByURL(url);
+        // 替换变量
+        try {
+            requestRaw = fillVariable(requestRaw, "protocol", protocol);
+            requestRaw = fillVariable(requestRaw, "host", host);
+            requestRaw = fillVariable(requestRaw, "webroot", webroot);
+            // 需要填充再取值
+            if (requestRaw.contains("{{ip}}")) {
+                String ip = findIpByHost(domain);
+                requestRaw = fillVariable(requestRaw, "ip", ip);
+            }
+            // 填充域名相关动态变量
+            requestRaw = fillVariable(requestRaw, "domain", domain);
+            requestRaw = fillVariable(requestRaw, "domain.main", domainMain);
+            requestRaw = fillVariable(requestRaw, "domain.name", domainName);
+            // 填充子域名相关动态变量
+            requestRaw = fillVariable(requestRaw, "subdomain", subdomain);
+            requestRaw = fillVariable(requestRaw, "subdomains", subdomains);
+            if (requestRaw.contains("{{subdomains.")) {
+                if (StringUtils.isEmpty(subdomains)) {
+                    return null;
+                }
+                String[] subdomainsSplit = subdomains.split("\\.");
+                // 遍历填充 {{subdomains.%d}} 动态变量
+                for (int i = 0; i < subdomainsSplit.length; i++) {
+                    requestRaw = fillVariable(requestRaw, "subdomains." + i, subdomainsSplit[i]);
+                }
+                // 检测是否存在未填充的 {{subdomains.%d}} 动态变量，如果存在，忽略当前 Payload
+                if (requestRaw.contains("{{subdomains.")) {
+                    return null;
+                }
+            }
+            // 填充随机值相关动态变量
+            requestRaw = fillVariable(requestRaw, "random.ip", randomIP);
             requestRaw = fillVariable(requestRaw, "random.local-ip", randomLocalIP);
             requestRaw = fillVariable(requestRaw, "random.ua", randomUA);
-// 濉厖鏃ユ湡銆佹椂闂寸浉鍏崇殑鍔ㄦ€佸彉閲?            requestRaw = fillVariable(requestRaw, "timestamp", timestamp);
+            // 填充日期、时间相关的动态变量
+            requestRaw = fillVariable(requestRaw, "timestamp", timestamp);
             if (requestRaw.contains("{{date.") || requestRaw.contains("{{time.")) {
                 String currentDate = DateUtils.getCurrentDate("yyyy-MM-dd HH:mm:ss;yy-M-d H:m:s");
                 String[] split = currentDate.split(";");
@@ -1361,77 +1659,12 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 妫€娴?QPS 闄愬埗
+     * 填充动态变量
      *
-     * @return true=鎷︽埅锛沠alse=涓嶆嫤鎴?     */
-    private boolean checkQPSLimit() {
-        if (mQpsLimit != null) {
-            try {
-                mQpsLimit.limit();
-            } catch (InterruptedException e) {
-                // 绾跨▼寮哄埗鍋滄鏃讹紝鎷︽埅璇锋眰
-                return true;
-            }
-        }
-        return false;
-    }
-        return src.replace(key, value);
-    }
-
-    /**
-     * 缁欐暟鎹寘濉厖鍔ㄦ€佸彉閲?     *
-     * @param service    璇锋眰鐩爣瀹炰緥
-     * @param url        璇锋眰 URL 瀹炰緥
-     * @param requestRaw 璇锋眰鏁版嵁鍖呭瓧绗︿覆
-     * @return 澶勭悊澶辫触杩斿洖null
-     */
-    private String setupVariable(IHttpService service, URL url, String requestRaw) {
-        String protocol = service.getProtocol();
-        String host = service.getHost() + ":" + service.getPort();
-        if (service.getPort() == 80 || service.getPort() == 443) {
-            host = service.getHost();
-        }
-        String domain = service.getHost();
-        String timestamp = String.valueOf(DateUtils.getTimestamp());
-        String randomIP = IPUtils.randomIPv4();
-        String randomLocalIP = IPUtils.randomIPv4ForLocal();
-        String randomUA = Utils.getRandomItem(WordlistManager.getUserAgent());
-        String domainMain = DomainHelper.getDomain(domain, null);
-        String domainName = DomainHelper.getDomainName(domain, null);
-        String subdomain = getSubdomain(domain);
-        String subdomains = getSubdomains(domain);
-        String webroot = getWebrootByURL(url);
-        // 鏇挎崲鍙橀噺
-        try {
-            requestRaw = fillVariable(requestRaw, "protocol", protocol);
-            requestRaw = fillVariable(requestRaw, "host", host);
-            requestRaw = fillVariable(requestRaw, "webroot", webroot);
-            // 闇€瑕佸～鍏呭啀鍙栧€?            if (requestRaw.contains("{{ip}}")) {
-                String ip = findIpByHost(domain);
-                requestRaw = fillVariable(requestRaw, "ip", ip);
-            }
-        // 濉厖鍩熷悕鐩稿叧鍔ㄦ€佸彉閲?            requestRaw = fillVariable(requestRaw, "domain", domain);
-            requestRaw = fillVariable(requestRaw, "domain.main", domainMain);
-            requestRaw = fillVariable(requestRaw, "domain.name", domainName);
-        // 濉厖瀛愬煙鍚嶇浉鍏冲姩鎬佸彉閲?            requestRaw = fillVariable(requestRaw, "subdomain", subdomain);
-            requestRaw = fillVariable(requestRaw, "subdomains", subdomains);
-            if (requestRaw.contains("{{subdomains.")) {
-                if (StringUtils.isEmpty(subdomains)) {
-                    return null;
-                }
-                String[] subdomainsSplit = subdomains.split("\\.");
-                // 閬嶅巻濉厖 {{subdomains.%d}} 鍔ㄦ€佸彉閲?                for (int i = 0; i < subdomainsSplit.length; i++) {
-                    requestRaw = fillVariable(requestRaw, "subdomains." + i, subdomainsSplit[i]);
-                }
-        // 妫€娴嬫槸鍚﹀瓨鍦ㄦ湭濉厖鐨?{{subdomains.%d}} 鍔ㄦ€佸彉閲忥紝濡傛灉瀛樺湪锛屽拷鐣ュ綋鍓?Payload
-                if (requestRaw.contains("{{subdomains.")) {
-                    return null;
-                }
-            }
-
-    /**
-     * 濉厖鍔ㄦ€佸彉閲?     *
-     * @param src   鏁版嵁婧?     * @param name  鍙橀噺鍚?     * @param value 闇€瑕佸～鍏呯殑鍙橀噺鍊?     * @throws IllegalArgumentException 褰撳～鍏呯殑鍙橀噺鍊间负绌烘椂锛屾姏鍑鸿寮傚父
+     * @param src   数据源
+     * @param name  变量名
+     * @param value 需要填充的变量值
+     * @throws IllegalArgumentException 当填充的变量值为空时，抛出该异常
      */
     private String fillVariable(String src, String name, String value) throws IllegalArgumentException {
         if (StringUtils.isEmpty(src)) {
@@ -1441,23 +1674,29 @@ private boolean matchesBrowserRequestTarget(String host) {
         if (!src.contains(key)) {
             return src;
         }
-        // 鍊间负绌烘椂锛岃繑鍥瀗ull鍊间涪寮冨綋鍓嶈姹?        if (StringUtils.isEmpty(value)) {
+        // 值为空时，返回null值丢弃当前请求
+        if (StringUtils.isEmpty(value)) {
             throw new IllegalArgumentException(key + " fill failed, value is empty.");
         }
+        return src.replace(key, value);
+    }
 
     /**
-     * 瑙ｆ瀽鏃ユ湡鏃堕棿锛屽皢姣忎釜瀛楁鐨勬暟鎹瓨鍏ユ暟缁?     *
-     * @param dateTime 鏃ユ湡鏃堕棿瀛楃涓诧紙鏍煎紡锛歽yyy-MM-dd HH:mm:ss 鎴栬€?yy-M-d H:m:s锛?     * @return [0]=骞达紱[1]=鏈堬紱[2]=鏃ワ紱[3]=鏃讹紱[4]=鍒嗭紱[5]=绉?     */
+     * 解析日期时间，将每个字段的数据存入数组
+     *
+     * @param dateTime 日期时间字符串（格式：yyyy-MM-dd HH:mm:ss 或者 yy-M-d H:m:s）
+     * @return [0]=年；[1]=月；[2]=日；[3]=时；[4]=分；[5]=秒
+     */
     private String[] parseDateTime(String dateTime) {
         String[] result = new String[6];
         String[] split = dateTime.split(" ");
-        // 鏃ユ湡
+        // 日期
         String date = split[0];
         String[] dateSplit = date.split("-");
         result[0] = dateSplit[0];
         result[1] = dateSplit[1];
         result[2] = dateSplit[2];
-        // 鏃堕棿
+        // 时间
         String time = split[1];
         String[] timeSplit = time.split(":");
         result[3] = timeSplit[0];
@@ -1467,8 +1706,10 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鑾峰彇瀛愬煙鍚?     *
-     * @param domain 鍩熷悕锛堟牸寮忕ず渚嬶細www.xxx.com锛?     * @return 鏍煎紡锛歸ww锛涘鏋滄病鏈夊瓙鍩熷悕锛屾垨鑰呰幏鍙栧け璐ワ紝杩斿洖null
+     * 获取子域名
+     *
+     * @param domain 域名（格式示例：www.xxx.com）
+     * @return 格式：www；如果没有子域名，或者获取失败，返回null
      */
     private String getSubdomain(String domain) {
         String subdomains = getSubdomains(domain);
@@ -1482,8 +1723,10 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鑾峰彇瀹屾暣瀛愬煙鍚?     *
-     * @param domain 鍩熷悕锛堟牸寮忕ず渚嬶細api.xxx.com銆乤pi.admin.xxx.com锛?     * @return 鏍煎紡锛歛pi銆乤pi.admin锛涘鏋滄病鏈夊瓙鍩熷悕锛屾垨鑰呰幏鍙栧け璐ワ紝杩斿洖null
+     * 获取完整子域名
+     *
+     * @param domain 域名（格式示例：api.xxx.com、api.admin.xxx.com）
+     * @return 格式：api、api.admin；如果没有子域名，或者获取失败，返回null
      */
     private String getSubdomains(String domain) {
         if (IPUtils.hasIPv4(domain)) {
@@ -1504,32 +1747,36 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 浠嶶RL瀹炰緥涓幏鍙朩eb鏍圭洰褰曞悕锛堜緥濡傦細"http://xxx.com/abc/a.php" => "abc"锛?     *
-     * @param url URL瀹炰緥
-     * @return 澶辫触杩斿洖null
+     * 从URL实例中获取Web根目录名（例如："http://xxx.com/abc/a.php" => "abc"）
+     *
+     * @param url URL实例
+     * @return 失败返回null
      */
     private String getWebrootByURL(URL url) {
         if (url == null) {
             return null;
         }
         String path = url.getPath();
-        // 娌℃湁鏍圭洰褰曞悕锛岀洿鎺ヨ繑鍥瀗ull
+        // 没有根目录名，直接返回null
         if (StringUtils.isEmpty(path) || "/".equals(path)) {
             return null;
         }
-        // 鎵剧浜屼釜'/'鏂滄潬
+        // 找第二个'/'斜杠
         int end = path.indexOf("/", 1);
         if (end < 0) {
             return null;
         }
-        // 鎵惧埌涔嬪悗锛屽彇涓棿鐨勫€?        return path.substring(1, end);
+        // 找到之后，取中间的值
+        return path.substring(1, end);
     }
 
     /**
-     * 鏍规嵁 Payload Process 瑙勫垯锛屽鐞嗘暟鎹寘
+     * 根据 Payload Process 规则，处理数据包
      *
-     * @param service      璇锋眰鐩爣鏈嶅姟
-     * @param requestBytes 璇锋眰鏁版嵁鍖?     * @return 澶勭悊鍚庣殑鏁版嵁鍖?     */
+     * @param service      请求目标服务
+     * @param requestBytes 请求数据包
+     * @return 处理后的数据包
+     */
     private byte[] handlePayloadProcess(IHttpService service, byte[] requestBytes, List<PayloadItem> list) {
         if (requestBytes == null || requestBytes.length == 0 || list == null || list.isEmpty()) {
             return null;
@@ -1542,22 +1789,22 @@ private boolean matchesBrowserRequestTarget(String host) {
         String body = bodySize <= 0 ? "" : new String(requestBytes, bodyOffset, bodySize);
         String request = mHelpers.bytesToString(requestBytes);
         for (PayloadItem item : list) {
-            // 鍙皟鐢ㄥ惎鐢ㄧ殑瑙勫垯
+            // 只调用启用的规则
             PayloadRule rule = item.getRule();
             try {
                 switch (item.getScope()) {
                     case PayloadRule.SCOPE_URL:
                         String newUrl = rule.handleProcess(url);
-                        // 鎴彇璇锋眰澶寸涓€琛岋紝鐢ㄤ簬瀹氫綅瑕佸鐞嗙殑浣嶇疆
+                        // 截取请求头第一行，用于定位要处理的位置
                         String reqLine = header.substring(0, header.indexOf("\r\n"));
                         Matcher matcher = Constants.REGEX_REQ_LINE_URL.matcher(reqLine);
                         if (matcher.find()) {
                             int start = matcher.start(1);
                             int end = matcher.end(1);
-                            // 鍒嗛殧瑕佹彃鍏ユ暟鎹殑浣嶇疆
+                            // 分隔要插入数据的位置
                             String left = header.substring(0, start);
                             String right = header.substring(end);
-                            // 鎷兼帴澶勭悊濂界殑鏁版嵁
+                            // 拼接处理好的数据
                             header = left + newUrl + right;
                             request = header + "\r\n\r\n" + body;
                         }
@@ -1582,18 +1829,22 @@ private boolean matchesBrowserRequestTarget(String host) {
                 return null;
             }
         }
-        // 鍔ㄦ€佸彉閲忚祴鍊?        URL u = getUrlByRequestInfo(info);
+        // 动态变量赋值
+        URL u = getUrlByRequestInfo(info);
         String newRequest = setupVariable(service, u, request);
         if (newRequest == null) {
             return null;
         }
-        // 鏇存柊 Content-Length
+        // 更新 Content-Length
         return updateContentLength(mHelpers.stringToBytes(newRequest));
     }
 
     /**
-     * 鏇存柊 Content-Length 鍙傛暟鍊?     *
-     * @param rawBytes 璇锋眰鏁版嵁鍖?     * @return 鏇存柊鍚庣殑鏁版嵁鍖?     */
+     * 更新 Content-Length 参数值
+     *
+     * @param rawBytes 请求数据包
+     * @return 更新后的数据包
+     */
     private byte[] updateContentLength(byte[] rawBytes) {
         String temp = new String(rawBytes, StandardCharsets.US_ASCII);
         int bodyOffset = temp.indexOf("\r\n\r\n");
@@ -1619,6 +1870,39 @@ private boolean matchesBrowserRequestTarget(String host) {
         String result = header + "\r\n\r\n" + body;
         return result.getBytes(StandardCharsets.UTF_8);
     }
+
+    /**
+     * 构建Item数据
+     *
+     * @param httpReqResp Burp的请求响应对象
+     * @return 列表Item数据
+     */
+    private TaskData buildTaskData(IHttpRequestResponse httpReqResp, String from) {
+        IRequestInfo info = mHelpers.analyzeRequest(httpReqResp);
+        byte[] respBytes = httpReqResp.getResponse();
+        // 获取所需要的参数
+        String method = info.getMethod();
+        IHttpService service = httpReqResp.getHttpService();
+        String reqHost = getReqHostByHttpService(service);
+        String reqUrl = getReqPathByRequestInfo(info);
+        String title = HtmlUtils.findTitleByHtmlBody(respBytes);
+        String ip = findIpByHost(service.getHost());
+        int status = -1;
+        int length = -1;
+        // 存在响应对象，获取状态和响应包大小
+        if (respBytes != null && respBytes.length > 0) {
+            IResponseInfo response = mHelpers.analyzeResponse(respBytes);
+            status = response.getStatusCode();
+            // 处理响应 body 的长度
+            length = respBytes.length - response.getBodyOffset();
+            if (length < 0) {
+                length = 0;
+            }
+        }
+        // 检测指纹数据
+        List<FpData> checkResult = FpManager.check(httpReqResp.getRequest(), httpReqResp.getResponse());
+        // 构建表格对象
+        TaskData data = new TaskData();
         data.setFrom(from);
         data.setMethod(method);
         data.setHost(reqHost);
@@ -1633,35 +1917,10 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鏋勫缓Item鏁版嵁
+     * 通过 IHttpService 实例，获取请求的 Host 地址（http://x.x.x.x、http://x.x.x.x:8080）
      *
-     * @param httpReqResp Burp鐨勮姹傚搷搴斿璞?     * @return 鍒楄〃Item鏁版嵁
-     */
-    private TaskData buildTaskData(IHttpRequestResponse httpReqResp, String from) {
-        IRequestInfo info = mHelpers.analyzeRequest(httpReqResp);
-        byte[] respBytes = httpReqResp.getResponse();
-        // 鑾峰彇鎵€闇€瑕佺殑鍙傛暟
-        String method = info.getMethod();
-        IHttpService service = httpReqResp.getHttpService();
-        String reqHost = getReqHostByHttpService(service);
-        String reqUrl = getReqPathByRequestInfo(info);
-        String title = HtmlUtils.findTitleByHtmlBody(respBytes);
-        String ip = findIpByHost(service.getHost());
-        int status = -1;
-        int length = -1;
-        // 瀛樺湪鍝嶅簲瀵硅薄锛岃幏鍙栫姸鎬佸拰鍝嶅簲鍖呭ぇ灏?        if (respBytes != null && respBytes.length > 0) {
-            IResponseInfo response = mHelpers.analyzeResponse(respBytes);
-            status = response.getStatusCode();
-        // 澶勭悊鍝嶅簲 body 鐨勯暱搴?            length = respBytes.length - response.getBodyOffset();
-            if (length < 0) {
-                length = 0;
-            }
-        }
-
-    /**
-     * 閫氳繃 IHttpService 瀹炰緥锛岃幏鍙栬姹傜殑 Host 鍦板潃锛坔ttp://x.x.x.x銆乭ttp://x.x.x.x:8080锛?     *
-     * @param service IHttpService 瀹炰緥
-     * @return 杩斿洖璇锋眰鐨?Host 鍦板潃
+     * @param service IHttpService 实例
+     * @return 返回请求的 Host 地址
      */
     private String getReqHostByHttpService(IHttpService service) {
         String protocol = service.getProtocol();
@@ -1674,9 +1933,10 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鏍规嵁 Host 鏌ヨ IP 鍦板潃
+     * 根据 Host 查询 IP 地址
      *
-     * @param host Host 鍊?     * @return 澶辫触杩斿洖绌哄瓧绗︿覆
+     * @param host Host 值
+     * @return 失败返回空字符串
      */
     private String findIpByHost(String host) {
         if (IPUtils.hasIPv4(host)) {
@@ -1691,19 +1951,21 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 鑾峰彇 IRequestInfo 瀹炰緥鐨勮姹?URL 瀹炰緥
+     * 获取 IRequestInfo 实例的请求 URL 实例
      *
-     * @param info IRequestInfo 瀹炰緥
-     * @return 杩斿洖璇锋眰鐨?URL 瀹炰緥
+     * @param info IRequestInfo 实例
+     * @return 返回请求的 URL 实例
      */
     private URL getUrlByRequestInfo(IRequestInfo info) {
         URL url = info.getUrl();
         try {
-            // 鍒嗕袱绉嶆儏鍐碉紝涓€绉嶆槸瀹屾暣 Host 鍦板潃锛岃繕鏈変竴绉嶆槸鏅€氳姹傝矾寰?            String reqPath = getReqPathByRequestInfo(info);
+            // 分两种情况，一种是完整 Host 地址，还有一种是普通请求路径
+            String reqPath = getReqPathByRequestInfo(info);
             if (UrlUtils.isHTTP(reqPath)) {
                 return new URL(reqPath);
             }
-            // 鏅€氳姹傝矾寰勫洜涓?IRequestInfo.getUrl 鏂规硶鏈夋椂鍊欒幏鍙栫殑鍊间笉鍑嗙‘锛岄噸鏂拌В鏋愪竴涓?            String reqHost = UrlUtils.getReqHostByURL(url);
+            // 普通请求路径因为 IRequestInfo.getUrl 方法有时候获取的值不准确，重新解析一下
+            String reqHost = UrlUtils.getReqHostByURL(url);
             return new URL(reqHost + reqPath);
         } catch (Exception e) {
             Logger.error("getUrlByRequestInfo: convert url error: %s", e.getMessage());
@@ -1713,17 +1975,62 @@ private boolean matchesBrowserRequestTarget(String host) {
 
     @Override
     public void onChangeSelection(TaskData data) {
-        // 濡傛灉 data 涓虹┖锛岃〃绀烘墽琛屼簡娓呯┖鍘嗗彶璁板綍鎿嶄綔
+        // 如果 data 为空，表示执行了清空历史记录操作
         if (data == null) {
             onClearHistory();
             return;
         }
         mCurrentReqResp = (IHttpRequestResponse) data.getReqResp();
-        // 鍔犺浇璇锋眰銆佸搷搴旀暟鎹寘
+        // 加载请求、响应数据包
         byte[] hintBytes = mHelpers.stringToBytes(L.get("message_editor_loading"));
         mRequestTextEditor.setMessage(hintBytes, true);
         mResponseTextEditor.setMessage(hintBytes, false);
         mRefreshMsgTask.execute(this::refreshReqRespMessage);
+    }
+
+    /**
+     * 清空历史记录
+     */
+    private void onClearHistory() {
+        mCurrentReqResp = null;
+        // 清空去重过滤集合
+        sRepeatFilter.clear();
+        // 清空超时的请求主机集合
+        sTimeoutReqHost.clear();
+        cancelBrowserRequestDriver();
+        clearBrowserRequestTasks();
+        // 清空显示的请求、响应数据包
+        mRequestTextEditor.setMessage(EMPTY_BYTES, true);
+        mResponseTextEditor.setMessage(EMPTY_BYTES, false);
+        // 清除指纹识别历史记录
+        FpManager.clearHistory();
+        closeBrowserRequestDriverAsync();
+    }
+
+    /**
+     * 刷新请求响应信息
+     */
+    private void refreshReqRespMessage() {
+        byte[] request = getRequest();
+        byte[] response = getResponse();
+        if (request == null || request.length == 0) {
+            request = EMPTY_BYTES;
+        }
+        if (response == null || response.length == 0) {
+            response = EMPTY_BYTES;
+        }
+        // 检测是否超过配置的显示长度限制
+        int maxLength = Config.getInt(Config.KEY_MAX_DISPLAY_LENGTH);
+        if (maxLength >= 100000 && request.length >= maxLength) {
+            String hint = L.get("message_editor_request_length_limit_hint");
+            request = mHelpers.stringToBytes(hint);
+        }
+        if (maxLength >= 100000 && response.length >= maxLength) {
+            String hint = L.get("message_editor_response_length_limit_hint");
+            response = mHelpers.stringToBytes(hint);
+        }
+        mRequestTextEditor.setMessage(request, true);
+        mResponseTextEditor.setMessage(response, false);
     }
 
     @Override
@@ -1751,56 +2058,51 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 娓呯┖鍘嗗彶璁板綍
-     */
-    private void onClearHistory() {
-        mCurrentReqResp = null;
-        // 娓呯┖鍘婚噸杩囨护闆嗗悎
-        sRepeatFilter.clear();
-        // 娓呯┖瓒呮椂鐨勮姹備富鏈洪泦鍚?        sTimeoutReqHost.clear();
-        cancelBrowserRequestDriver();
-        clearBrowserRequestTasks();
-        // 娓呯┖鏄剧ず鐨勮姹傘€佸搷搴旀暟鎹寘
-        mRequestTextEditor.setMessage(EMPTY_BYTES, true);
-        mResponseTextEditor.setMessage(EMPTY_BYTES, false);
-        // 娓呴櫎鎸囩汗璇嗗埆鍘嗗彶璁板綍
-        FpManager.clearHistory();
-        closeBrowserRequestDriverAsync();
-    }
-
-    /**
-     * 鍒锋柊璇锋眰鍝嶅簲淇℃伅
-     */
-    private void refreshReqRespMessage() {
-        byte[] request = getRequest();
-        byte[] response = getResponse();
-        if (request == null || request.length == 0) {
-            request = EMPTY_BYTES;
-        }
-        if (response == null || response.length == 0) {
-            response = EMPTY_BYTES;
-        }
-        // 妫€娴嬫槸鍚﹁秴杩囬厤缃殑鏄剧ず闀垮害闄愬埗
-        int maxLength = Config.getInt(Config.KEY_MAX_DISPLAY_LENGTH);
-        if (maxLength >= 100000 && request.length >= maxLength) {
-            String hint = L.get("message_editor_request_length_limit_hint");
-            request = mHelpers.stringToBytes(hint);
-        }
-        if (maxLength >= 100000 && response.length >= maxLength) {
-            String hint = L.get("message_editor_response_length_limit_hint");
-            response = mHelpers.stringToBytes(hint);
-        }
-        mRequestTextEditor.setMessage(request, true);
-        mResponseTextEditor.setMessage(response, false);
-    }
-
-    /**
-     * 淇敼 QPS 闄愬埗
+     * 修改 QPS 限制
      *
-     * @param limit QPS 闄愬埗鍊硷紙鏁板瓧锛?     */
+     * @param limit QPS 限制值（数字）
+     */
     private void changeQpsLimit(String limit) {
         initQpsLimiter();
         Logger.debug("Event: change qps limit: %s", limit);
+    }
+
+    /**
+     * 修改请求延迟
+     *
+     * @param delay 延迟的值（数字）
+     */
+    private void changeRequestDelay(String delay) {
+        initQpsLimiter();
+        Logger.debug("Event: change request delay: %s", delay);
+    }
+
+    /**
+     * 导入 URL
+     *
+     * @param list URL 列表
+     */
+    private void importUrl(List<?> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        // 处理导入的 URL 数据
+        new Thread(() -> {
+            for (Object item : list) {
+                try {
+                    String url = String.valueOf(item);
+                    IHttpRequestResponse httpReqResp = HttpReqRespAdapter.from(url);
+                    doScan(httpReqResp, FROM_IMPORT);
+                } catch (IllegalArgumentException e) {
+                    Logger.error("Import error: " + e.getMessage());
+                }
+                // 线程池关闭后，停止导入 Url 数据
+                if (isTaskThreadPoolShutdown()) {
+                    Logger.debug("importUrl: thread pool is shutdown, stop import url");
+                    return;
+                }
+            }
+        }).start();
     }
 
     @Override
@@ -1880,47 +2182,10 @@ private boolean matchesBrowserRequestTarget(String host) {
     }
 
     /**
-     * 淇敼璇锋眰寤惰繜
-     *
-     * @param delay 寤惰繜鐨勫€硷紙鏁板瓧锛?     */
-    private void changeRequestDelay(String delay) {
-        initQpsLimiter();
-        Logger.debug("Event: change request delay: %s", delay);
-    }
-
-    /**
-     * 瀵煎叆 URL
-     *
-     * @param list URL 鍒楄〃
+     * 停止扫描中的所有任务
      */
-    private void importUrl(List<?> list) {
-        if (list == null || list.isEmpty()) {
-            return;
-        }
-        // 澶勭悊瀵煎叆鐨?URL 鏁版嵁
-        new Thread(() -> {
-            for (Object item : list) {
-                try {
-                    String url = String.valueOf(item);
-                    IHttpRequestResponse httpReqResp = HttpReqRespAdapter.from(url);
-                    doScan(httpReqResp, FROM_IMPORT);
-                } catch (IllegalArgumentException e) {
-                    Logger.error("Import error: " + e.getMessage());
-                }
-                // 绾跨▼姹犲叧闂悗锛屽仠姝㈠鍏?Url 鏁版嵁
-                if (isTaskThreadPoolShutdown() || isTaskStopVersionExpired(taskStopVersion)) {
-                    Logger.debug("importUrl: thread pool is shutdown, stop import url");
-                    return;
-                }
-            }
-        }).start();
-    }
-
-    /**
-     * 鍋滄鎵弿涓殑鎵€鏈変换鍔?     */
     private void stopAllTask() {
-        mTaskStopVersion.incrementAndGet();
-        // 鍏抽棴绾跨▼姹狅紝澶勭悊鏈墽琛岀殑浠诲姟
+        // 关闭线程池，处理未执行的任务
         List<Runnable> taskList = mTaskThreadPool.shutdownNow();
         List<Runnable> lfTaskList = mLFTaskThreadPool.shutdownNow();
         cancelBrowserRequestDriver();
@@ -1929,19 +2194,21 @@ private boolean matchesBrowserRequestTarget(String host) {
         clearBrowserRequestTasks();
         sRepeatFilter.clear();
         sTimeoutReqHost.clear();
-        // 鎻愮ず淇℃伅
+        // 提示信息
         UIHelper.showTipsDialog(L.get("stop_task_tips"));
-        // 鍋滄鍚庯紝閲嶆柊鍒濆鍖栦换鍔＄嚎绋嬫睜
+        // 停止后，重新初始化任务线程池
         mTaskThreadPool = Executors.newFixedThreadPool(TASK_THREAD_COUNT);
-        // 鍋滄鍚庯紝閲嶆柊鍒濆鍖栦綆棰戜换鍔＄嚎绋嬫睜
+        // 停止后，重新初始化低频任务线程池
         mLFTaskThreadPool = Executors.newFixedThreadPool(LF_TASK_THREAD_COUNT);
-        // 閲嶆柊鍒濆鍖?QPS 闄愬埗鍣?        initQpsLimiter();
+        // 重新初始化 QPS 限制器
+        initQpsLimiter();
         closeBrowserRequestDriverAsync();
     }
 
     /**
-     * 澶勭悊鍋滄鐨勪换鍔″垪琛?     *
-     * @param list 浠诲姟鍒楄〃
+     * 处理停止的任务列表
+     *
+     * @param list 任务列表
      */
     private void handleStopTasks(List<Runnable> list) {
         if (list == null || list.isEmpty()) {
@@ -1952,48 +2219,67 @@ private boolean matchesBrowserRequestTarget(String host) {
                 TaskRunnable task = (TaskRunnable) run;
                 String reqId = task.getReqId();
                 String from = task.getFrom();
-                // 灏嗘湭鎵ц鐨勪换鍔′粠鍘婚噸杩囨护闆嗗悎涓Щ闄?                sRepeatFilter.remove(reqId);
-                // 灏嗘湭鎵ц鐨勪换鍔¤鏁?                if (isLowFrequencyTask(from)) {
+                // 将未执行的任务从去重过滤集合中移除
+                sRepeatFilter.remove(reqId);
+                // 将未执行的任务计数
+                if (isLowFrequencyTask(from)) {
                     mLFTaskOverCounter.incrementAndGet();
                 } else {
                     mTaskOverCounter.incrementAndGet();
                 }
             }
         }
+    }
+
+    @Override
+    public IMessageEditorTab createNewInstance(IMessageEditorController iMessageEditorController, boolean editable) {
+        return new OneScanInfoTab(mCallbacks, iMessageEditorController);
+    }
 
     @Override
     public void extensionUnloaded() {
-        // 绉婚櫎浠ｇ悊鐩戝惉鍣?        mCallbacks.removeProxyListener(this);
-        // 绉婚櫎鎻掍欢鍗歌浇鐩戝惉鍣?        mCallbacks.removeExtensionStateListener(this);
-        // 绉婚櫎淇℃伅杈呭姪闈㈡澘
+        // 移除代理监听器
+        mCallbacks.removeProxyListener(this);
+        // 移除插件卸载监听器
+        mCallbacks.removeExtensionStateListener(this);
+        // 移除信息辅助面板
         mCallbacks.removeMessageEditorTabFactory(this);
-        // 绉婚櫎娉ㄥ唽鐨勮彍鍗?        mCallbacks.removeContextMenuFactory(this);
-        // 鍋滄鐘舵€佹爮鍒锋柊瀹氭椂鍣?        mStatusRefresh.stop();
-        // 鍏抽棴浠诲姟绾跨▼姹?        int count = mTaskThreadPool.shutdownNow().size();
+        // 移除注册的菜单
+        mCallbacks.removeContextMenuFactory(this);
+        // 停止状态栏刷新定时器
+        mStatusRefresh.stop();
+        // 关闭任务线程池
+        int count = mTaskThreadPool.shutdownNow().size();
         Logger.info("Close: task thread pool completed. Task %d records.", count);
-        // 鍏抽棴浣庨浠诲姟绾跨▼姹?        count = mLFTaskThreadPool.shutdownNow().size();
+        // 关闭低频任务线程池
+        count = mLFTaskThreadPool.shutdownNow().size();
         Logger.info("Close: low frequency task thread pool completed. Task %d records.", count);
-        // 鍏抽棴鎸囩汗璇嗗埆绾跨▼姹?        count = mFpThreadPool.shutdownNow().size();
+        // 关闭指纹识别线程池
+        count = mFpThreadPool.shutdownNow().size();
         Logger.info("Close: fingerprint recognition thread pool completed. Task %d records.", count);
-        // 鍏抽棴鏁版嵁鏀堕泦绾跨▼姹?        count = CollectManager.closeThreadPool();
+        // 关闭数据收集线程池
+        count = CollectManager.closeThreadPool();
         Logger.info("Close: data collection thread pool completed. Task %d records.", count);
-        // 娓呴櫎鏁版嵁鏀堕泦鐨勫幓閲嶈繃婊ら泦鍚?        count = CollectManager.getRepeatFilterCount();
+        // 清除数据收集的去重过滤集合
+        count = CollectManager.getRepeatFilterCount();
         CollectManager.clearRepeatFilter();
         Logger.info("Clear: data collection repeat filter list completed. Total %d records.", count);
-        // 娓呴櫎鎸囩汗璇嗗埆缂撳瓨
+        // 清除指纹识别缓存
         count = FpManager.getCacheCount();
         FpManager.clearCache();
         Logger.info("Clear: fingerprint recognition cache completed. Total %d records.", count);
-        // 娓呴櫎鎸囩汗璇嗗埆鍘嗗彶璁板綍
+        // 清除指纹识别历史记录
         count = FpManager.getHistoryCount();
         FpManager.clearHistory();
         Logger.info("Clear: fingerprint recognition history completed. Total %d records.", count);
-        // 娓呴櫎鎸囩汗瀛楁淇敼鐩戝惉鍣?        FpManager.clearsFpColumnModifyListeners();
-        // 娓呴櫎鍘婚噸杩囨护闆嗗悎
+        // 清除指纹字段修改监听器
+        FpManager.clearsFpColumnModifyListeners();
+        // 清除去重过滤集合
         count = sRepeatFilter.size();
         sRepeatFilter.clear();
         Logger.info("Clear: repeat filter list completed. Total %d records.", count);
-        // 娓呴櫎瓒呮椂鐨勮姹備富鏈洪泦鍚?        count = sTimeoutReqHost.size();
+        // 清除超时的请求主机集合
+        count = sTimeoutReqHost.size();
         sTimeoutReqHost.clear();
         Logger.info("Clear: timeout request host list completed. Total %d records.", count);
         count = clearBrowserRequestTasks();
@@ -2002,7 +2288,7 @@ private boolean matchesBrowserRequestTarget(String host) {
         closeBrowserRequestDriver();
         mBrowserRequestManager.cleanupSessionWorkspace(Config.getWorkDir());
         mBrowserCloseExecutor.shutdownNow();
-        // 娓呴櫎浠诲姟鍒楄〃
+        // 清除任务列表
         count = 0;
         if (mDataBoardTab != null) {
             TaskTable taskTable = mDataBoardTab.getTaskTable();
@@ -2010,130 +2296,21 @@ private boolean matchesBrowserRequestTarget(String host) {
                 count = taskTable.getTaskCount();
                 taskTable.clearAll();
             }
-            // 鍏抽棴瀵煎叆 URL 绐楀彛
+            // 关闭导入 URL 窗口
             mDataBoardTab.closeImportUrlWindow();
         }
         Logger.info("Clear: task list completed. Total %d records.", count);
-        // 鍏抽棴鎸囩汗鐩稿叧绐楀彛
+        // 关闭指纹相关窗口
         if (mOneScan != null && mOneScan.getFingerprintTab() != null) {
             FingerprintTab tab = mOneScan.getFingerprintTab();
-            // 鎸囩汗娴嬭瘯绐楀彛
+            // 指纹测试窗口
             tab.closeFpTestWindow();
-            // 鎸囩汗瀛楁绠＄悊绐楀彛
+            // 指纹字段管理窗口
             tab.closeFpColumnManagerWindow();
         }
-        // 鍗歌浇瀹屾垚
+        // 卸载完成
         Logger.info(Constants.UNLOAD_BANNER);
     }
-    }
-
-    @Override
-    public IMessageEditorTab createNewInstance(IMessageEditorController iMessageEditorController, boolean editable) {
-        return new OneScanInfoTab(mCallbacks, iMessageEditorController);
-    }
-
-/**
- * 鎻掍欢鍏ュ彛
- * <p>
- * Created by vaycore on 2022-08-07.
- */
-public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
-        TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
-        IExtensionStateListener, IContextMenuFactory {
-
-    /**
-     * 浠诲姟绾跨▼鏁伴噺
-     */
-    private static final int TASK_THREAD_COUNT = 50;
-
-    /**
-     * 浣庨浠诲姟绾跨▼鏁伴噺
-     */
-    private static final int LF_TASK_THREAD_COUNT = 25;
-
-    /**
-     * 鎸囩汗璇嗗埆绾跨▼鏁伴噺
-     */
-    private static final int FP_THREAD_COUNT = 10;
-
-    /**
-     * 绌哄瓧鑺傛暟缁勫父閲忥紙闃叉棰戠箒鍒涘缓锛?     */
-    private static final byte[] EMPTY_BYTES = new byte[0];
-
-    /**
-     * 璇锋眰鏉ユ簮锛氫唬鐞?     */
-    private static final String FROM_PROXY = "Proxy";
-
-    /**
-     * 莽鈥欌€∶┾€濃€姑撀懊┾偓拧猫驴鈥∶β德徝喢モ劉篓氓聫鈥樏德?     */
-    private static final String FROM_BROWSER = "Browser";
-
-    /**
-     * 忙碌聫猫搂藛氓鈩⒙访β扁€毭€懊ヂ锯€γ垛€γ︹€斅睹︹€斅睹┾€斅疵妓喢βр€櫭尖€?     */
-
-    /**
-     * 忙碌聫猫搂藛氓鈩⒙访β扁€毭趁ヂ∶€懊ヂ锯€γ︹€斅睹┾€斅疵妓喢βр€櫭尖€?     */
-    private static final long BROWSER_REQUEST_SETTLE_TIME = 1500L;
-    private static final long BROWSER_TRAFFIC_SUPPRESS_TTL = 5000L;
-    private static final long BROWSER_PROXY_CACHE_TTL = 30000L;
-
-    /**
-     * 璇锋眰鏉ユ簮锛氬彂閫佸埌 OneScan 鎵弿
-     */
-    private static final String FROM_SEND = "Send";
-
-    /**
-     * 璇锋眰鏉ユ簮锛歅ayload Processing
-     */
-    private static final String FROM_PROCESS = "Process";
-
-    /**
-     * 璇锋眰鏉ユ簮锛氬鍏?     */
-    private static final String FROM_IMPORT = "Import";
-
-    /**
-     * 璇锋眰鏉ユ簮锛氭壂鎻?     */
-    private static final String FROM_SCAN = "Scan";
-
-    /**
-     * 璇锋眰鏉ユ簮锛氶噸瀹氬悜
-     */
-    private static final String FROM_REDIRECT = "Redirect";
-
-    /**
-     * 鍘婚噸杩囨护闆嗗悎
-     */
-    private final Set<String> sRepeatFilter = ConcurrentHashMap.newKeySet(500000);
-
-    /**
-     * 瓒呮椂鐨勮姹備富鏈洪泦鍚?     */
-    private final Set<String> sTimeoutReqHost = ConcurrentHashMap.newKeySet();
-    private final ConcurrentHashMap<String, BrowserRequestTask> mBrowserRequestTasks = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> mBrowserExpectedRequests = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, BrowserResponseCacheEntry> mBrowserResponseCache = new ConcurrentHashMap<>();
-    private final Object mBrowserRequestLock = new Object();
-    private final BrowserRequestManager mBrowserRequestManager = new BrowserRequestManager();
-    private final ExecutorService mBrowserCloseExecutor = Executors.newSingleThreadExecutor();
-
-    private IBurpExtenderCallbacks mCallbacks;
-    private IExtensionHelpers mHelpers;
-    private OneScan mOneScan;
-    private DataBoardTab mDataBoardTab;
-    private IMessageEditor mRequestTextEditor;
-    private IMessageEditor mResponseTextEditor;
-    private ExecutorService mTaskThreadPool;
-    private ExecutorService mLFTaskThreadPool;
-    private ExecutorService mFpThreadPool;
-    private ExecutorService mRefreshMsgTask;
-    private IHttpRequestResponse mCurrentReqResp;
-    private QpsLimiter mQpsLimit;
-    private final AtomicInteger mTaskOverCounter = new AtomicInteger(0);
-    private final AtomicInteger mTaskCommitCounter = new AtomicInteger(0);
-    private final AtomicInteger mLFTaskOverCounter = new AtomicInteger(0);
-    private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
-    private final AtomicInteger mTaskStopVersion = new AtomicInteger(0);
-    private volatile BrowserTrafficScope mBrowserTrafficScope;
-    private Timer mStatusRefresh;
 
     private static class BrowserRequestTask {
         private final IHttpService service;
@@ -2191,6 +2368,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             this.expireAt = System.currentTimeMillis() + ttlMillis;
         }
 
+        private static String buildPortSuffix(URL url) {
+            int port = url.getPort();
+            if (port < 0 || port == url.getDefaultPort()) {
+                return "";
+            }
+            return ":" + port;
+        }
+
         private boolean isExpired() {
             return System.currentTimeMillis() > expireAt;
         }
@@ -2210,14 +2395,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         private boolean isSameHost(URL url) {
             return url != null && targetHost.equalsIgnoreCase(url.getHost());
         }
-
-        private static String buildPortSuffix(URL url) {
-            int port = url.getPort();
-            if (port < 0 || port == url.getDefaultPort()) {
-                return "";
-            }
-            return ":" + port;
-        }
     }
 
     private static class BrowserResponseCacheEntry {
@@ -2233,86 +2410,4 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return System.currentTimeMillis() > expireAt;
         }
     }
-
-    @Override
-    public void registerExtenderCallbacks(IBurpExtenderCallbacks callbacks) {
-        initData(callbacks);
-        initView();
-        initEvent();
-        Logger.debug("register Extender ok! Log: %b", Constants.DEBUG);
-    }
-
-    private void initData(IBurpExtenderCallbacks callbacks) {
-        this.mCallbacks = callbacks;
-        this.mHelpers = callbacks.getHelpers();
-        this.mTaskThreadPool = Executors.newFixedThreadPool(TASK_THREAD_COUNT);
-        this.mLFTaskThreadPool = Executors.newFixedThreadPool(LF_TASK_THREAD_COUNT);
-        this.mFpThreadPool = Executors.newFixedThreadPool(FP_THREAD_COUNT);
-        this.mRefreshMsgTask = Executors.newSingleThreadExecutor();
-        this.mCallbacks.setExtensionName(Constants.PLUGIN_NAME + " v" + Constants.PLUGIN_VERSION);
-        // 鍒濆鍖栨棩蹇楁墦鍗?        Logger.init(Constants.DEBUG, mCallbacks.getStdout(), mCallbacks.getStderr());
-        // 鍒濆鍖栭粯璁ら厤缃?        Config.init(getWorkDir());
-        // 鍒濆鍖栧煙鍚嶈緟鍔╃被
-        DomainHelper.init("public_suffix_list.json");
-        // 鍒濆鍖朡PS闄愬埗鍣?        initQpsLimiter();
-        // 娉ㄥ唽 OneScan 淇℃伅杈呭姪闈㈡澘
-        this.mCallbacks.registerMessageEditorTabFactory(this);
-        // 娉ㄥ唽鎻掍欢鍗歌浇鐩戝惉鍣?        this.mCallbacks.registerExtensionStateListener(this);
-    }
-
-    /**
-     * 鑾峰彇宸ヤ綔鐩綍璺緞锛堜紭鍏堣幏鍙栧綋鍓嶆彃浠?jar 鍖呮墍鍦ㄧ洰褰曢厤缃枃浠讹紝濡傛灉閰嶇疆涓嶅瓨鍦紝鍒欎娇鐢ㄩ粯璁ゅ伐浣滅洰褰曪級
-     */
-    private String getWorkDir() {
-        String workDir = Paths.get(mCallbacks.getExtensionFilename())
-                .getParent().toString() + File.separator + "OneScan" + File.separator;
-        if (FileUtils.isDir(workDir)) {
-            return workDir;
-        }
-        return null;
-    }
-
-    /**
-     * 鍒濆鍖?QPS 闄愬埗鍣?     */
-    private void initQpsLimiter() {
-        // 妫€娴嬭寖鍥达紝濡傛灉涓嶇鍚堟潯浠讹紝涓嶅垱寤洪檺鍒跺櫒
-        int limit = Config.getInt(Config.KEY_QPS_LIMIT);
-        int delay = Config.getInt(Config.KEY_REQUEST_DELAY);
-        if (limit > 0 && limit <= 9999) {
-            this.mQpsLimit = new QpsLimiter(limit, delay);
-        }
-    }
-
-    private void initView() {
-        mOneScan = new OneScan();
-        mDataBoardTab = mOneScan.getDataBoardTab();
-        // 娉ㄥ唽浜嬩欢
-        mDataBoardTab.setOnTabEventListener(this);
-        mOneScan.getConfigPanel().setOnTabEventListener(this);
-        // 灏嗛〉闈㈡坊鍔犲埌 BurpSuite
-        mCallbacks.addSuiteTab(this);
-        // 鍒涘缓璇锋眰鍜屽搷搴旀帶浠?        mRequestTextEditor = mCallbacks.createMessageEditor(this, false);
-        mResponseTextEditor = mCallbacks.createMessageEditor(this, false);
-        mDataBoardTab.init(mRequestTextEditor.getComponent(), mResponseTextEditor.getComponent());
-        mDataBoardTab.getTaskTable().setOnTaskTableEventListener(this);
-    }
-
-    private void initEvent() {
-        // 鐩戝惉浠ｇ悊鐨勫寘
-        mCallbacks.registerProxyListener(this);
-        // 娉ㄥ唽鑿滃崟
-        mCallbacks.registerContextMenuFactory(this);
-        // 鐘舵€佹爮鍒锋柊瀹氭椂鍣?        mStatusRefresh = new Timer(1000, e -> {
-            if (mDataBoardTab == null) {
-                return;
-            }
-            mDataBoardTab.refreshTaskStatus(mTaskOverCounter.get(), mTaskCommitCounter.get());
-            mDataBoardTab.refreshLFTaskStatus(mLFTaskOverCounter.get(), mLFTaskCommitCounter.get());
-            mDataBoardTab.refreshTaskHistoryStatus();
-            mDataBoardTab.refreshFpCacheStatus();
-        });
-        mStatusRefresh.start();
-    }
 }
-
-

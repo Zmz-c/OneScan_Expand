@@ -136,7 +136,7 @@ mvn clean package
 Default output:
 
 ```text
-extender/target/OneScan_Dev-v1.0.jar
+extender/target/OneScan_Dev-v1.1.0.jar
 ```
 
 ---

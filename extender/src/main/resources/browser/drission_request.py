@@ -1542,6 +1542,40 @@ def looks_like_hidden_form_intermediate_html(body_text):
     return (hidden_style or has_hidden_input or has_generic_input or has_textarea) and len(visible_text) <= 120
 
 
+def looks_like_hidden_iframe_intermediate_html(body_text):
+    html = body_text or ""
+    lowered = html.lower()
+    if not lowered or len(lowered) > POST_CHALLENGE_BODY_LIMIT:
+        return False
+    if "<iframe" not in lowered:
+        return False
+
+    hidden_iframe = re.search(
+        r"<iframe\b[^>]*(?:src\s*=\s*['\"]about:blank['\"]|display\s*:\s*none|visibility\s*:\s*hidden|width\s*:\s*0px|height\s*:\s*0px|left\s*:\s*-9999px)",
+        lowered,
+        re.IGNORECASE,
+    ) is not None
+    if not hidden_iframe:
+        return False
+
+    hidden_container = re.search(
+        r"<(?:div|section|span)\b[^>]*style\s*=\s*['\"][^'\"]*(?:visibility\s*:\s*hidden|display\s*:\s*none|pointer-events\s*:\s*none|top\s*:\s*-9999px|left\s*:\s*-9999px|width\s*:\s*1px|height\s*:\s*1px)[^'\"]*['\"]",
+        lowered,
+        re.IGNORECASE,
+    ) is not None
+
+    visible_text = re.sub(r"<script\b.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    visible_text = re.sub(r"<style\b.*?</style>", " ", visible_text, flags=re.IGNORECASE | re.DOTALL)
+    visible_text = re.sub(r"<[^>]+>", " ", visible_text)
+    visible_text = re.sub(r"\s+", " ", visible_text).strip()
+
+    return len(visible_text) <= 80 and (hidden_container or lowered.count("<iframe") <= 2)
+
+
+def looks_like_hidden_intermediate_html(body_text):
+    return looks_like_hidden_form_intermediate_html(body_text) or looks_like_hidden_iframe_intermediate_html(body_text)
+
+
 def is_post_challenge_result(result):
     if not result:
         return False
@@ -1558,7 +1592,7 @@ def is_post_challenge_result(result):
         return False
     if len(body_text) > POST_CHALLENGE_BODY_LIMIT:
         return False
-    if looks_like_hidden_form_intermediate_html(body_text):
+    if looks_like_hidden_intermediate_html(body_text):
         return True
     if looks_like_challenge_document(body_text):
         return True
@@ -1595,7 +1629,7 @@ def build_current_html_result(tab, request, body_text, allow_challenge=False, re
     lowered = body_text.lower()
     if not allow_challenge and page_looks_like_challenge(tab, body_text):
         return None
-    if looks_like_hidden_form_intermediate_html(body_text):
+    if looks_like_hidden_intermediate_html(body_text):
         return None
     if hidden_form_intermediate_snapshot(tab, request).get("auto"):
         return None
@@ -2143,7 +2177,7 @@ def submit_hidden_form_intermediate(tab, request):
 
 def current_page_result(tab, request):
     body_text = capture_page_html(tab, 0.35)
-    if looks_like_hidden_form_intermediate_html(body_text):
+    if looks_like_hidden_intermediate_html(body_text):
         return None
     return build_current_html_result(tab, request, body_text, min_body_len=256)
 
@@ -2273,7 +2307,7 @@ def observed_page_result(tab, request, body_text, min_body_len=48,
         return None
     if reject_provisional and is_provisional_browser_document(body_text, snapshot):
         return None
-    if reject_hidden_form and looks_like_hidden_form_intermediate_html(body_text):
+    if reject_hidden_form and looks_like_hidden_intermediate_html(body_text):
         return None
     if reject_hidden_form and hidden_form_intermediate_snapshot(tab, request).get("auto"):
         return None
@@ -2317,7 +2351,7 @@ def navigated_page_result(tab, request, body_text):
     error_result = browser_error_result(tab, request, body_text)
     if error_result is not None:
         return error_result
-    if looks_like_hidden_form_intermediate_html(body_text):
+    if looks_like_hidden_intermediate_html(body_text):
         return None
 
     snapshot = page_render_snapshot(tab)

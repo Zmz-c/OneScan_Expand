@@ -10,7 +10,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>extender</artifactId>
-    <version>1.0</version>
+    <version>1.1</version>
 
     <properties>
         <plugin.name>OneScan_Dev</plugin.name>
@@ -20,6 +20,8 @@
         <dependency>
             <groupId>net.portswigger.burp.extender</groupId>
             <artifactId>burp-extender-api</artifactId>
+            <version>${burp-extender-api.version}</version>
+            <classifier>compile</classifier>
         </dependency>
         <dependency>
             <groupId>net.portswigger.burp.extensions</groupId>
