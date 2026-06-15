@@ -10,8 +10,8 @@ import java.util.regex.Pattern;
 public interface Constants {
 
     // 插件信息
-    String PLUGIN_NAME = "OneScan_Expand";
-    String PLUGIN_VERSION = "1.1.6";
+    String PLUGIN_NAME = "OST";
+    String PLUGIN_VERSION = "1.1.7";
     boolean DEBUG = false;
 
     // 插件启动显示的信息
@@ -22,7 +22,7 @@ public interface Constants {
             "  Developer: vaycore\n" +
             "  Developer: Rural.Dog\n" +
             "  Developer:人间小福星\n"+
-            "  Github: https://github.com/Zmz-c/OneScan_Expand\n" +
+            "  Project:    OST\n" +
             "  Note:调整UI，优化性能速度，解决大数据下的性能问题\n" +
             "#############################################\n";
 

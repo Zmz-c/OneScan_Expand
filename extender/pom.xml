@@ -4,16 +4,16 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <parent>
         <groupId>burp.vaycore</groupId>
-        <artifactId>onescan</artifactId>
+        <artifactId>ost</artifactId>
         <version>parent</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>extender</artifactId>
-    <version>1.1.6</version>
+    <version>1.1.7</version>
 
     <properties>
-        <plugin.name>OneScan_Dev</plugin.name>
+        <plugin.name>OST</plugin.name>
     </properties>
 
     <dependencies>

@@ -17,6 +17,7 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
 
     private OnTabEventListener mOnTabEventListener;
     private HostTab mHostTab;
+    private OtherTab mOtherTab;
 
     public ConfigPanel() {
         initView();
@@ -32,7 +33,8 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
         mHostTab = new HostTab();
         addConfigTab(mHostTab);
         addConfigTab(new RedirectTab());
-        addConfigTab(new OtherTab());
+        mOtherTab = new OtherTab();
+        addConfigTab(mOtherTab);
     }
 
     /**
@@ -41,6 +43,12 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
     public void refreshHostTab() {
         if (mHostTab != null) {
             mHostTab.reInitView();
+        }
+    }
+
+    public void refreshMcpServerInfo(boolean running, String endpoint) {
+        if (mOtherTab != null) {
+            mOtherTab.refreshMcpServerInfo(running, endpoint);
         }
     }
 

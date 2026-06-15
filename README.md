@@ -1,6 +1,8 @@
-# OneScan_Expand
+# OST
 
-OneScan_Expand is a Burp Suite extension project based on **OneScan**.
+OST is a Burp Suite extension project based on **OneScan**, with browser-assisted request replay, local data
+persistence,
+and an optional MCP interface for AI-assisted security workflows.
 
 This branch has been updated for modern Burp builds and now targets **Java 21**.
 It is no longer compatible with **JDK 8**.
@@ -54,6 +56,90 @@ It is no longer compatible with **JDK 8**.
 - Manual Python path configuration
 - Manual browser binary path configuration
 - Browser request timeout configuration
+
+### MCP / AI Integration
+
+- Localhost MCP-style JSON-RPC endpoint
+- Tool discovery for OST capabilities
+- Runtime status, task search, task detail, fingerprint, collect, wordlist, history, and CSV export tools
+- Active scan submission through OST URL and raw-request workflows
+- Summary-first task responses; raw request/response bodies are opt-in with `include_body`
+- In `auto` request mode, suspected interception / verification pages can fall back to browser requests when browser
+  request support is enabled
+
+MCP is disabled by default. Enable it in `Config` -> `Other` -> `MCP server`. After it starts, the same panel shows:
+
+- Current status
+- Actual MCP endpoint
+- Health-check URL
+
+Default endpoint after MCP is enabled:
+
+```text
+http://127.0.0.1:8765/mcp
+```
+
+If the port is occupied, OST tries the next ports up to `8785`. Use the endpoint shown in the config panel as the source
+of truth.
+
+Health check:
+
+```text
+http://127.0.0.1:8765/health
+```
+
+MCP server name:
+
+```text
+ost-burp-mcp
+```
+
+Example JSON-RPC request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "ost.status.get",
+    "arguments": {}
+  }
+}
+```
+
+Useful first tools:
+
+```text
+ost.capabilities.list
+ost.status.get
+ost.tasks.list
+ost.tasks.search
+ost.fingerprint.check
+ost.collect.node.get
+ost.wordlists.list
+ost.wordlist.select
+ost.wordlist.create
+ost.wordlist.append
+ost.wordlist.put
+ost.wordlist.import_file
+ost.wordlist.delete
+ost.scan.urls
+ost.scan.request
+```
+
+Legacy `onescan.*` tool names are still accepted as aliases for compatibility.
+
+### MCP Tool Groups
+
+- `ost.status.*`: read runtime status and configuration
+- `ost.scan.*`: submit URL or raw HTTP request scan tasks
+- `ost.tasks.*`: list, search, and read scan results
+- `ost.fingerprint.*`: run or inspect fingerprint rules
+- `ost.collect.*`: read collected response data
+- `ost.wordlist.*`: read, select, create, update, import, and delete wordlists
+- `ost.history.*`: list persisted history labels
+- `ost.export.*`: export persisted data to CSV
 
 ---
 
@@ -116,7 +202,7 @@ python3 -m pip install DrissionPage
 ## Repository Structure
 
 ```text
-OneScan_TX/
+OST/
 |- burp-extender-api/
 |- montoya-api/
 |- extender/
@@ -146,7 +232,7 @@ On Windows:
 Default output:
 
 ```text
-extender/target/OneScan_Dev-v1.1.5.jar
+extender/target/OST-v1.1.7.jar
 ```
 
 ---

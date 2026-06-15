@@ -6,6 +6,7 @@ import burp.vaycore.common.helper.UIHelper;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
 import burp.vaycore.onescan.OneScan;
+import burp.vaycore.onescan.bean.CollectNode;
 import burp.vaycore.onescan.bean.FpData;
 import burp.vaycore.onescan.bean.TaskData;
 import burp.vaycore.onescan.browser.BrowserRequest;
@@ -16,6 +17,9 @@ import burp.vaycore.onescan.manager.CollectManager;
 import burp.vaycore.onescan.manager.FpManager;
 import burp.vaycore.onescan.manager.TaskPersistenceManager;
 import burp.vaycore.onescan.manager.WordlistManager;
+import burp.vaycore.onescan.mcp.OneScanMcpServer;
+import burp.vaycore.onescan.mcp.OneScanMcpTool;
+import burp.vaycore.onescan.mcp.OneScanMcpToolProvider;
 import burp.vaycore.onescan.ui.tab.DataBoardTab;
 import burp.vaycore.onescan.ui.tab.FingerprintTab;
 import burp.vaycore.onescan.ui.tab.config.OtherTab;
@@ -52,7 +56,7 @@ import java.util.stream.Collectors;
  */
 public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
         TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
-        IExtensionStateListener, IContextMenuFactory {
+        IExtensionStateListener, IContextMenuFactory, OneScanMcpToolProvider {
 
     /**
      * 任务线程数量
@@ -142,6 +146,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final Object mRequestPauseLock = new Object();
     private final EnumSet<RequestMode> mPausedRequestModes = EnumSet.noneOf(RequestMode.class);
     private final BrowserRequestManager mBrowserRequestManager = new BrowserRequestManager();
+    private final ConcurrentHashMap<String, BrowserFallbackStats> mBrowserFallbackStats = new ConcurrentHashMap<>();
     private final ExecutorService mBrowserCloseExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger mTaskOverCounter = new AtomicInteger(0);
     private final AtomicInteger mTaskCommitCounter = new AtomicInteger(0);
@@ -164,6 +169,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private QpsLimiter mQpsLimit;
     private volatile BrowserTrafficScope mBrowserTrafficScope;
     private Timer mStatusRefresh;
+    private OneScanMcpServer mMcpServer;
 
     /**
      * 检测 Host 是否匹配规则
@@ -252,6 +258,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         initData(callbacks);
         initView();
         initEvent();
+        refreshMcpServer();
         Logger.debug("register Extender ok! Log: %b", Constants.DEBUG);
     }
 
@@ -380,6 +387,50 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         });
         mStatusRefresh.start();
         mDataBoardTab.refreshAutoSaveTimer();
+    }
+
+    private void initMcpServer() {
+        if (mMcpServer != null) {
+            return;
+        }
+        try {
+            mMcpServer = new OneScanMcpServer(this);
+            mMcpServer.start();
+            Logger.info("OST MCP server listening on %s", mMcpServer.getEndpoint());
+            refreshMcpServerInfoPanel();
+        } catch (Exception e) {
+            Logger.error("OST MCP server start failed: %s", e.getMessage());
+            mMcpServer = null;
+            refreshMcpServerInfoPanel();
+        }
+    }
+
+    private void refreshMcpServer() {
+        if (Config.getBoolean(Config.KEY_ENABLE_MCP)) {
+            initMcpServer();
+        } else {
+            stopMcpServer();
+        }
+        refreshMcpServerInfoPanel();
+    }
+
+    private void stopMcpServer() {
+        if (mMcpServer == null) {
+            return;
+        }
+        mMcpServer.stop();
+        mMcpServer = null;
+        Logger.info("OST MCP server stopped");
+        refreshMcpServerInfoPanel();
+    }
+
+    private void refreshMcpServerInfoPanel() {
+        if (mOneScan == null || mOneScan.getConfigPanel() == null) {
+            return;
+        }
+        boolean running = mMcpServer != null;
+        String endpoint = running ? mMcpServer.getEndpoint() : "";
+        SwingUtilities.invokeLater(() -> mOneScan.getConfigPanel().refreshMcpServerInfo(running, endpoint));
     }
 
     @Override
@@ -1187,6 +1238,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             reqResp = mCallbacks.makeHttpRequest(service, reqRawBytes);
             byte[] respRawBytes = reqResp.getResponse();
             if (respRawBytes != null && respRawBytes.length > 0) {
+                IHttpRequestResponse browserFallback = tryBrowserFallbackForInterception(service, reqRawBytes,
+                        reqResp, requestMode);
+                if (browserFallback != null) {
+                    return browserFallback;
+                }
                 return reqResp;
             }
         } catch (Exception e) {
@@ -1286,6 +1342,108 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return false;
         }
         return matchesBrowserRequestTarget(service, info);
+    }
+
+    private IHttpRequestResponse tryBrowserFallbackForInterception(IHttpService service, byte[] reqRawBytes,
+                                                                   IHttpRequestResponse burpResp,
+                                                                   RequestMode requestMode) {
+        if (requestMode != RequestMode.AUTO || !Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST)) {
+            return null;
+        }
+        if (burpResp == null || burpResp.getResponse() == null || burpResp.getResponse().length == 0) {
+            return null;
+        }
+        if (!canUseBrowserRequest(service, reqRawBytes, false)) {
+            return null;
+        }
+        if (!looksLikeInterceptionPage(service, burpResp)) {
+            return null;
+        }
+        IHttpRequestResponse browserResp = doBrowserRequest(service, reqRawBytes, false);
+        if (browserResp == null || browserResp.getResponse() == null || browserResp.getResponse().length == 0) {
+            return null;
+        }
+        Logger.debug("Browser fallback triggered for possible interception page: %s",
+                getReqHostByHttpService(service));
+        return browserResp;
+    }
+
+    private boolean looksLikeInterceptionPage(IHttpService service, IHttpRequestResponse reqResp) {
+        byte[] response = reqResp.getResponse();
+        if (response == null || response.length == 0) {
+            return false;
+        }
+        IResponseInfo info = mHelpers.analyzeResponse(response);
+        int status = info.getStatusCode();
+        if (!isInterceptionCandidateStatus(status)) {
+            return false;
+        }
+        int bodyOffset = info.getBodyOffset();
+        int bodyLength = Math.max(0, response.length - bodyOffset);
+        String title = HtmlUtils.findTitleByHtmlBody(response);
+        String bodyPreview = "";
+        if (bodyOffset >= 0 && bodyOffset < response.length) {
+            int end = Math.min(response.length, bodyOffset + 8192);
+            bodyPreview = new String(Arrays.copyOfRange(response, bodyOffset, end), StandardCharsets.UTF_8)
+                    .toLowerCase(Locale.ROOT);
+        }
+        if (containsInterceptionKeyword(title) || containsInterceptionKeyword(bodyPreview)) {
+            return true;
+        }
+        String host = getReqHostByHttpService(service);
+        String signature = status + ":" + bodyLength + ":" + safe(title);
+        BrowserFallbackStats stats = mBrowserFallbackStats.computeIfAbsent(host, key -> new BrowserFallbackStats());
+        BrowserFallbackStats.RecordResult recordResult = stats.record(status, signature);
+        if (recordResult.sameSignatureCount() >= 5 && status != 404 && bodyLength > 0) {
+            return true;
+        }
+        return isHardInterceptionStatus(status) && recordResult.sameStatusCount() >= 3;
+    }
+
+    private boolean isInterceptionCandidateStatus(int status) {
+        return status == 200 || status == 202 || status == 401 || status == 403 || status == 406
+                || status == 412 || status == 418 || status == 429 || status == 503;
+    }
+
+    private boolean isHardInterceptionStatus(int status) {
+        return status == 403 || status == 406 || status == 412 || status == 418 || status == 429 || status == 503;
+    }
+
+    private boolean containsInterceptionKeyword(String text) {
+        if (StringUtils.isEmpty(text)) {
+            return false;
+        }
+        String value = text.toLowerCase(Locale.ROOT);
+        String[] keywords = {
+                "captcha",
+                "verify",
+                "verification",
+                "challenge",
+                "cloudflare",
+                "cf-chl",
+                "waf",
+                "rsource",
+                "rsource.js",
+                "rs5",
+                "rs6",
+                "ruishu",
+                "access denied",
+                "security check",
+                "安全验证",
+                "访问验证",
+                "验证码",
+                "人机验证",
+                "滑块",
+                "拦截",
+                "防火墙",
+                "请求过于频繁"
+        };
+        for (String keyword : keywords) {
+            if (value.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes) throws MalformedURLException {
@@ -2235,6 +2393,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         sRepeatFilter.clear();
         // 清空超时的请求主机集合
         sTimeoutReqHost.clear();
+        mBrowserFallbackStats.clear();
         cancelBrowserRequestDriver();
         clearBrowserRequestTasks();
         // 清空显示的请求、响应数据包
@@ -2416,6 +2575,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     mDataBoardTab.refreshAutoSaveTimer();
                 }
                 break;
+            case OtherTab.EVENT_REFRESH_MCP_SERVER:
+                refreshMcpServer();
+                break;
             case DataBoardTab.EVENT_IMPORT_URL:
                 RequestMode requestMode = params.length > 1 && params[1] instanceof RequestMode
                         ? (RequestMode) params[1]
@@ -2487,6 +2649,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         sRepeatFilter.clear();
         sTimeoutReqHost.clear();
+        mBrowserFallbackStats.clear();
         // 提示信息
         UIHelper.showTipsDialog(L.get("stop_task_tips"));
         // 停止后，重新初始化任务线程池
@@ -2526,12 +2689,997 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     @Override
+    public List<OneScanMcpTool> listTools() {
+        return List.of(
+                mcpTool("ost.capabilities.list", "List OST MCP capabilities.", objectSchema()),
+                mcpTool("ost.status.get", "Get OST runtime status and key configuration.", objectSchema()),
+                mcpTool("ost.scan.urls", "Submit one or more URLs to OST scanning.", objectSchema(
+                        required("urls"),
+                        property("urls", arraySchema(stringSchema()), "URL list."),
+                        property("mode", enumSchema("auto", "burp", "browser"), "Request mode.")
+                )),
+                mcpTool("ost.scan.request", "Submit a raw HTTP request to OST scanning.", objectSchema(
+                        required("request", "protocol", "host"),
+                        property("request", stringSchema(), "Raw HTTP request."),
+                        property("protocol", enumSchema("http", "https"), "Request protocol."),
+                        property("host", stringSchema(), "Target host."),
+                        property("port", numberSchema(), "Target port."),
+                        property("mode", enumSchema("auto", "burp", "browser"), "Request mode."),
+                        property("payload", stringSchema(), "Payload wordlist name.")
+                )),
+                mcpTool("ost.tasks.list", "List OST task results with pagination.", objectSchema(
+                        property("scope", enumSchema("all", "burp", "browser"), "Task table scope."),
+                        property("offset", numberSchema(), "Zero-based offset."),
+                        property("limit", numberSchema(), "Maximum results, default 50."),
+                        property("include_body", booleanSchema(), "Include raw request/response body.")
+                )),
+                mcpTool("ost.tasks.search", "Search OST task results by structured filters.", objectSchema(
+                        property("scope", enumSchema("all", "burp", "browser"), "Task table scope."),
+                        property("host", stringSchema(), "Host contains filter."),
+                        property("url", stringSchema(), "URL path contains filter."),
+                        property("title", stringSchema(), "Title contains filter."),
+                        property("fingerprint", stringSchema(), "Fingerprint parameter contains filter."),
+                        property("status", numberSchema(), "HTTP status code."),
+                        property("limit", numberSchema(), "Maximum results, default 50."),
+                        property("include_body", booleanSchema(), "Include raw request/response body.")
+                )),
+                mcpTool("ost.tasks.get", "Get a task result by id.", objectSchema(
+                        required("id"),
+                        property("id", numberSchema(), "Task id."),
+                        property("scope", enumSchema("all", "burp", "browser"), "Task table scope."),
+                        property("include_body", booleanSchema(), "Include raw request/response body.")
+                )),
+                mcpTool("ost.fingerprint.check", "Run OST fingerprint matching on request/response bytes.", objectSchema(
+                        property("request", stringSchema(), "Raw HTTP request."),
+                        property("response", stringSchema(), "Raw HTTP response."),
+                        property("task_id", numberSchema(), "Existing task id."),
+                        property("scope", enumSchema("all", "burp", "browser"), "Task table scope.")
+                )),
+                mcpTool("ost.fingerprint.rules.list", "List fingerprint rule summaries.", objectSchema(
+                        property("limit", numberSchema(), "Maximum results, default 100."),
+                        property("offset", numberSchema(), "Zero-based offset.")
+                )),
+                mcpTool("ost.collect.modules.list", "List OST data collection modules.", objectSchema()),
+                mcpTool("ost.collect.node.get", "Get collected data by node path.", objectSchema(
+                        property("path", stringSchema(), "Collect node path, default /."),
+                        property("recursive", booleanSchema(), "Include child nodes.")
+                )),
+                mcpTool("ost.wordlists.list", "List wordlist groups and selected wordlists.", objectSchema()),
+                mcpTool("ost.wordlist.get", "Get one wordlist content.", objectSchema(
+                        required("key"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
+                        property("limit", numberSchema(), "Maximum items, default 200.")
+                )),
+                mcpTool("ost.wordlist.select", "Select the active wordlist for a wordlist group.", objectSchema(
+                        required("key", "name"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "Existing wordlist name.")
+                )),
+                mcpTool("ost.wordlist.create", "Create an empty wordlist.", objectSchema(
+                        required("key", "name"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "New wordlist name."),
+                        property("select", booleanSchema(), "Select it after creation.")
+                )),
+                mcpTool("ost.wordlist.append", "Append unique items to a wordlist.", objectSchema(
+                        required("key", "items"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
+                        property("items", arraySchema(stringSchema()), "Items to append.")
+                )),
+                mcpTool("ost.wordlist.put", "Replace a wordlist with provided items. Requires confirm=true.", objectSchema(
+                        required("key", "items", "confirm"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
+                        property("items", arraySchema(stringSchema()), "Replacement items."),
+                        property("confirm", booleanSchema(), "Must be true to replace content.")
+                )),
+                mcpTool("ost.wordlist.import_file", "Import a local text file into a wordlist.", objectSchema(
+                        required("key", "path"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("path", stringSchema(), "Local text file path."),
+                        property("name", stringSchema(), "Destination wordlist name. Defaults to file name."),
+                        property("mode", enumSchema("append", "replace"), "Import mode. Replace requires confirm=true."),
+                        property("select", booleanSchema(), "Select destination after import."),
+                        property("confirm", booleanSchema(), "Must be true for replace mode.")
+                )),
+                mcpTool("ost.wordlist.delete", "Delete a wordlist. Requires confirm=true.", objectSchema(
+                        required("key", "name", "confirm"),
+                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                                "Wordlist key."),
+                        property("name", stringSchema(), "Wordlist name."),
+                        property("confirm", booleanSchema(), "Must be true to delete.")
+                )),
+                mcpTool("ost.history.labels", "List persisted history labels.", objectSchema()),
+                mcpTool("ost.export.csv", "Export persisted OST data to CSV.", objectSchema(
+                        required("path"),
+                        property("path", stringSchema(), "CSV output path."),
+                        property("label", stringSchema(), "Optional history label."),
+                        property("fields", arraySchema(stringSchema()), "Field keys to export.")
+                ))
+        );
+    }
+
+    @Override
+    public Object callTool(String name, Map<String, Object> arguments) throws Exception {
+        Map<String, Object> args = arguments == null ? new LinkedHashMap<>() : arguments;
+        name = normalizeMcpToolName(name);
+        return switch (name) {
+            case "ost.capabilities.list" -> mcpCapabilities();
+            case "ost.status.get" -> mcpStatus();
+            case "ost.scan.urls" -> mcpScanUrls(args);
+            case "ost.scan.request" -> mcpScanRequest(args);
+            case "ost.tasks.list" -> mcpListTasks(args);
+            case "ost.tasks.search" -> mcpSearchTasks(args);
+            case "ost.tasks.get" -> mcpGetTask(args);
+            case "ost.fingerprint.check" -> mcpFingerprintCheck(args);
+            case "ost.fingerprint.rules.list" -> mcpFingerprintRules(args);
+            case "ost.collect.modules.list" -> mcpCollectModules();
+            case "ost.collect.node.get" -> mcpCollectNode(args);
+            case "ost.wordlists.list" -> mcpWordlists();
+            case "ost.wordlist.get" -> mcpWordlistGet(args);
+            case "ost.wordlist.select" -> mcpWordlistSelect(args);
+            case "ost.wordlist.create" -> mcpWordlistCreate(args);
+            case "ost.wordlist.append" -> mcpWordlistAppend(args);
+            case "ost.wordlist.put" -> mcpWordlistPut(args);
+            case "ost.wordlist.import_file" -> mcpWordlistImportFile(args);
+            case "ost.wordlist.delete" -> mcpWordlistDelete(args);
+            case "ost.history.labels" -> mcpHistoryLabels();
+            case "ost.export.csv" -> mcpExportCsv(args);
+            default -> throw new IllegalArgumentException("Unknown tool: " + name);
+        };
+    }
+
+    private String normalizeMcpToolName(String name) {
+        if (name != null && name.startsWith("onescan.")) {
+            return "ost." + name.substring("onescan.".length());
+        }
+        return name;
+    }
+
+    private Map<String, Object> mcpCapabilities() {
+        return mapOf(
+                "server", mapOf("name", "ost-burp-mcp", "endpoint", mMcpServer == null ? "" : mMcpServer.getEndpoint()),
+                "capabilities", List.of(
+                        capability("ost.status.get", "passive", "Read runtime status."),
+                        capability("ost.tasks.list", "passive", "Read summarized task results."),
+                        capability("ost.tasks.search", "passive", "Search summarized task results."),
+                        capability("ost.tasks.get", "passive", "Read one task result, raw data opt-in."),
+                        capability("ost.fingerprint.check", "passive", "Run local fingerprint rules."),
+                        capability("ost.collect.node.get", "passive", "Read collected data."),
+                        capability("ost.wordlists.list", "passive", "Read wordlist metadata."),
+                        capability("ost.wordlist.select", "configuration-write", "Switch active wordlists."),
+                        capability("ost.wordlist.append", "filesystem-write", "Append items to local wordlists."),
+                        capability("ost.wordlist.put", "filesystem-write", "Replace local wordlists, confirm required."),
+                        capability("ost.wordlist.import_file", "filesystem-write", "Import local text files into wordlists."),
+                        capability("ost.wordlist.delete", "destructive", "Delete local wordlists, confirm required."),
+                        capability("ost.history.labels", "passive", "Read persistence labels."),
+                        capability("ost.scan.urls", "active", "Submit URL scan tasks."),
+                        capability("ost.scan.request", "active", "Submit raw request scan tasks."),
+                        capability("ost.export.csv", "filesystem-write", "Write CSV export to a local path.")
+                ),
+                "legacy_alias_prefix", "onescan.",
+                "default_response_policy", "Summaries are returned by default. Raw request/response bodies require include_body=true."
+        );
+    }
+
+    private Map<String, Object> mcpStatus() {
+        return mapOf(
+                "plugin", mapOf("name", Constants.PLUGIN_NAME, "version", Constants.PLUGIN_VERSION),
+                "mcp", mapOf("enabled", Config.getBoolean(Config.KEY_ENABLE_MCP),
+                        "endpoint", mMcpServer == null ? "" : mMcpServer.getEndpoint()),
+                "config", mapOf(
+                        "listen_proxy", mDataBoardTab != null && mDataBoardTab.hasListenProxyMessage(),
+                        "dir_scan", mDataBoardTab != null && mDataBoardTab.hasDirScan(),
+                        "payload_processing", mDataBoardTab != null && mDataBoardTab.hasPayloadProcessing(),
+                        "browser_request", Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST),
+                        "browser_fallback_on_interception", Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST),
+                        "browser_type", Config.get(Config.KEY_BROWSER_TYPE),
+                        "qps_limit", Config.getInt(Config.KEY_QPS_LIMIT),
+                        "request_delay", Config.getInt(Config.KEY_REQUEST_DELAY),
+                        "follow_redirect", Config.getBoolean(Config.KEY_FOLLOW_REDIRECT),
+                        "persistence_enabled", TaskPersistenceManager.isEnabled(),
+                        "persistence_db_path", TaskPersistenceManager.getDatabasePath()
+                ),
+                "tasks", mapOf(
+                        "burp_count", taskCount(RequestScope.BURP),
+                        "browser_count", taskCount(RequestScope.BROWSER),
+                        "submitted", mTaskCommitCounter.get(),
+                        "completed", mTaskOverCounter.get(),
+                        "low_frequency_submitted", mLFTaskCommitCounter.get(),
+                        "low_frequency_completed", mLFTaskOverCounter.get()
+                ),
+                "fingerprint", mapOf(
+                        "rules", FpManager.getCount(),
+                        "columns", FpManager.getColumnsCount(),
+                        "cache_count", FpManager.getCacheCount(),
+                        "history_count", FpManager.getHistoryCount()
+                ),
+                "collect", mapOf("repeat_filter_count", CollectManager.getRepeatFilterCount())
+        );
+    }
+
+    private Map<String, Object> mcpScanUrls(Map<String, Object> args) {
+        List<?> rawUrls = listArg(args, "urls");
+        if (rawUrls.isEmpty()) {
+            throw new IllegalArgumentException("urls is required");
+        }
+        ArrayList<String> urls = new ArrayList<>();
+        for (Object item : rawUrls) {
+            if (item != null && StringUtils.isNotEmpty(String.valueOf(item))) {
+                urls.add(String.valueOf(item));
+            }
+        }
+        if (urls.isEmpty()) {
+            throw new IllegalArgumentException("urls is empty");
+        }
+        RequestMode mode = parseRequestMode(stringArg(args, "mode"), RequestMode.AUTO);
+        importUrl(urls, mode);
+        return mapOf("submitted_urls", urls.size(), "mode", mode.name().toLowerCase(Locale.ROOT));
+    }
+
+    private Map<String, Object> mcpScanRequest(Map<String, Object> args) {
+        String request = stringArg(args, "request");
+        String host = stringArg(args, "host");
+        String protocol = stringArg(args, "protocol");
+        if (StringUtils.isEmpty(request) || StringUtils.isEmpty(host) || StringUtils.isEmpty(protocol)) {
+            throw new IllegalArgumentException("request, host and protocol are required");
+        }
+        int port = intArg(args, "port", "https".equalsIgnoreCase(protocol) ? 443 : 80);
+        RequestMode mode = parseRequestMode(stringArg(args, "mode"), RequestMode.AUTO);
+        String payload = stringArg(args, "payload");
+        if (StringUtils.isEmpty(payload)) {
+            payload = WordlistManager.getItem(WordlistManager.KEY_PAYLOAD);
+        }
+        IHttpService service = mHelpers.buildHttpService(host, port, protocol);
+        IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, mHelpers.stringToBytes(request));
+        doScan(reqResp, "MCP", payload, mode);
+        return mapOf(
+                "submitted", true,
+                "host", host,
+                "port", port,
+                "protocol", protocol,
+                "payload", payload,
+                "mode", mode.name().toLowerCase(Locale.ROOT)
+        );
+    }
+
+    private Map<String, Object> mcpListTasks(Map<String, Object> args) {
+        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
+        int offset = Math.max(0, intArg(args, "offset", 0));
+        int limit = clamp(intArg(args, "limit", 50), 1, 500);
+        boolean includeBody = booleanArg(args, "include_body", false);
+        List<TaskRecord> records = getTaskRecords(scope);
+        return paginateTaskRecords(records, offset, limit, includeBody);
+    }
+
+    private Map<String, Object> mcpSearchTasks(Map<String, Object> args) {
+        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
+        int limit = clamp(intArg(args, "limit", 50), 1, 500);
+        boolean includeBody = booleanArg(args, "include_body", false);
+        String host = lower(stringArg(args, "host"));
+        String url = lower(stringArg(args, "url"));
+        String title = lower(stringArg(args, "title"));
+        String fingerprint = lower(stringArg(args, "fingerprint"));
+        Integer status = hasArg(args, "status") ? intArg(args, "status", -1) : null;
+        ArrayList<TaskRecord> matches = new ArrayList<>();
+        for (TaskRecord record : getTaskRecords(scope)) {
+            TaskData data = record.data();
+            if (StringUtils.isNotEmpty(host) && !lower(data.getHost()).contains(host)) {
+                continue;
+            }
+            if (StringUtils.isNotEmpty(url) && !lower(data.getUrl()).contains(url)) {
+                continue;
+            }
+            if (StringUtils.isNotEmpty(title) && !lower(data.getTitle()).contains(title)) {
+                continue;
+            }
+            if (status != null && data.getStatus() != status) {
+                continue;
+            }
+            if (StringUtils.isNotEmpty(fingerprint)
+                    && !lower(GsonUtils.toJson(data.getParams())).contains(fingerprint)) {
+                continue;
+            }
+            matches.add(record);
+            if (matches.size() >= limit) {
+                break;
+            }
+        }
+        return mapOf(
+                "total_matches", matches.size(),
+                "items", matches.stream().map(record -> taskRecordToMap(record, includeBody)).collect(Collectors.toList())
+        );
+    }
+
+    private Map<String, Object> mcpGetTask(Map<String, Object> args) {
+        int id = intArg(args, "id", -1);
+        if (id < 0) {
+            throw new IllegalArgumentException("id is required");
+        }
+        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
+        boolean includeBody = booleanArg(args, "include_body", false);
+        for (TaskRecord record : getTaskRecords(scope)) {
+            if (record.data().getId() == id) {
+                return taskRecordToMap(record, includeBody);
+            }
+        }
+        throw new IllegalArgumentException("task not found: " + id);
+    }
+
+    private Map<String, Object> mcpFingerprintCheck(Map<String, Object> args) {
+        byte[] requestBytes = bytesArg(args, "request");
+        byte[] responseBytes = bytesArg(args, "response");
+        if ((requestBytes.length == 0 && responseBytes.length == 0) && hasArg(args, "task_id")) {
+            int taskId = intArg(args, "task_id", -1);
+            RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
+            TaskRecord record = findTaskRecord(scope, taskId);
+            if (record == null) {
+                throw new IllegalArgumentException("task not found: " + taskId);
+            }
+            IHttpRequestResponse reqResp = getReqResp(record.data());
+            if (reqResp != null) {
+                requestBytes = reqResp.getRequest();
+                responseBytes = reqResp.getResponse();
+            }
+        }
+        List<FpData> matches = FpManager.check(requestBytes, responseBytes);
+        return mapOf("count", matches.size(), "items", matches.stream().map(this::fpDataToMap).collect(Collectors.toList()));
+    }
+
+    private Map<String, Object> mcpFingerprintRules(Map<String, Object> args) {
+        int offset = Math.max(0, intArg(args, "offset", 0));
+        int limit = clamp(intArg(args, "limit", 100), 1, 1000);
+        List<FpData> rules = FpManager.getList();
+        int end = Math.min(rules.size(), offset + limit);
+        ArrayList<Map<String, Object>> items = new ArrayList<>();
+        for (int i = offset; i < end; i++) {
+            FpData data = rules.get(i);
+            items.add(mapOf(
+                    "index", i,
+                    "color", data.getColor(),
+                    "params", fpParamsToMap(data),
+                    "rule_groups", data.getRules().size()
+            ));
+        }
+        return mapOf("total", rules.size(), "offset", offset, "limit", limit, "items", items);
+    }
+
+    private Map<String, Object> mcpCollectModules() {
+        ArrayList<String> modules = new ArrayList<>();
+        CollectManager.forEachModule(module -> modules.add(module.getName()));
+        return mapOf("modules", modules);
+    }
+
+    private Map<String, Object> mcpCollectNode(Map<String, Object> args) {
+        String path = stringArg(args, "path");
+        if (StringUtils.isEmpty(path)) {
+            path = "/";
+        }
+        boolean recursive = booleanArg(args, "recursive", false);
+        CollectNode node = CollectManager.getNodeByPath(path);
+        if (node == null) {
+            throw new IllegalArgumentException("collect node not found: " + path);
+        }
+        return collectNodeToMap(path, node, recursive);
+    }
+
+    private Map<String, Object> mcpWordlists() {
+        ArrayList<Map<String, Object>> groups = new ArrayList<>();
+        for (String key : wordlistKeys()) {
+            groups.add(mapOf(
+                    "key", key,
+                    "selected", WordlistManager.getItem(key),
+                    "items", WordlistManager.getItemList(key)
+            ));
+        }
+        return mapOf("groups", groups);
+    }
+
+    private Map<String, Object> mcpWordlistGet(Map<String, Object> args) {
+        String key = stringArg(args, "key");
+        if (!wordlistKeys().contains(key)) {
+            throw new IllegalArgumentException("unsupported wordlist key: " + key);
+        }
+        String name = stringArg(args, "name");
+        if (StringUtils.isEmpty(name)) {
+            name = WordlistManager.getItem(key);
+        }
+        int limit = clamp(intArg(args, "limit", 200), 1, 5000);
+        List<String> list = WordlistManager.getList(key, name);
+        return mapOf(
+                "key", key,
+                "name", name,
+                "total", list.size(),
+                "items", list.stream().limit(limit).collect(Collectors.toList()),
+                "truncated", list.size() > limit
+        );
+    }
+
+    private Map<String, Object> mcpWordlistSelect(Map<String, Object> args) {
+        String key = requireWordlistKey(args);
+        String name = requireWordlistName(args, "name");
+        ensureWordlistExists(key, name);
+        String previous = WordlistManager.getItem(key);
+        WordlistManager.putItem(key, name);
+        return wordlistMutationResult("select", key, name, previous, WordlistManager.getList(key, name).size(), 0);
+    }
+
+    private Map<String, Object> mcpWordlistCreate(Map<String, Object> args) {
+        String key = requireWordlistKey(args);
+        String name = requireWordlistName(args, "name");
+        if (WordlistManager.getItemList(key).contains(name)) {
+            throw new IllegalArgumentException("wordlist already exists: " + name);
+        }
+        String previous = WordlistManager.getItem(key);
+        WordlistManager.createList(key, name);
+        if (booleanArg(args, "select", false)) {
+            WordlistManager.putItem(key, name);
+        }
+        return wordlistMutationResult("create", key, name, previous, 0, 0);
+    }
+
+    private Map<String, Object> mcpWordlistAppend(Map<String, Object> args) {
+        String key = requireWordlistKey(args);
+        String name = optionalWordlistName(args);
+        ensureWordlistExists(key, name);
+        List<String> current = WordlistManager.getList(key, name);
+        List<String> incoming = normalizeWordlistItems(listArg(args, "items"));
+        int before = current.size();
+        LinkedHashSet<String> merged = new LinkedHashSet<>(current);
+        int added = 0;
+        for (String item : incoming) {
+            if (merged.add(item)) {
+                added++;
+            }
+        }
+        WordlistManager.putList(key, name, new ArrayList<>(merged));
+        return wordlistMutationResult("append", key, name, WordlistManager.getItem(key), before + added, added);
+    }
+
+    private Map<String, Object> mcpWordlistPut(Map<String, Object> args) {
+        if (!booleanArg(args, "confirm", false)) {
+            throw new IllegalArgumentException("confirm=true is required to replace a wordlist");
+        }
+        String key = requireWordlistKey(args);
+        String name = optionalWordlistName(args);
+        ensureWordlistExists(key, name);
+        List<String> items = normalizeWordlistItems(listArg(args, "items"));
+        int before = WordlistManager.getList(key, name).size();
+        WordlistManager.putList(key, name, items);
+        return mapOf(
+                "action", "put",
+                "key", key,
+                "name", name,
+                "selected", WordlistManager.getItem(key),
+                "before_count", before,
+                "after_count", items.size(),
+                "changed_count", items.size() - before
+        );
+    }
+
+    private Map<String, Object> mcpWordlistImportFile(Map<String, Object> args) {
+        String key = requireWordlistKey(args);
+        String path = stringArg(args, "path");
+        if (StringUtils.isEmpty(path) || !FileUtils.isFile(path)) {
+            throw new IllegalArgumentException("import file not found: " + path);
+        }
+        String name = stringArg(args, "name");
+        if (StringUtils.isEmpty(name)) {
+            String fileName = new File(path).getName();
+            int dot = fileName.lastIndexOf('.');
+            name = dot > 0 ? fileName.substring(0, dot) : fileName;
+        }
+        name = normalizeWordlistName(name);
+        String mode = stringArg(args, "mode");
+        if (StringUtils.isEmpty(mode)) {
+            mode = "append";
+        }
+        if (!"append".equalsIgnoreCase(mode) && !"replace".equalsIgnoreCase(mode)) {
+            throw new IllegalArgumentException("mode must be append or replace");
+        }
+        if (!WordlistManager.getItemList(key).contains(name)) {
+            WordlistManager.createList(key, name);
+        }
+        List<String> imported = normalizeWordlistItems(FileUtils.readFileToList(path));
+        int before = WordlistManager.getList(key, name).size();
+        int added;
+        if ("replace".equalsIgnoreCase(mode)) {
+            if (!booleanArg(args, "confirm", false)) {
+                throw new IllegalArgumentException("confirm=true is required for replace import");
+            }
+            WordlistManager.putList(key, name, imported);
+            added = imported.size() - before;
+        } else {
+            LinkedHashSet<String> merged = new LinkedHashSet<>(WordlistManager.getList(key, name));
+            added = 0;
+            for (String item : imported) {
+                if (merged.add(item)) {
+                    added++;
+                }
+            }
+            WordlistManager.putList(key, name, new ArrayList<>(merged));
+        }
+        if (booleanArg(args, "select", false)) {
+            WordlistManager.putItem(key, name);
+        }
+        return mapOf(
+                "action", "import_file",
+                "key", key,
+                "name", name,
+                "path", path,
+                "mode", mode.toLowerCase(Locale.ROOT),
+                "selected", WordlistManager.getItem(key),
+                "imported_count", imported.size(),
+                "before_count", before,
+                "after_count", WordlistManager.getList(key, name).size(),
+                "changed_count", added
+        );
+    }
+
+    private Map<String, Object> mcpWordlistDelete(Map<String, Object> args) {
+        if (!booleanArg(args, "confirm", false)) {
+            throw new IllegalArgumentException("confirm=true is required to delete a wordlist");
+        }
+        String key = requireWordlistKey(args);
+        String name = requireWordlistName(args, "name");
+        ensureWordlistExists(key, name);
+        List<String> itemList = WordlistManager.getItemList(key);
+        if (itemList.size() <= 1) {
+            throw new IllegalArgumentException("cannot delete the only wordlist for key: " + key);
+        }
+        String previous = WordlistManager.getItem(key);
+        int before = WordlistManager.getList(key, name).size();
+        WordlistManager.deleteList(key, name);
+        if (name.equals(previous)) {
+            List<String> remaining = WordlistManager.getItemList(key);
+            if (!remaining.isEmpty()) {
+                WordlistManager.putItem(key, remaining.contains("default") ? "default" : remaining.get(0));
+            }
+        }
+        return mapOf(
+                "action", "delete",
+                "key", key,
+                "name", name,
+                "deleted_count", before,
+                "previous_selected", previous,
+                "selected", WordlistManager.getItem(key),
+                "remaining", WordlistManager.getItemList(key)
+        );
+    }
+
+    private Map<String, Object> mcpHistoryLabels() throws Exception {
+        List<TaskPersistenceManager.HistoryLabel> labels = TaskPersistenceManager.listLabels();
+        return mapOf(
+                "enabled", TaskPersistenceManager.isEnabled(),
+                "database_path", TaskPersistenceManager.getDatabasePath(),
+                "labels", labels.stream()
+                        .map(item -> mapOf("label", item.label(), "count", item.count()))
+                        .collect(Collectors.toList())
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> mcpExportCsv(Map<String, Object> args) throws Exception {
+        String path = stringArg(args, "path");
+        if (StringUtils.isEmpty(path)) {
+            throw new IllegalArgumentException("path is required");
+        }
+        List<String> fields;
+        List<?> rawFields = listArg(args, "fields");
+        if (rawFields.isEmpty()) {
+            fields = TaskPersistenceManager.getConfiguredFieldKeys();
+        } else {
+            fields = rawFields.stream().filter(Objects::nonNull).map(String::valueOf).collect(Collectors.toList());
+        }
+        String label = stringArg(args, "label");
+        int count = TaskPersistenceManager.exportCsv(new File(path), fields, label);
+        return mapOf("path", path, "label", label == null ? "" : label, "fields", fields, "count", count);
+    }
+
+    private OneScanMcpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
+        return new OneScanMcpTool(name, description, inputSchema);
+    }
+
+    private Map<String, Object> capability(String name, String risk, String description) {
+        return mapOf("name", name, "risk", risk, "description", description);
+    }
+
+    private Map<String, Object> paginateTaskRecords(List<TaskRecord> records, int offset, int limit, boolean includeBody) {
+        int total = records.size();
+        int start = Math.min(offset, total);
+        int end = Math.min(total, start + limit);
+        ArrayList<Map<String, Object>> items = new ArrayList<>();
+        for (int i = start; i < end; i++) {
+            items.add(taskRecordToMap(records.get(i), includeBody));
+        }
+        return mapOf("total", total, "offset", offset, "limit", limit, "items", items);
+    }
+
+    private List<TaskRecord> getTaskRecords(RequestScope scope) {
+        ArrayList<TaskRecord> records = new ArrayList<>();
+        if (mDataBoardTab == null) {
+            return records;
+        }
+        if (scope == RequestScope.ALL || scope == RequestScope.BURP) {
+            TaskTable table = mDataBoardTab.getBurpTaskTable();
+            if (table != null) {
+                for (TaskData data : table.getTaskDataList()) {
+                    records.add(new TaskRecord("burp", data));
+                }
+            }
+        }
+        if (scope == RequestScope.ALL || scope == RequestScope.BROWSER) {
+            TaskTable table = mDataBoardTab.getBrowserTaskTable();
+            if (table != null) {
+                for (TaskData data : table.getTaskDataList()) {
+                    records.add(new TaskRecord("browser", data));
+                }
+            }
+        }
+        return records;
+    }
+
+    private TaskRecord findTaskRecord(RequestScope scope, int taskId) {
+        for (TaskRecord record : getTaskRecords(scope)) {
+            if (record.data().getId() == taskId) {
+                return record;
+            }
+        }
+        return null;
+    }
+
+    private int taskCount(RequestScope scope) {
+        if (mDataBoardTab == null) {
+            return 0;
+        }
+        int count = 0;
+        if (scope == RequestScope.ALL || scope == RequestScope.BURP) {
+            TaskTable table = mDataBoardTab.getBurpTaskTable();
+            count += table == null ? 0 : table.getTaskCount();
+        }
+        if (scope == RequestScope.ALL || scope == RequestScope.BROWSER) {
+            TaskTable table = mDataBoardTab.getBrowserTaskTable();
+            count += table == null ? 0 : table.getTaskCount();
+        }
+        return count;
+    }
+
+    private Map<String, Object> taskRecordToMap(TaskRecord record, boolean includeBody) {
+        TaskData data = record.data();
+        IHttpRequestResponse reqResp = getReqResp(data);
+        Map<String, Object> result = mapOf(
+                "id", data.getId(),
+                "scope", record.scope(),
+                "from", safe(data.getFrom()),
+                "method", safe(data.getMethod()),
+                "host", safe(data.getHost()),
+                "url", safe(data.getUrl()),
+                "title", safe(data.getTitle()),
+                "ip", safe(data.getIp()),
+                "status", data.getStatus(),
+                "length", data.getLength(),
+                "color", safe(data.getHighlight()),
+                "fingerprint", new LinkedHashMap<>(data.getParams())
+        );
+        if (reqResp != null) {
+            byte[] request = emptyBytes(reqResp.getRequest());
+            byte[] response = emptyBytes(reqResp.getResponse());
+            result.put("request_length", request.length);
+            result.put("response_length", response.length);
+            result.put("request_md5", Utils.md5(request));
+            result.put("response_md5", Utils.md5(response));
+            if (includeBody) {
+                result.put("request", bytesToString(request));
+                result.put("response", bytesToString(response));
+            }
+        }
+        return result;
+    }
+
+    private IHttpRequestResponse getReqResp(TaskData data) {
+        if (data == null || !(data.getReqResp() instanceof IHttpRequestResponse reqResp)) {
+            return null;
+        }
+        return reqResp;
+    }
+
+    private Map<String, Object> fpDataToMap(FpData data) {
+        return mapOf(
+                "color", data.getColor(),
+                "info", data.toInfo(),
+                "params", fpParamsToMap(data),
+                "rule_groups", data.getRules().size()
+        );
+    }
+
+    private Map<String, Object> fpParamsToMap(FpData data) {
+        LinkedHashMap<String, Object> params = new LinkedHashMap<>();
+        if (data == null) {
+            return params;
+        }
+        for (FpData.Param param : data.getParams()) {
+            String key = param.getK();
+            String columnName = FpManager.findColumnNameById(key);
+            params.put(StringUtils.isEmpty(columnName) ? key : columnName, param.getV());
+        }
+        return params;
+    }
+
+    private Map<String, Object> collectNodeToMap(String path, CollectNode node, boolean recursive) {
+        LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+        CollectManager.forEachModule(module -> data.put(module.getName(), new ArrayList<>(node.getData(module.getName()))));
+        ArrayList<Map<String, Object>> children = new ArrayList<>();
+        for (CollectNode child : node.getNodes()) {
+            String childPath = "/".equals(path) ? "/" + child.getName() : path + "/" + child.getName();
+            if (recursive) {
+                children.add(collectNodeToMap(childPath, child, true));
+            } else {
+                children.add(mapOf("path", childPath, "name", child.getName(), "child_count", child.getNodes().size()));
+            }
+        }
+        return mapOf(
+                "path", path,
+                "name", node.getName(),
+                "data", data,
+                "child_count", node.getNodes().size(),
+                "children", children
+        );
+    }
+
+    private List<String> wordlistKeys() {
+        return List.of(
+                WordlistManager.KEY_PAYLOAD,
+                WordlistManager.KEY_HEADERS,
+                WordlistManager.KEY_USER_AGENT,
+                WordlistManager.KEY_HOST_ALLOWLIST,
+                WordlistManager.KEY_HOST_BLOCKLIST,
+                WordlistManager.KEY_REMOVE_HEADERS
+        );
+    }
+
+    private String requireWordlistKey(Map<String, Object> args) {
+        String key = stringArg(args, "key");
+        if (!wordlistKeys().contains(key)) {
+            throw new IllegalArgumentException("unsupported wordlist key: " + key);
+        }
+        return key;
+    }
+
+    private String optionalWordlistName(Map<String, Object> args) {
+        String name = stringArg(args, "name");
+        if (StringUtils.isEmpty(name)) {
+            String key = requireWordlistKey(args);
+            return WordlistManager.getItem(key);
+        }
+        return normalizeWordlistName(name);
+    }
+
+    private String requireWordlistName(Map<String, Object> args, String field) {
+        String name = normalizeWordlistName(stringArg(args, field));
+        if (StringUtils.isEmpty(name)) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        return name;
+    }
+
+    private String normalizeWordlistName(String name) {
+        if (name == null) {
+            return "";
+        }
+        String result = name.trim();
+        if (result.endsWith(".txt")) {
+            result = result.substring(0, result.length() - 4);
+        }
+        if (result.contains("/") || result.contains("\\") || result.contains("..")) {
+            throw new IllegalArgumentException("invalid wordlist name: " + name);
+        }
+        return result;
+    }
+
+    private void ensureWordlistExists(String key, String name) {
+        if (!WordlistManager.getItemList(key).contains(name)) {
+            throw new IllegalArgumentException("wordlist not found: " + key + "/" + name);
+        }
+    }
+
+    private List<String> normalizeWordlistItems(List<?> rawItems) {
+        LinkedHashSet<String> items = new LinkedHashSet<>();
+        for (Object rawItem : rawItems) {
+            if (rawItem == null) {
+                continue;
+            }
+            String item = String.valueOf(rawItem).trim();
+            if (StringUtils.isNotEmpty(item)) {
+                items.add(item);
+            }
+        }
+        return new ArrayList<>(items);
+    }
+
+    private Map<String, Object> wordlistMutationResult(String action, String key, String name,
+                                                       String previousSelected, int afterCount, int changedCount) {
+        return mapOf(
+                "action", action,
+                "key", key,
+                "name", name,
+                "previous_selected", previousSelected,
+                "selected", WordlistManager.getItem(key),
+                "after_count", afterCount,
+                "changed_count", changedCount,
+                "items", WordlistManager.getItemList(key)
+        );
+    }
+
+    private RequestMode parseRequestMode(String value, RequestMode fallback) {
+        if ("burp".equalsIgnoreCase(value)) {
+            return RequestMode.BURP;
+        }
+        if ("browser".equalsIgnoreCase(value)) {
+            return RequestMode.BROWSER;
+        }
+        if ("auto".equalsIgnoreCase(value)) {
+            return RequestMode.AUTO;
+        }
+        return fallback;
+    }
+
+    private RequestScope parseRequestScope(String value, RequestScope fallback) {
+        if ("burp".equalsIgnoreCase(value)) {
+            return RequestScope.BURP;
+        }
+        if ("browser".equalsIgnoreCase(value)) {
+            return RequestScope.BROWSER;
+        }
+        if ("all".equalsIgnoreCase(value)) {
+            return RequestScope.ALL;
+        }
+        return fallback;
+    }
+
+    private boolean hasArg(Map<String, Object> args, String key) {
+        return args != null && args.containsKey(key) && args.get(key) != null;
+    }
+
+    private String stringArg(Map<String, Object> args, String key) {
+        if (!hasArg(args, key)) {
+            return "";
+        }
+        return String.valueOf(args.get(key));
+    }
+
+    private int intArg(Map<String, Object> args, String key, int fallback) {
+        if (!hasArg(args, key)) {
+            return fallback;
+        }
+        Object value = args.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        return StringUtils.parseInt(String.valueOf(value), fallback);
+    }
+
+    private boolean booleanArg(Map<String, Object> args, String key, boolean fallback) {
+        if (!hasArg(args, key)) {
+            return fallback;
+        }
+        Object value = args.get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private List<?> listArg(Map<String, Object> args, String key) {
+        if (!hasArg(args, key)) {
+            return new ArrayList<>();
+        }
+        Object value = args.get(key);
+        if (value instanceof List<?> list) {
+            return list;
+        }
+        return new ArrayList<>();
+    }
+
+    private byte[] bytesArg(Map<String, Object> args, String key) {
+        String value = stringArg(args, key);
+        if (StringUtils.isEmpty(value)) {
+            return EMPTY_BYTES;
+        }
+        return mHelpers == null ? value.getBytes(StandardCharsets.ISO_8859_1) : mHelpers.stringToBytes(value);
+    }
+
+    private String bytesToString(byte[] bytes) {
+        return mHelpers == null ? new String(emptyBytes(bytes), StandardCharsets.ISO_8859_1) : mHelpers.bytesToString(emptyBytes(bytes));
+    }
+
+    private byte[] emptyBytes(byte[] bytes) {
+        return bytes == null ? EMPTY_BYTES : bytes;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String lower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private Map<String, Object> objectSchema(Object... specs) {
+        LinkedHashMap<String, Object> schema = new LinkedHashMap<>();
+        LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
+        ArrayList<String> required = new ArrayList<>();
+        schema.put("type", "object");
+        for (Object spec : specs) {
+            if (spec instanceof PropertySpec property) {
+                properties.put(property.name(), property.schema());
+            } else if (spec instanceof RequiredSpec requiredSpec) {
+                required.addAll(requiredSpec.names());
+            }
+        }
+        schema.put("properties", properties);
+        if (!required.isEmpty()) {
+            schema.put("required", required);
+        }
+        return schema;
+    }
+
+    private PropertySpec property(String name, Map<String, Object> schema, String description) {
+        schema.put("description", description);
+        return new PropertySpec(name, schema);
+    }
+
+    private RequiredSpec required(String... names) {
+        return new RequiredSpec(Arrays.asList(names));
+    }
+
+    private Map<String, Object> stringSchema() {
+        return mapOf("type", "string");
+    }
+
+    private Map<String, Object> numberSchema() {
+        return mapOf("type", "number");
+    }
+
+    private Map<String, Object> booleanSchema() {
+        return mapOf("type", "boolean");
+    }
+
+    private Map<String, Object> enumSchema(String... values) {
+        return mapOf("type", "string", "enum", Arrays.asList(values));
+    }
+
+    private Map<String, Object> arraySchema(Map<String, Object> itemSchema) {
+        return mapOf("type", "array", "items", itemSchema);
+    }
+
+    private Map<String, Object> mapOf(Object... values) {
+        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < values.length; i += 2) {
+            map.put(String.valueOf(values[i]), values[i + 1]);
+        }
+        return map;
+    }
+
+    @Override
     public IMessageEditorTab createNewInstance(IMessageEditorController iMessageEditorController, boolean editable) {
         return new OneScanInfoTab(mCallbacks, iMessageEditorController);
     }
 
     @Override
     public void extensionUnloaded() {
+        stopMcpServer();
         // 移除代理监听器
         mCallbacks.removeProxyListener(this);
         // 移除插件卸载监听器
@@ -2579,6 +3727,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 清除超时的请求主机集合
         count = sTimeoutReqHost.size();
         sTimeoutReqHost.clear();
+        mBrowserFallbackStats.clear();
         Logger.info("Clear: timeout request host list completed. Total %d records.", count);
         count = clearBrowserRequestTasks();
         Logger.info("Clear: browser request task list completed. Total %d records.", count);
@@ -2612,6 +3761,41 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         // 卸载完成
         Logger.info(Constants.UNLOAD_BANNER);
+    }
+
+    private record TaskRecord(String scope, TaskData data) {
+    }
+
+    private record PropertySpec(String name, Map<String, Object> schema) {
+    }
+
+    private record RequiredSpec(List<String> names) {
+    }
+
+    private static class BrowserFallbackStats {
+        private String lastSignature;
+        private int lastStatus = -1;
+        private int sameSignatureCount;
+        private int sameStatusCount;
+
+        private synchronized RecordResult record(int status, String signature) {
+            if (StringUtils.isNotEmpty(signature) && signature.equals(lastSignature)) {
+                sameSignatureCount++;
+            } else {
+                lastSignature = signature;
+                sameSignatureCount = 1;
+            }
+            if (status == lastStatus) {
+                sameStatusCount++;
+            } else {
+                lastStatus = status;
+                sameStatusCount = 1;
+            }
+            return new RecordResult(sameSignatureCount, sameStatusCount);
+        }
+
+        private record RecordResult(int sameSignatureCount, int sameStatusCount) {
+        }
     }
 
     private static class BrowserRequestTask {

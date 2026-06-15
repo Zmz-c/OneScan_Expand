@@ -21,14 +21,80 @@ public class OtherTab extends BaseConfigTab {
 
     public static final String EVENT_UNLOAD_PLUGIN = "event-unload-plugin";
     public static final String EVENT_REFRESH_DATA_PERSISTENCE = "event-refresh-data-persistence";
+    public static final String EVENT_REFRESH_MCP_SERVER = "event-refresh-mcp-server";
+
+    private JCheckBox mMcpEnabled;
+    private JTextField mMcpEndpointField;
+    private JTextField mMcpHealthField;
+    private JLabel mMcpStatusLabel;
 
     protected void initView() {
         // 请求响应最大长度
         addTextConfigPanel(L.get("maximum_display_length"), L.get("maximum_display_length_sub_title"),
                 20, Config.KEY_MAX_DISPLAY_LENGTH).addKeyListener(new NumberFilter(8));
+        addMcpServerPanel();
         addDataPersistencePanel();
         addDirectoryConfigPanel(L.get("collect_directory"), L.get("collect_directory_sub_title"), Config.KEY_COLLECT_PATH);
         addDirectoryConfigPanel(L.get("wordlist_directory"), L.get("wordlist_directory_sub_title"), Config.KEY_WORDLIST_PATH);
+    }
+
+    private void addMcpServerPanel() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+
+        mMcpEnabled = new JCheckBox(L.get("mcp_server_enabled"), Config.getBoolean(Config.KEY_ENABLE_MCP));
+        mMcpEnabled.setAlignmentX(Component.LEFT_ALIGNMENT);
+        mMcpEnabled.addActionListener(e -> {
+            Config.put(Config.KEY_ENABLE_MCP, String.valueOf(mMcpEnabled.isSelected()));
+            sendTabEvent(EVENT_REFRESH_MCP_SERVER);
+        });
+        panel.add(mMcpEnabled);
+
+        mMcpStatusLabel = new JLabel();
+        mMcpStatusLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(mMcpStatusLabel);
+
+        JPanel endpointPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 3));
+        endpointPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        endpointPanel.add(new JLabel(L.get("mcp_server_endpoint")));
+        mMcpEndpointField = new JTextField(38);
+        mMcpEndpointField.setEditable(false);
+        endpointPanel.add(mMcpEndpointField);
+        panel.add(endpointPanel);
+
+        JPanel healthPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 3));
+        healthPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        healthPanel.add(new JLabel(L.get("mcp_server_health")));
+        mMcpHealthField = new JTextField(38);
+        mMcpHealthField.setEditable(false);
+        healthPanel.add(mMcpHealthField);
+        panel.add(healthPanel);
+
+        refreshMcpServerInfo(false, "");
+        addConfigItem(L.get("mcp_server"), L.get("mcp_server_sub_title"), panel);
+    }
+
+    public void refreshMcpServerInfo(boolean running, String endpoint) {
+        boolean enabled = Config.getBoolean(Config.KEY_ENABLE_MCP);
+        if (mMcpEnabled != null && mMcpEnabled.isSelected() != enabled) {
+            mMcpEnabled.setSelected(enabled);
+        }
+        if (mMcpStatusLabel != null) {
+            String statusText = running
+                    ? L.get("mcp_server_status_running")
+                    : (enabled ? L.get("mcp_server_status_not_running") : L.get("mcp_server_status_stopped"));
+            mMcpStatusLabel.setText(L.get("mcp_server_status", statusText));
+        }
+        String safeEndpoint = endpoint == null ? "" : endpoint;
+        if (mMcpEndpointField != null) {
+            mMcpEndpointField.setText(safeEndpoint);
+        }
+        if (mMcpHealthField != null) {
+            String health = safeEndpoint.endsWith("/mcp")
+                    ? safeEndpoint.substring(0, safeEndpoint.length() - "/mcp".length()) + "/health"
+                    : "";
+            mMcpHealthField.setText(health);
+        }
     }
 
     private void addDataPersistencePanel() {

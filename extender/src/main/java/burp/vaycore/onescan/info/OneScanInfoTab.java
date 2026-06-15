@@ -6,6 +6,7 @@ import burp.vaycore.common.layout.VLayout;
 import burp.vaycore.common.utils.JsonUtils;
 import burp.vaycore.common.utils.StringUtils;
 import burp.vaycore.onescan.bean.FpData;
+import burp.vaycore.onescan.common.Constants;
 import burp.vaycore.onescan.manager.FpManager;
 import burp.vaycore.onescan.ui.widget.FpTestResultPanel;
 
@@ -37,7 +38,7 @@ public class OneScanInfoTab implements IMessageEditorTab {
 
     @Override
     public String getTabCaption() {
-        return "OneScan";
+        return Constants.PLUGIN_NAME;
     }
 
     @Override

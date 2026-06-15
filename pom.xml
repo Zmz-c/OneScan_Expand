@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>burp.vaycore</groupId>
-    <artifactId>onescan</artifactId>
+    <artifactId>ost</artifactId>
     <packaging>pom</packaging>
     <version>parent</version>
 
