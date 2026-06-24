@@ -2596,6 +2596,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         : RequestScope.ALL;
                 continueTask(continueScope);
                 break;
+            case DataBoardTab.EVENT_CLEAR_ALL_TASK:
+                stopAllTask();
+                break;
         }
     }
 
@@ -2651,7 +2654,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         sTimeoutReqHost.clear();
         mBrowserFallbackStats.clear();
         // 提示信息
-        UIHelper.showTipsDialog(L.get("stop_task_tips"));
+        UIHelper.showTipsDialog(L.get("clear_all_task_tips"));
         // 停止后，重新初始化任务线程池
         mTaskThreadPool = Executors.newFixedThreadPool(TASK_THREAD_COUNT);
         // 停止后，重新初始化低频任务线程池

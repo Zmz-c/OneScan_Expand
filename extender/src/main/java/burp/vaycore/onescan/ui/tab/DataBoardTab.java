@@ -38,6 +38,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     public static final String EVENT_IMPORT_URL = "event-import-url";
     public static final String EVENT_STOP_TASK = "event-stop-task";
     public static final String EVENT_CONTINUE_TASK = "event-continue-task";
+    public static final String EVENT_CLEAR_ALL_TASK = "event-clear-all-task";
 
     private TaskTable mBurpTaskTable;
     private TaskTable mBrowserTaskTable;
@@ -176,6 +177,12 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         continueBtn.addActionListener(this);
         panel.add(continueBtn);
 
+        JButton clearAllTaskBtn = new JButton(L.get("clear_all_task"));
+        clearAllTaskBtn.setToolTipText(L.get("clear_all_task_tip"));
+        clearAllTaskBtn.setActionCommand("clear-all-task");
+        clearAllTaskBtn.addActionListener(this);
+        panel.add(clearAllTaskBtn);
+
         JButton clearBtn = new JButton(L.get("clear_record"));
         clearBtn.setToolTipText(L.get("clear_history"));
         clearBtn.setActionCommand("clear-history");
@@ -296,6 +303,9 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
             case "continue-task":
                 continueTask();
                 break;
+            case "clear-all-task":
+                clearAllTask();
+                break;
             case "clear-history":
                 clearHistory();
                 break;
@@ -384,6 +394,22 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         }
         sendTabEvent(EVENT_CONTINUE_TASK, scope);
         forEachTableByScope(scope, TaskTable::startAddTaskData);
+    }
+
+    private void clearAllTask() {
+        int ret = UIHelper.showOkCancelDialog(L.get("clear_all_task"), L.get("clear_all_task_confirm"));
+        if (ret != JOptionPane.OK_OPTION) {
+            return;
+        }
+        // 恢复监听代理复选框状态（停止时可能被临时关闭）
+        if (mListenProxyMessageBeforePause != null && mListenProxyMessage != null) {
+            mListenProxyMessage.setSelected(mListenProxyMessageBeforePause);
+            mListenProxyMessageBeforePause = null;
+        }
+        // 通知扩展端清空并丢弃所有正在执行和排队中的任务
+        sendTabEvent(EVENT_CLEAR_ALL_TASK);
+        // 恢复 UI 表格的任务加载（停止时可能被暂停）
+        forEachTableByScope(RequestScope.ALL, TaskTable::startAddTaskData);
     }
 
     private RequestScope getTaskControlScope() {
