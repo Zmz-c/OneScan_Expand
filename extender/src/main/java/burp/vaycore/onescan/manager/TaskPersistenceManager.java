@@ -5,6 +5,8 @@ import burp.vaycore.common.utils.FileUtils;
 import burp.vaycore.common.utils.GsonUtils;
 import burp.vaycore.common.utils.PathUtils;
 import burp.vaycore.common.utils.StringUtils;
+
+import java.util.Base64;
 import burp.vaycore.onescan.bean.FpColumn;
 import burp.vaycore.onescan.bean.TaskData;
 import burp.vaycore.onescan.common.Config;
@@ -35,6 +37,8 @@ public class TaskPersistenceManager {
     public static final String FIELD_LENGTH = "length";
     public static final String FIELD_COLOR = "color";
     public static final String FIELD_PARAMS = "params";
+    public static final String FIELD_REQ_BYTES = "req_bytes";
+    public static final String FIELD_RESP_BYTES = "resp_bytes";
     public static final String DEFAULT_DATA_LABEL = "default";
     private static final DateTimeFormatter LABEL_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
@@ -403,6 +407,18 @@ public class TaskPersistenceManager {
                 ps.setString(3, getFieldValue(data, field));
                 ps.addBatch();
             }
+            // 始终持久化原始请求/响应字节（不受字段配置影响）
+            for (String bytesKey : new String[]{FIELD_REQ_BYTES, FIELD_RESP_BYTES}) {
+                if (!fields.contains(bytesKey)) {
+                    String value = getFieldValue(data, bytesKey);
+                    if (!value.isEmpty()) {
+                        ps.setLong(1, recordId);
+                        ps.setString(2, bytesKey);
+                        ps.setString(3, value);
+                        ps.addBatch();
+                    }
+                }
+            }
             ps.executeBatch();
         }
     }
@@ -549,6 +565,10 @@ public class TaskPersistenceManager {
             }
         }
         data.setParams(params);
+
+        // 恢复原始请求/响应字节
+        data.setReqBytes(base64ToBytes(fields.get(FIELD_REQ_BYTES)));
+        data.setRespBytes(base64ToBytes(fields.get(FIELD_RESP_BYTES)));
     }
 
     public static String getFieldValue(TaskData data, String key) {
@@ -566,6 +586,8 @@ public class TaskPersistenceManager {
             case FIELD_LENGTH -> String.valueOf(data.getLength());
             case FIELD_COLOR -> safe(data.getHighlight());
             case FIELD_PARAMS -> GsonUtils.toJson(data.getParams());
+            case FIELD_REQ_BYTES -> bytesToBase64(data.getReqBytes());
+            case FIELD_RESP_BYTES -> bytesToBase64(data.getRespBytes());
             default -> {
                 if (key.startsWith("param:")) {
                     yield safe(data.getParams().get(key.substring("param:".length())));
@@ -573,6 +595,132 @@ public class TaskPersistenceManager {
                 yield "";
             }
         };
+    }
+
+    // ──────────────── 历史数据管理删除接口 ────────────────
+
+    /** 删除所有历史记录 */
+    public static int deleteAll() {
+        flush();
+        synchronized (DB_LOCK) {
+            try (Connection conn = openConnection()) {
+                ensureSchema(conn);
+                try (Statement st = conn.createStatement()) {
+                    return st.executeUpdate("DELETE FROM task_records");
+                }
+            } catch (Exception e) {
+                Logger.error("deleteAll failed: %s", e.getMessage());
+                return 0;
+            }
+        }
+    }
+
+    /** 删除指定标签列表的历史记录 */
+    public static int deleteByLabels(List<String> labels) {
+        if (labels == null || labels.isEmpty()) {
+            return 0;
+        }
+        flush();
+        synchronized (DB_LOCK) {
+            try (Connection conn = openConnection()) {
+                ensureSchema(conn);
+                int total = 0;
+                for (String label : labels) {
+                    String dataLabel = normalizeLabel(label);
+                    String sql = "DELETE FROM task_records WHERE " + labelWhereSql(dataLabel);
+                    try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                        setLabelParameter(ps, 1, dataLabel);
+                        total += ps.executeUpdate();
+                    }
+                }
+                return total;
+            } catch (Exception e) {
+                Logger.error("deleteByLabels failed: %s", e.getMessage());
+                return 0;
+            }
+        }
+    }
+
+    /**
+     * 按站点（host 字段模糊匹配）删除历史记录
+     *
+     * @param hostPattern 站点关键字，支持 SQL LIKE 语法（例如 "%example.com%"）
+     * @return 删除条数
+     */
+    public static int deleteByHostPattern(String hostPattern) {
+        if (StringUtils.isEmpty(hostPattern)) {
+            return 0;
+        }
+        flush();
+        synchronized (DB_LOCK) {
+            try (Connection conn = openConnection()) {
+                ensureSchema(conn);
+                // 先找到 host 字段匹配的 record_id
+                String sql = """
+                        DELETE FROM task_records
+                        WHERE id IN (
+                            SELECT DISTINCT r.id FROM task_records r
+                            INNER JOIN task_fields f ON f.record_id = r.id
+                            WHERE f.field_key = 'host' AND f.field_value LIKE ?
+                        )
+                        """;
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setString(1, hostPattern);
+                    return ps.executeUpdate();
+                }
+            } catch (Exception e) {
+                Logger.error("deleteByHostPattern failed: %s", e.getMessage());
+                return 0;
+            }
+        }
+    }
+
+    /** 列出所有不同的 host 值（用于按站点删除的下拉选择） */
+    public static List<String> listDistinctHosts() {
+        flush();
+        synchronized (DB_LOCK) {
+            try (Connection conn = openConnection()) {
+                ensureSchema(conn);
+                List<String> result = new ArrayList<>();
+                try (PreparedStatement ps = conn.prepareStatement("""
+                        SELECT DISTINCT field_value FROM task_fields
+                        WHERE field_key = 'host' AND field_value != ''
+                        ORDER BY field_value ASC
+                        """);
+                     ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String v = rs.getString("field_value");
+                        if (StringUtils.isNotEmpty(v)) {
+                            result.add(v);
+                        }
+                    }
+                }
+                return result;
+            } catch (Exception e) {
+                Logger.error("listDistinctHosts failed: %s", e.getMessage());
+                return new ArrayList<>();
+            }
+        }
+    }
+
+    // ──────────────── Base64 字节与字符串互转 ────────────────
+
+    private static String bytesToBase64(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return "";
+        }
+        return Base64.getEncoder().encodeToString(bytes);
+    }
+
+    private static byte[] base64ToBytes(String base64) {
+        if (StringUtils.isEmpty(base64)) {
+            return null;
+        }
+        try {
+            return Base64.getDecoder().decode(base64);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static List<String> labelsByKeys(List<String> keys) {

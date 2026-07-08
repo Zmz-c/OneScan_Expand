@@ -51,6 +51,12 @@ public class TaskData {
     // 请求响应数据
     private Object reqResp;
 
+    // 原始请求字节（用于历史数据持久化恢复）
+    private byte[] reqBytes;
+
+    // 原始响应字节（用于历史数据持久化恢复）
+    private byte[] respBytes;
+
     public int getId() {
         return id;
     }
@@ -152,6 +158,22 @@ public class TaskData {
 
     public void setReqResp(Object reqResp) {
         this.reqResp = reqResp;
+    }
+
+    public byte[] getReqBytes() {
+        return reqBytes;
+    }
+
+    public void setReqBytes(byte[] reqBytes) {
+        this.reqBytes = reqBytes;
+    }
+
+    public byte[] getRespBytes() {
+        return respBytes;
+    }
+
+    public void setRespBytes(byte[] respBytes) {
+        this.respBytes = respBytes;
     }
 
     public void setFingerprint(List<FpData> list) {

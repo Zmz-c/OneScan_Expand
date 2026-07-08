@@ -16,6 +16,7 @@ import burp.vaycore.onescan.manager.FpManager;
 import burp.vaycore.onescan.manager.TaskPersistenceManager;
 import burp.vaycore.onescan.ui.base.BaseTab;
 import burp.vaycore.onescan.ui.widget.DividerLine;
+import burp.vaycore.onescan.ui.widget.HistoryManagerWindow;
 import burp.vaycore.onescan.ui.widget.ImportUrlWindow;
 import burp.vaycore.onescan.ui.widget.TaskFieldSelectionPanel;
 import burp.vaycore.onescan.ui.widget.TaskTable;
@@ -52,6 +53,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private AbstractButton mPayloadProcessing;
     private JPopupMenu mRequestProcessingMenu;
     private ImportUrlWindow mImportUrlWindow;
+    private HistoryManagerWindow mHistoryManagerWindow;
     private JComboBox<RequestScopeItem> mTaskControlScope;
     private Boolean mListenProxyMessageBeforePause;
     private JLabel mTaskStatus;
@@ -324,6 +326,9 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
             case "save-stored-data":
                 saveStoredData(true);
                 break;
+            case "manage-history":
+                manageHistory();
+                break;
         }
     }
 
@@ -332,6 +337,8 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         addDataProcessingMenuItem(menu, L.get("save"), L.get("save_stored_data"), "save-stored-data");
         addDataProcessingMenuItem(menu, L.get("import_data_short"), L.get("import_stored_data"), "import-stored-data");
         addDataProcessingMenuItem(menu, L.get("export_data_short"), L.get("export_stored_data"), "export-stored-data");
+        menu.addSeparator();
+        addDataProcessingMenuItem(menu, L.get("history_manager.menu_title"), L.get("history_manager.menu_title"), "manage-history");
         menu.show(anchor, 0, anchor.getHeight());
     }
 
@@ -536,6 +543,17 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         } catch (Exception ex) {
             UIHelper.showTipsDialog(L.get("error_hint", ex.getMessage()));
         }
+    }
+
+    private void manageHistory() {
+        if (mHistoryManagerWindow == null) {
+            mHistoryManagerWindow = new HistoryManagerWindow();
+            mHistoryManagerWindow.setOnDeleteListener(() -> {
+                // 删除后刷新当前显示的历史记录统计
+                SwingUtilities.invokeLater(this::refreshTaskHistoryStatus);
+            });
+        }
+        mHistoryManagerWindow.show(this);
     }
 
     public void addTaskData(TaskData data, RequestMode requestMode) {

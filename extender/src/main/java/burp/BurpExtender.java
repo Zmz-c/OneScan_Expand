@@ -2303,6 +2303,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         data.setLength(length);
         data.setFingerprint(checkResult);
         data.setReqResp(httpReqResp);
+        // 同步保存原始字节，供历史数据加载后恢复展示
+        data.setReqBytes(httpReqResp.getRequest());
+        data.setRespBytes(httpReqResp.getResponse());
         return data;
     }
 
@@ -2370,18 +2373,63 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             onClearHistory();
             return;
         }
-        if (!(data.getReqResp() instanceof IHttpRequestResponse reqResp)) {
-            mCurrentReqResp = null;
-            mRequestTextEditor.setMessage(EMPTY_BYTES, true);
-            mResponseTextEditor.setMessage(EMPTY_BYTES, false);
-            return;
+        if (data.getReqResp() instanceof IHttpRequestResponse reqResp) {
+            mCurrentReqResp = reqResp;
+        } else {
+            // 历史加载的数据：从持久化的原始字节重建 IHttpRequestResponse
+            mCurrentReqResp = rebuildReqRespFromBytes(data);
+            if (mCurrentReqResp == null) {
+                mRequestTextEditor.setMessage(EMPTY_BYTES, true);
+                mResponseTextEditor.setMessage(EMPTY_BYTES, false);
+                return;
+            }
         }
-        mCurrentReqResp = reqResp;
         // 加载请求、响应数据包
         byte[] hintBytes = mHelpers.stringToBytes(L.get("message_editor_loading"));
         mRequestTextEditor.setMessage(hintBytes, true);
         mResponseTextEditor.setMessage(hintBytes, false);
         mRefreshMsgTask.execute(this::refreshReqRespMessage);
+    }
+
+    /**
+     * 从 TaskData 中保存的原始字节重建 IHttpRequestResponse（用于历史数据展示）
+     *
+     * @param data TaskData 实例
+     * @return 重建后的实例；如果字节为空则返回 null
+     */
+    private IHttpRequestResponse rebuildReqRespFromBytes(TaskData data) {
+        byte[] reqBytes = data.getReqBytes();
+        if (reqBytes == null || reqBytes.length == 0) {
+            return null;
+        }
+        IHttpService service = buildHttpServiceByHostString(data.getHost());
+        if (service == null) {
+            return null;
+        }
+        HttpReqRespAdapter adapter = HttpReqRespAdapter.from(service, reqBytes);
+        byte[] respBytes = data.getRespBytes();
+        if (respBytes != null && respBytes.length > 0) {
+            adapter.setResponse(respBytes);
+        }
+        return adapter;
+    }
+
+    /**
+     * 从持久化的 host 字符串（格式：protocol://host 或 protocol://host:port）重建 IHttpService
+     *
+     * @param hostStr host 字符串
+     * @return IHttpService 实例；解析失败返回 null
+     */
+    private IHttpService buildHttpServiceByHostString(String hostStr) {
+        if (StringUtils.isEmpty(hostStr)) {
+            return null;
+        }
+        try {
+            URL u = new URL(hostStr);
+            return buildHttpServiceByURL(u);
+        } catch (MalformedURLException e) {
+            return null;
+        }
     }
 
     /**
