@@ -5,7 +5,7 @@ import burp.vaycore.common.layout.HLayout;
 import burp.vaycore.common.layout.VFlowLayout;
 import burp.vaycore.common.layout.VLayout;
 import burp.vaycore.common.utils.StringUtils;
-import burp.vaycore.onescan.common.L;
+import burp.vaycore.ost.common.L;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;

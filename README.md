@@ -1,6 +1,6 @@
 # OST
 
-OST is a Burp Suite extension project based on **OneScan**, with browser-assisted request replay, local data
+OST is a Burp Suite extension project, with browser-assisted request replay, local data
 persistence,
 and an optional MCP interface for AI-assisted security workflows.
 
@@ -127,8 +127,6 @@ ost.wordlist.delete
 ost.scan.urls
 ost.scan.request
 ```
-
-Legacy `onescan.*` tool names are still accepted as aliases for compatibility.
 
 ### MCP Tool Groups
 

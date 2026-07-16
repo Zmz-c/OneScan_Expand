@@ -5,29 +5,29 @@ import burp.vaycore.common.helper.QpsLimiter;
 import burp.vaycore.common.helper.UIHelper;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
-import burp.vaycore.onescan.OneScan;
-import burp.vaycore.onescan.bean.CollectNode;
-import burp.vaycore.onescan.bean.FpData;
-import burp.vaycore.onescan.bean.TaskData;
-import burp.vaycore.onescan.browser.BrowserRequest;
-import burp.vaycore.onescan.browser.BrowserRequestManager;
-import burp.vaycore.onescan.common.*;
-import burp.vaycore.onescan.info.OneScanInfoTab;
-import burp.vaycore.onescan.manager.CollectManager;
-import burp.vaycore.onescan.manager.FpManager;
-import burp.vaycore.onescan.manager.TaskPersistenceManager;
-import burp.vaycore.onescan.manager.WordlistManager;
-import burp.vaycore.onescan.mcp.OneScanMcpServer;
-import burp.vaycore.onescan.mcp.OneScanMcpTool;
-import burp.vaycore.onescan.mcp.OneScanMcpToolProvider;
-import burp.vaycore.onescan.ui.tab.DataBoardTab;
-import burp.vaycore.onescan.ui.tab.FingerprintTab;
-import burp.vaycore.onescan.ui.tab.config.OtherTab;
-import burp.vaycore.onescan.ui.tab.config.RequestTab;
-import burp.vaycore.onescan.ui.widget.TaskTable;
-import burp.vaycore.onescan.ui.widget.payloadlist.PayloadItem;
-import burp.vaycore.onescan.ui.widget.payloadlist.PayloadRule;
-import burp.vaycore.onescan.ui.widget.payloadlist.ProcessingItem;
+import burp.vaycore.ost.Ost;
+import burp.vaycore.ost.bean.CollectNode;
+import burp.vaycore.ost.bean.FpData;
+import burp.vaycore.ost.bean.TaskData;
+import burp.vaycore.ost.browser.BrowserRequest;
+import burp.vaycore.ost.browser.BrowserRequestManager;
+import burp.vaycore.ost.common.*;
+import burp.vaycore.ost.info.OstInfoTab;
+import burp.vaycore.ost.manager.CollectManager;
+import burp.vaycore.ost.manager.FpManager;
+import burp.vaycore.ost.manager.TaskPersistenceManager;
+import burp.vaycore.ost.manager.WordlistManager;
+import burp.vaycore.ost.mcp.OstMcpServer;
+import burp.vaycore.ost.mcp.OstMcpTool;
+import burp.vaycore.ost.mcp.OstMcpToolProvider;
+import burp.vaycore.ost.ui.tab.DataBoardTab;
+import burp.vaycore.ost.ui.tab.FingerprintTab;
+import burp.vaycore.ost.ui.tab.config.OtherTab;
+import burp.vaycore.ost.ui.tab.config.RequestTab;
+import burp.vaycore.ost.ui.widget.TaskTable;
+import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
+import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
+import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
 
 import javax.swing.*;
 import javax.swing.Timer;
@@ -56,7 +56,7 @@ import java.util.stream.Collectors;
  */
 public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
         TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
-        IExtensionStateListener, IContextMenuFactory, OneScanMcpToolProvider {
+        IExtensionStateListener, IContextMenuFactory, OstMcpToolProvider {
 
     /**
      * 任务线程数量
@@ -96,17 +96,17 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private static final long BROWSER_PROXY_CACHE_TTL = 30000L;
 
     /**
-     * 请求来源：发送到 OneScan 扫描
+     * 请求来源：发送到 OST 扫描
      */
     private static final String FROM_SEND = "Send";
 
     /**
-     * 请求来源：右键菜单发送到 OneScan 扫描（Burp 请求）
+     * 请求来源：右键菜单发送到 OST 扫描（Burp 请求）
      */
     private static final String FROM_SEND_BURP = "Send (Burp)";
 
     /**
-     * 请求来源：右键菜单发送到 OneScan 扫描（浏览器请求）
+     * 请求来源：右键菜单发送到 OST 扫描（浏览器请求）
      */
     private static final String FROM_SEND_BROWSER = "Send (Browser)";
 
@@ -156,7 +156,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final ThreadLocal<Long> mTaskGenerationContext = new ThreadLocal<Long>();
     private IBurpExtenderCallbacks mCallbacks;
     private IExtensionHelpers mHelpers;
-    private OneScan mOneScan;
+    private Ost mOst;
     private DataBoardTab mDataBoardTab;
     private IMessageEditor mRequestTextEditor;
     private IMessageEditor mResponseTextEditor;
@@ -169,7 +169,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private QpsLimiter mQpsLimit;
     private volatile BrowserTrafficScope mBrowserTrafficScope;
     private Timer mStatusRefresh;
-    private OneScanMcpServer mMcpServer;
+    private OstMcpServer mMcpServer;
 
     /**
      * 检测 Host 是否匹配规则
@@ -279,7 +279,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         DomainHelper.init("public_suffix_list.json");
         // 初始化QPS限制器
         initQpsLimiter();
-        // 注册 OneScan 信息辅助面板
+        // 注册 OST 信息辅助面板
         this.mCallbacks.registerMessageEditorTabFactory(this);
         // 注册插件卸载监听器
         this.mCallbacks.registerExtensionStateListener(this);
@@ -290,7 +290,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      */
     private String getWorkDir() {
         String workDir = Paths.get(mCallbacks.getExtensionFilename())
-                .getParent().toString() + File.separator + "OneScan" + File.separator;
+                .getParent().toString() + File.separator + "OST" + File.separator;
         if (FileUtils.isDir(workDir)) {
             return workDir;
         }
@@ -351,11 +351,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private void initView() {
-        mOneScan = new OneScan();
-        mDataBoardTab = mOneScan.getDataBoardTab();
+        mOst = new Ost();
+        mDataBoardTab = mOst.getDataBoardTab();
         // 注册事件
         mDataBoardTab.setOnTabEventListener(this);
-        mOneScan.getConfigPanel().setOnTabEventListener(this);
+        mOst.getConfigPanel().setOnTabEventListener(this);
         // 将页面添加到 BurpSuite
         mCallbacks.addSuiteTab(this);
         // 创建请求和响应控件
@@ -394,7 +394,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         try {
-            mMcpServer = new OneScanMcpServer(this);
+            mMcpServer = new OstMcpServer(this);
             mMcpServer.start();
             Logger.info("OST MCP server listening on %s", mMcpServer.getEndpoint());
             refreshMcpServerInfoPanel();
@@ -425,23 +425,23 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private void refreshMcpServerInfoPanel() {
-        if (mOneScan == null || mOneScan.getConfigPanel() == null) {
+        if (mOst == null || mOst.getConfigPanel() == null) {
             return;
         }
         boolean running = mMcpServer != null;
         String endpoint = running ? mMcpServer.getEndpoint() : "";
-        SwingUtilities.invokeLater(() -> mOneScan.getConfigPanel().refreshMcpServerInfo(running, endpoint));
+        SwingUtilities.invokeLater(() -> mOst.getConfigPanel().refreshMcpServerInfo(running, endpoint));
     }
 
     @Override
     public List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
         ArrayList<JMenuItem> items = new ArrayList<>();
         // 扫描选定目标
-        JMenu sendToOneScanMenu = new JMenu(L.get("send_to_plugin"));
-        items.add(sendToOneScanMenu);
-        addSendToOneScanMenuItem(sendToOneScanMenu, invocation, L.get("send_to_plugin_burp"), RequestMode.BURP,
+        JMenu sendToOSTMenu = new JMenu(L.get("send_to_plugin"));
+        items.add(sendToOSTMenu);
+        addSendToOSTMenuItem(sendToOSTMenu, invocation, L.get("send_to_plugin_burp"), RequestMode.BURP,
                 FROM_SEND_BURP);
-        addSendToOneScanMenuItem(sendToOneScanMenu, invocation, L.get("send_to_plugin_browser"),
+        addSendToOSTMenuItem(sendToOSTMenu, invocation, L.get("send_to_plugin_browser"),
                 RequestMode.BROWSER, FROM_SEND_BROWSER);
         // 选择 Payload 扫描
         List<String> payloadList = WordlistManager.getItemList(WordlistManager.KEY_PAYLOAD);
@@ -460,7 +460,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return items;
     }
 
-    private void addSendToOneScanMenuItem(JMenu menu, IContextMenuInvocation invocation, String name,
+    private void addSendToOSTMenuItem(JMenu menu, IContextMenuInvocation invocation, String name,
                                           RequestMode requestMode, String from) {
         JMenuItem item = new JMenuItem(name);
         menu.add(item);
@@ -506,7 +506,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     @Override
     public Component getUiComponent() {
-        return mOneScan;
+        return mOst;
     }
 
     @Override
@@ -1845,23 +1845,19 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         StringBuilder headers = new StringBuilder();
         headers.append("HTTP/1.1 ").append(status).append(" ").append(reason).append("\r\n");
-        boolean hasContentLength = false;
         for (Map.Entry<String, String> entry : result.getHeaders().entrySet()) {
             String key = entry.getKey();
             if (StringUtils.isEmpty(key)) {
                 continue;
             }
-            if ("transfer-encoding".equalsIgnoreCase(key) || "content-encoding".equalsIgnoreCase(key)) {
+            if ("transfer-encoding".equalsIgnoreCase(key)
+                    || "content-encoding".equalsIgnoreCase(key)
+                    || "content-length".equalsIgnoreCase(key)) {
                 continue;
-            }
-            if ("content-length".equalsIgnoreCase(key)) {
-                hasContentLength = true;
             }
             headers.append(key).append(": ").append(entry.getValue()).append("\r\n");
         }
-        if (!hasContentLength) {
-            headers.append("Content-Length: ").append(bodyBytes.length).append("\r\n");
-        }
+        headers.append("Content-Length: ").append(bodyBytes.length).append("\r\n");
         headers.append("\r\n");
         byte[] headerBytes = headers.toString().getBytes(StandardCharsets.ISO_8859_1);
         byte[] responseBytes = new byte[headerBytes.length + bodyBytes.length];
@@ -2603,7 +2599,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             }
         }
         WordlistManager.putList(WordlistManager.KEY_HOST_BLOCKLIST, list);
-        mOneScan.getConfigPanel().refreshHostTab();
+        mOst.getConfigPanel().refreshHostTab();
     }
 
     @Override
@@ -2740,7 +2736,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     @Override
-    public List<OneScanMcpTool> listTools() {
+    public List<OstMcpTool> listTools() {
         return List.of(
                 mcpTool("ost.capabilities.list", "List OST MCP capabilities.", objectSchema()),
                 mcpTool("ost.status.get", "Get OST runtime status and key configuration.", objectSchema()),
@@ -2889,9 +2885,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private String normalizeMcpToolName(String name) {
-        if (name != null && name.startsWith("onescan.")) {
-            return "ost." + name.substring("onescan.".length());
-        }
         return name;
     }
 
@@ -2916,7 +2909,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         capability("ost.scan.request", "active", "Submit raw request scan tasks."),
                         capability("ost.export.csv", "filesystem-write", "Write CSV export to a local path.")
                 ),
-                "legacy_alias_prefix", "onescan.",
+
                 "default_response_policy", "Summaries are returned by default. Raw request/response bodies require include_body=true."
         );
     }
@@ -3335,8 +3328,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return mapOf("path", path, "label", label == null ? "" : label, "fields", fields, "count", count);
     }
 
-    private OneScanMcpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
-        return new OneScanMcpTool(name, description, inputSchema);
+    private OstMcpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
+        return new OstMcpTool(name, description, inputSchema);
     }
 
     private Map<String, Object> capability(String name, String risk, String description) {
@@ -3725,7 +3718,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     @Override
     public IMessageEditorTab createNewInstance(IMessageEditorController iMessageEditorController, boolean editable) {
-        return new OneScanInfoTab(mCallbacks, iMessageEditorController);
+        return new OstInfoTab(mCallbacks, iMessageEditorController);
     }
 
     @Override
@@ -3803,8 +3796,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         Logger.info("Clear: task list completed. Total %d records.", count);
         // 关闭指纹相关窗口
-        if (mOneScan != null && mOneScan.getFingerprintTab() != null) {
-            FingerprintTab tab = mOneScan.getFingerprintTab();
+        if (mOst != null && mOst.getFingerprintTab() != null) {
+            FingerprintTab tab = mOst.getFingerprintTab();
             // 指纹测试窗口
             tab.closeFpTestWindow();
             // 指纹字段管理窗口

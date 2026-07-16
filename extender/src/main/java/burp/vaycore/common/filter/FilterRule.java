@@ -1,6 +1,6 @@
 package burp.vaycore.common.filter;
 
-import burp.vaycore.onescan.common.L;
+import burp.vaycore.ost.common.L;
 
 import java.util.ArrayList;
 

@@ -260,6 +260,8 @@ def build_options(args, port, existing_only=False):
     options.set_load_mode("eager")
     options.ignore_certificate_errors()
     options.set_argument("--allow-insecure-localhost")
+    options.set_argument("--disable-web-security")
+    options.set_argument("--allow-running-insecure-content")
     options.set_argument("--disable-background-networking")
     options.set_argument("--disable-component-update")
     options.set_argument("--disable-domain-reliability")
@@ -436,11 +438,17 @@ def configure_tab_network(tab, allow_static_resources):
         current_tab.run_cdp("Network.enable")
     except Exception:
         pass
-    if not allow_static_resources:
-        try:
-            current_tab.run_cdp("Network.setBlockedURLs", urls=BLOCKED_RESOURCE_PATTERNS)
-        except Exception:
-            pass
+    try:
+        current_tab.run_cdp(
+            "Network.setBlockedURLs",
+            urls=[] if allow_static_resources else BLOCKED_RESOURCE_PATTERNS,
+        )
+    except Exception:
+        pass
+    try:
+        current_tab.run_cdp("Page.setBypassCSP", enabled=True)
+    except Exception:
+        pass
 
 
 def parse_headers(header_lines):
@@ -1076,7 +1084,14 @@ def parse_script_response(tab, result_text, request):
     }
 
 
-def execute_xhr_request(tab, request):
+def script_timeout_millis(timeout_seconds):
+    try:
+        return max(1000, int(float(timeout_seconds) * 1000))
+    except (TypeError, ValueError):
+        return 15000
+
+
+def execute_xhr_request(tab, request, timeout_seconds):
     headers = allowed_script_headers(request)
     script = """
 (async () => {
@@ -1084,6 +1099,7 @@ def execute_xhr_request(tab, request):
     const url = __URL__;
     const headers = __HEADERS__;
     const bodyBase64 = __BODY__;
+    const timeoutMs = __TIMEOUT_MS__;
     const decode = (value) => {
         if (!value) {
             return new Uint8Array(0);
@@ -1110,6 +1126,7 @@ def execute_xhr_request(tab, request):
             xhr.open(method, url, true);
             xhr.withCredentials = true;
             xhr.responseType = "arraybuffer";
+            xhr.timeout = timeoutMs;
             for (const [name, value] of Object.entries(headers)) {
                 try {
                     xhr.setRequestHeader(name, value);
@@ -1138,6 +1155,7 @@ def execute_xhr_request(tab, request):
             };
             xhr.onerror = () => resolve(JSON.stringify({error: "XMLHttpRequest failed"}));
             xhr.ontimeout = () => resolve(JSON.stringify({error: "XMLHttpRequest timeout"}));
+            xhr.onabort = () => resolve(JSON.stringify({error: "XMLHttpRequest aborted"}));
             try {
                 xhr.send(body.length ? body : null);
             } catch (e) {
@@ -1154,10 +1172,11 @@ def execute_xhr_request(tab, request):
     script = script.replace("__URL__", json.dumps(request["url"]))
     script = script.replace("__HEADERS__", json.dumps(headers, ensure_ascii=False))
     script = script.replace("__BODY__", json.dumps(base64.b64encode(request["body"]).decode("ascii")))
+    script = script.replace("__TIMEOUT_MS__", json.dumps(script_timeout_millis(timeout_seconds)))
     return parse_script_response(tab, evaluate_async_json(tab, script), request)
 
 
-def execute_fetch_request(tab, request):
+def execute_fetch_request(tab, request, timeout_seconds):
     headers = allowed_script_headers(request)
     script = """
 (async () => {
@@ -1166,6 +1185,7 @@ def execute_fetch_request(tab, request):
     const headers = __HEADERS__;
     const bodyBase64 = __BODY__;
     const referrer = __REFERRER__;
+    const timeoutMs = __TIMEOUT_MS__;
     const decode = (value) => {
         if (!value) {
             return new Uint8Array(0);
@@ -1185,8 +1205,11 @@ def execute_fetch_request(tab, request):
         }
         return btoa(binary);
     };
+    let timeoutId = null;
     try {
         const body = decode(bodyBase64);
+        const controller = new AbortController();
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const options = {
             method,
             headers,
@@ -1194,6 +1217,7 @@ def execute_fetch_request(tab, request):
             redirect: "follow",
             cache: "no-store",
             referrer: referrer || undefined,
+            signal: controller.signal,
         };
         if (method !== "GET" && method !== "HEAD" && body.length) {
             options.body = body;
@@ -1213,6 +1237,10 @@ def execute_fetch_request(tab, request):
         });
     } catch (e) {
         return JSON.stringify({error: String(e)});
+    } finally {
+        if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+        }
     }
 })();
 """
@@ -1221,20 +1249,18 @@ def execute_fetch_request(tab, request):
     script = script.replace("__HEADERS__", json.dumps(headers, ensure_ascii=False))
     script = script.replace("__BODY__", json.dumps(base64.b64encode(request["body"]).decode("ascii")))
     script = script.replace("__REFERRER__", json.dumps(header_value(request, "Referer")))
+    script = script.replace("__TIMEOUT_MS__", json.dumps(script_timeout_millis(timeout_seconds)))
     return parse_script_response(tab, evaluate_async_json(tab, script), request)
 
 
-def execute_fetch_post_request(tab, request):
-    try:
-        return execute_fetch_request(tab, request)
-    except Exception:
-        return execute_xhr_request(tab, request)
+def execute_fetch_post_request(tab, request, timeout_seconds):
+    return execute_fetch_request(tab, request, timeout_seconds)
 
 
-def execute_fetch_get_request(tab, request):
+def execute_fetch_get_request(tab, request, timeout_seconds):
     if request_has_body(request):
-        return execute_xhr_request(tab, request)
-    return execute_fetch_request(tab, request)
+        return execute_xhr_request(tab, request, timeout_seconds)
+    return execute_fetch_request(tab, request, timeout_seconds)
 
 
 def decode_body_text(body_bytes):
@@ -2546,7 +2572,7 @@ def execute_navigation_non_form_post_request(tab, request, timeout_seconds, allo
     ensure_post_context(tab, request, timeout_seconds)
     set_request_cookies(tab, request)
 
-    initial_result = execute_fetch_post_request(tab, request)
+    initial_result = execute_fetch_post_request(tab, request, timeout_seconds)
     if not is_post_challenge_result(initial_result):
         return initial_result
 
@@ -2612,7 +2638,7 @@ def execute_post_request(tab, request, timeout_seconds, allow_static_resources):
     configure_tab_network(tab, allow_static_resources)
     ensure_post_context(tab, request, timeout_seconds)
     set_request_cookies(tab, request)
-    result = execute_fetch_post_request(tab, request)
+    result = execute_fetch_post_request(tab, request, timeout_seconds)
     if not is_post_challenge_result(result):
         return result
 
@@ -2632,7 +2658,7 @@ def execute_post_request(tab, request, timeout_seconds, allow_static_resources):
         if page_result is not None:
             return page_result
         ensure_post_context(tab, request, timeout_seconds)
-        retry_result = execute_fetch_post_request(tab, request)
+        retry_result = execute_fetch_post_request(tab, request, timeout_seconds)
         if not is_post_challenge_result(retry_result):
             return retry_result
         last_result = retry_result
@@ -2644,7 +2670,7 @@ def execute_get_request(tab, request, timeout_seconds, allow_static_resources):
     set_request_cookies(tab, request)
     if not is_navigation_get(request):
         ensure_fetch_context(tab, request, timeout_seconds)
-        return execute_fetch_get_request(tab, request)
+        return execute_fetch_get_request(tab, request, timeout_seconds)
     current_tab = resolve_live_tab(tab)
     current_tab.get(request["url"], retry=0, interval=0, timeout=timeout_seconds)
     wait_for_initial_load(current_tab, timeout_seconds)

@@ -1,7 +1,7 @@
 package burp.vaycore.common.helper;
 
 import burp.vaycore.common.log.Logger;
-import burp.vaycore.onescan.common.L;
+import burp.vaycore.ost.common.L;
 
 import javax.swing.*;
 import javax.swing.table.TableCellRenderer;
