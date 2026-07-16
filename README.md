@@ -230,7 +230,7 @@ On Windows:
 Default output:
 
 ```text
-extender/target/OST-v1.1.7.jar
+extender/target/OST-v1.1.9.jar
 ```
 
 ---

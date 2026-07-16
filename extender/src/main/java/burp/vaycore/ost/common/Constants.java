@@ -11,7 +11,7 @@ public interface Constants {
 
     // 插件信息
     String PLUGIN_NAME = "OST";
-    String PLUGIN_VERSION = "1.1.8";
+    String PLUGIN_VERSION = "1.1.9";
     boolean DEBUG = false;
 
     // 插件启动显示的信息

@@ -66,7 +66,7 @@ public class Ost extends JTabbedPane {
         JFrame frame = new JFrame(Constants.PLUGIN_NAME + " v" + Constants.PLUGIN_VERSION);
         frame.setSize(1400, 700);
         // 面板
-        OST ost = new Ost();
+        Ost ost = new Ost();
         ost.getDataBoardTab().testInit();
         frame.setContentPane(ost);
         // 其它设置
