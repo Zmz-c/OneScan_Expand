@@ -1,5 +1,7 @@
 # OST
 
+[中文文档](README_zh_CN.md)
+
 OST is a Burp Suite extension project, with browser-assisted request replay, local data
 persistence,
 and an optional MCP interface for AI-assisted security workflows.
