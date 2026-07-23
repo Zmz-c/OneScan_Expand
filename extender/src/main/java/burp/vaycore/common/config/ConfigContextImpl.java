@@ -54,7 +54,7 @@ public class ConfigContextImpl implements ConfigContext {
     }
 
     @Override
-    public void saveSetting(String key, Object value) {
+    public synchronized void saveSetting(String key, Object value) {
         if (StringUtils.isEmpty(key)) {
             return;
         }
@@ -63,12 +63,12 @@ public class ConfigContextImpl implements ConfigContext {
     }
 
     @Override
-    public Object loadSetting(String key) {
+    public synchronized Object loadSetting(String key) {
         return mConfigCache.get(key);
     }
 
     @Override
-    public void removeSetting(String key) {
+    public synchronized void removeSetting(String key) {
         if (StringUtils.isEmpty(key)) {
             return;
         }
@@ -79,7 +79,7 @@ public class ConfigContextImpl implements ConfigContext {
     }
 
     @Override
-    public boolean hasSetting(String key) {
+    public synchronized boolean hasSetting(String key) {
         return mConfigCache.containsKey(key);
     }
 

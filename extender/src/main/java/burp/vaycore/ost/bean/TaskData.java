@@ -44,6 +44,11 @@ public class TaskData {
 
     // 颜色标记
     private String highlight;
+    // Applied identity profile name. Raw request bytes retain the applied credentials in memory.
+    private String profile;
+
+    // Stable identifier shared by replayed profiles of one request variant.
+    private String variantId;
 
     // 自定义指纹数据参数
     private Map<String, String> params;
@@ -56,6 +61,9 @@ public class TaskData {
 
     // 原始响应字节（用于历史数据持久化恢复）
     private byte[] respBytes;
+
+    // 数据面板所属范围（burp/browser），用于持久化后恢复到正确表格
+    private String requestScope;
 
     public int getId() {
         return id;
@@ -103,6 +111,22 @@ public class TaskData {
 
     public void setTitle(String title) {
         this.title = title;
+    }
+
+    public String getProfile() {
+        return profile;
+    }
+
+    public void setProfile(String profile) {
+        this.profile = profile;
+    }
+
+    public String getVariantId() {
+        return variantId;
+    }
+
+    public void setVariantId(String variantId) {
+        this.variantId = variantId;
     }
 
     public String getIp() {
@@ -174,6 +198,14 @@ public class TaskData {
 
     public void setRespBytes(byte[] respBytes) {
         this.respBytes = respBytes;
+    }
+
+    public String getRequestScope() {
+        return requestScope == null ? "" : requestScope;
+    }
+
+    public void setRequestScope(String requestScope) {
+        this.requestScope = requestScope == null ? "" : requestScope;
     }
 
     public void setFingerprint(List<FpData> list) {

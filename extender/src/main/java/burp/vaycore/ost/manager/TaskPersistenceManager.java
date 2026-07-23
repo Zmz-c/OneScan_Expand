@@ -36,9 +36,14 @@ public class TaskPersistenceManager {
     public static final String FIELD_STATUS = "status";
     public static final String FIELD_LENGTH = "length";
     public static final String FIELD_COLOR = "color";
+    public static final String FIELD_PROFILE = "profile";
+    public static final String FIELD_VARIANT = "variant";
     public static final String FIELD_PARAMS = "params";
     public static final String FIELD_REQ_BYTES = "req_bytes";
     public static final String FIELD_RESP_BYTES = "resp_bytes";
+    public static final String FIELD_REQUEST_SCOPE = "request_scope";
+    public static final String SCOPE_BURP = "burp";
+    public static final String SCOPE_BROWSER = "browser";
     public static final String DEFAULT_DATA_LABEL = "default";
     private static final DateTimeFormatter LABEL_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
@@ -52,6 +57,8 @@ public class TaskPersistenceManager {
             new FieldDef(FIELD_STATUS, L.get("task_table_columns.status")),
             new FieldDef(FIELD_LENGTH, L.get("task_table_columns.length")),
             new FieldDef(FIELD_COLOR, L.get("task_table_columns.color")),
+            new FieldDef(FIELD_PROFILE, L.get("task_table_columns.profile")),
+            new FieldDef(FIELD_VARIANT, L.get("task_table_columns.variant")),
             new FieldDef(FIELD_PARAMS, L.get("data_persistence_fields.params"))
     );
     private static final Object EXECUTOR_LOCK = new Object();
@@ -89,7 +96,7 @@ public class TaskPersistenceManager {
                 result.add(key);
             }
         }
-        return result.isEmpty() ? defaultFieldKeys() : result;
+        return normalizeFieldKeys(result);
     }
 
     public static void saveConfiguredFieldKeys(List<String> keys) {
@@ -105,12 +112,23 @@ public class TaskPersistenceManager {
                 }
             }
         }
-        return result.isEmpty() ? defaultFieldKeys() : result;
+        if (result.isEmpty()) {
+            return defaultFieldKeys();
+        }
+        addRequiredField(result, FIELD_PROFILE);
+        addRequiredField(result, FIELD_VARIANT);
+        return result;
+    }
+
+    private static void addRequiredField(List<String> fields, String key) {
+        if (!fields.contains(key)) {
+            fields.add(key);
+        }
     }
 
     public static List<String> defaultFieldKeys() {
         return List.of(FIELD_FROM, FIELD_METHOD, FIELD_HOST, FIELD_URL, FIELD_TITLE,
-                FIELD_IP, FIELD_STATUS, FIELD_LENGTH, FIELD_COLOR);
+                FIELD_IP, FIELD_STATUS, FIELD_LENGTH, FIELD_COLOR, FIELD_PROFILE, FIELD_VARIANT);
     }
 
     public static boolean isEnabled() {
@@ -164,7 +182,15 @@ public class TaskPersistenceManager {
             return;
         }
         List<String> fields = normalizeFieldKeys(fieldKeys);
-        executor().execute(() -> persistNow(data, fields, label));
+        synchronized (EXECUTOR_LOCK) {
+            executor().execute(() -> {
+                try {
+                    persistNow(data, fields, label);
+                } catch (IllegalStateException ignored) {
+                    // persistNow already logged the concrete failure.
+                }
+            });
+        }
     }
 
     public static void persistNow(TaskData data, List<String> fieldKeys) {
@@ -182,7 +208,7 @@ public class TaskPersistenceManager {
                 insertFields(conn, recordId, data, fields);
                 conn.commit();
             } catch (Exception e) {
-                Logger.error("Persist task data failed: %s", e.getMessage());
+                throw persistenceFailure("Persist task data failed", e);
             }
         }
     }
@@ -198,9 +224,16 @@ public class TaskPersistenceManager {
                 }
                 conn.commit();
             } catch (Exception e) {
-                Logger.error("Persist task snapshot failed: %s", e.getMessage());
+                throw persistenceFailure("Persist task snapshot failed", e);
             }
         }
+    }
+
+    private static IllegalStateException persistenceFailure(String action, Exception cause) {
+        String detail = cause == null || StringUtils.isEmpty(cause.getMessage())
+                ? action : action + ": " + cause.getMessage();
+        Logger.error("%s", detail);
+        return new IllegalStateException(detail, cause);
     }
 
     public static List<HistoryLabel> listLabels() throws Exception {
@@ -287,6 +320,10 @@ public class TaskPersistenceManager {
         ExecutorService oldExecutor;
         synchronized (EXECUTOR_LOCK) {
             oldExecutor = sExecutor;
+            if (oldExecutor == null) {
+                sExecutor = createExecutor();
+                return;
+            }
             oldExecutor.shutdown();
             sExecutor = createExecutor();
         }
@@ -303,7 +340,10 @@ public class TaskPersistenceManager {
         ExecutorService executor;
         synchronized (EXECUTOR_LOCK) {
             executor = sExecutor;
-            sExecutor = createExecutor();
+            sExecutor = null;
+        }
+        if (executor == null) {
+            return;
         }
         executor.shutdown();
         try {
@@ -318,7 +358,7 @@ public class TaskPersistenceManager {
 
     private static ExecutorService executor() {
         synchronized (EXECUTOR_LOCK) {
-            if (sExecutor.isShutdown() || sExecutor.isTerminated()) {
+            if (sExecutor == null || sExecutor.isShutdown() || sExecutor.isTerminated()) {
                 sExecutor = createExecutor();
             }
             return sExecutor;
@@ -341,7 +381,14 @@ public class TaskPersistenceManager {
             throw new IllegalStateException("create sqlite directory failed");
         }
         Class.forName("org.sqlite.JDBC");
-        return DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+        Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA foreign_keys = ON");
+        } catch (Exception e) {
+            connection.close();
+            throw e;
+        }
+        return connection;
     }
 
     private static void ensureSchema(Connection conn) throws SQLException {
@@ -368,6 +415,11 @@ public class TaskPersistenceManager {
                     """);
             st.execute("CREATE INDEX IF NOT EXISTS idx_task_records_label ON task_records(data_label)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_task_fields_key ON task_fields(field_key)");
+            // Databases created before foreign-key enforcement may contain orphan field rows.
+            st.executeUpdate("""
+                    DELETE FROM task_fields
+                    WHERE record_id NOT IN (SELECT id FROM task_records)
+                    """);
         }
     }
 
@@ -407,13 +459,13 @@ public class TaskPersistenceManager {
                 ps.setString(3, getFieldValue(data, field));
                 ps.addBatch();
             }
-            // 始终持久化原始请求/响应字节（不受字段配置影响）
-            for (String bytesKey : new String[]{FIELD_REQ_BYTES, FIELD_RESP_BYTES}) {
-                if (!fields.contains(bytesKey)) {
-                    String value = getFieldValue(data, bytesKey);
+            // 始终持久化任务范围及原始请求/响应字节（不受字段配置影响）
+            for (String internalKey : new String[]{FIELD_REQUEST_SCOPE, FIELD_REQ_BYTES, FIELD_RESP_BYTES}) {
+                if (!fields.contains(internalKey)) {
+                    String value = getFieldValue(data, internalKey);
                     if (!value.isEmpty()) {
                         ps.setLong(1, recordId);
-                        ps.setString(2, bytesKey);
+                        ps.setString(2, internalKey);
                         ps.setString(3, value);
                         ps.addBatch();
                     }
@@ -550,6 +602,8 @@ public class TaskPersistenceManager {
         data.setStatus(parseInt(fields.get(FIELD_STATUS)));
         data.setLength(parseInt(fields.get(FIELD_LENGTH)));
         data.setHighlight(safe(fields.get(FIELD_COLOR)));
+        data.setProfile(safe(fields.get(FIELD_PROFILE)));
+        data.setVariantId(safe(fields.get(FIELD_VARIANT)));
 
         LinkedHashMap<String, String> params = new LinkedHashMap<>();
         Map<String, Object> jsonParams = GsonUtils.toMap(fields.get(FIELD_PARAMS));
@@ -569,6 +623,7 @@ public class TaskPersistenceManager {
         // 恢复原始请求/响应字节
         data.setReqBytes(base64ToBytes(fields.get(FIELD_REQ_BYTES)));
         data.setRespBytes(base64ToBytes(fields.get(FIELD_RESP_BYTES)));
+        data.setRequestScope(safe(fields.get(FIELD_REQUEST_SCOPE)));
     }
 
     public static String getFieldValue(TaskData data, String key) {
@@ -585,9 +640,12 @@ public class TaskPersistenceManager {
             case FIELD_STATUS -> String.valueOf(data.getStatus());
             case FIELD_LENGTH -> String.valueOf(data.getLength());
             case FIELD_COLOR -> safe(data.getHighlight());
+            case FIELD_PROFILE -> safe(data.getProfile());
+            case FIELD_VARIANT -> safe(data.getVariantId());
             case FIELD_PARAMS -> GsonUtils.toJson(data.getParams());
             case FIELD_REQ_BYTES -> bytesToBase64(data.getReqBytes());
             case FIELD_RESP_BYTES -> bytesToBase64(data.getRespBytes());
+            case FIELD_REQUEST_SCOPE -> safe(data.getRequestScope());
             default -> {
                 if (key.startsWith("param:")) {
                     yield safe(data.getParams().get(key.substring("param:".length())));

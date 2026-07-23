@@ -2,7 +2,7 @@ package burp.vaycore.ost.browser;
 
 import java.util.List;
 
-public record BrowserRequest(String method, String url, List<String> headers, byte[] body) {
+public record BrowserRequest(String method, String url, List<String> headers, byte[] body, boolean isolateCookies) {
 
     public BrowserRequest {
         method = method == null ? "" : method.trim().toUpperCase();
@@ -12,13 +12,18 @@ public record BrowserRequest(String method, String url, List<String> headers, by
     }
 
     public static BrowserRequest of(String method, String url, List<String> headers, byte[] body) {
+        return of(method, url, headers, body, false);
+    }
+
+    public static BrowserRequest of(String method, String url, List<String> headers, byte[] body,
+                                    boolean isolateCookies) {
         if (method == null || method.trim().isEmpty()) {
             throw new IllegalArgumentException("browser request method is empty");
         }
         if (url == null || url.trim().isEmpty()) {
             throw new IllegalArgumentException("browser request url is empty");
         }
-        return new BrowserRequest(method, url, headers, body);
+        return new BrowserRequest(method, url, headers, body, isolateCookies);
     }
 
     public String getMethod() {

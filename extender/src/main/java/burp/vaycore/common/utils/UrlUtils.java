@@ -113,7 +113,7 @@ public class UrlUtils {
     public static String getHostByURL(URL url) {
         String host = url.getHost();
         int port = url.getPort();
-        if (Utils.isIgnorePort(port)) {
+        if (isDefaultPort(url.getProtocol(), port)) {
             return host;
         }
         return host + ":" + port;
@@ -129,10 +129,27 @@ public class UrlUtils {
         String protocol = url.getProtocol();
         String host = url.getHost();
         int port = url.getPort();
-        if (Utils.isIgnorePort(port)) {
+        if (isDefaultPort(protocol, port)) {
             return protocol + "://" + host;
         }
         return protocol + "://" + host + ":" + port;
+    }
+
+    /**
+     * Returns the absolute HTTP request target without a URL fragment. Fragments
+     * are client-side identifiers and must never be sent in an HTTP request line.
+     */
+    public static String toRequestURL(URL url) {
+        return getReqHostByURL(url) + toPQ(url);
+    }
+
+    /**
+     * Determines whether a port may be omitted for the supplied protocol.
+     */
+    public static boolean isDefaultPort(String protocol, int port) {
+        return port < 0 || port > 65535
+                || ("http".equalsIgnoreCase(protocol) && port == 80)
+                || ("https".equalsIgnoreCase(protocol) && port == 443);
     }
 
     /**

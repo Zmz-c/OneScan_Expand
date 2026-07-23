@@ -1,88 +1,119 @@
 # OST
 
-[中文文档](README_zh_CN.md)
+[中文说明](README_zh_CN.md) | [Variables and identity guide (Chinese)](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)
 
-OST is a Burp Suite extension project, with browser-assisted request replay, local data
-persistence,
-and an optional MCP interface for AI-assisted security workflows.
+OST is a Burp Suite extension for authorized web-security testing. It combines request replay,
+payload-driven scanning, browser-assisted requests, local result persistence, and an optional
+local MCP-style JSON-RPC service.
 
-This branch has been updated for modern Burp builds and now targets **Java 21**.
-It is no longer compatible with **JDK 8**.
+> Build target: **Java 21**. JDK 8 is not supported.
 
----
+## Highlights
 
-## Features
+### Scan Workflow
 
-### Data Board
+- Send selected Burp requests to OST from the context menu, or collect eligible proxy traffic.
+- Generate request variants with payload dictionaries and request-processing rules.
+- Follow redirects when enabled, with configurable cookie propagation and target-host limits.
+- Skip paths matching a case-insensitive fragment blocklist before and after request processing.
+- Aggregate requests, responses, fingerprints, and collected values in one data board.
 
-- Centralized scan result display
-- Request/response summary viewing
-- Task stop, history clear, and URL import
-- Local data import/export based on SQLite
-- Manual save and auto-save for persisted data
-- Historical data lookup by timestamp label
-- Configurable field-level selective persistence
+### Variables and Identity Profiles
 
-### Fingerprint Identification
+- Create fixed, random, or round-robin named variables backed by editable dictionaries.
+- Default random variables are `ip`, `local-ip`, and `ua`, used as `{{random.ip}}`,
+  `{{random.local-ip}}`, and `{{random.ua}}`.
+- Replay the same request variant with explicitly selected identity Profiles that can override
+  Cookie, headers, query parameters, body parameters, and Profile-local variables.
+- Compare responses from different Profiles for the same request variant; the comparison shows
+  differences but does not determine whether an authorization vulnerability exists.
+- Browser Profile replay isolates cookies from the shared browser session.
 
-- Rule-based fingerprint recognition
-- Fingerprint testing
-- Fingerprint history viewing
-- Custom fingerprint field extension
+### Browser, History, and MCP
 
-### Data Collection
+- Replay requests through Edge or Chrome using DrissionPage, with configurable Python, browser,
+  timeout, static-resource, and target-host settings.
+- Persist selected result fields locally in SQLite; support manual save, periodic auto-save,
+  history labels, import, and CSV export.
+- Optionally expose local status, scan, task, fingerprint, collection, wordlist, history, and
+  export operations through a localhost MCP-style JSON-RPC endpoint.
 
-- Useful response data extraction
-- Built-in collection for web names and JSON fields
+## Quick Start
 
-### Payload Processing
+1. Build the extension with JDK 21:
 
-- Rule-based request preprocessing
-- Request variant generation and batch testing
+   ```bash
+   ./mvnw clean package
+   ```
 
-### Path Scanning / Result Correlation
+   On Windows:
 
-- Path-level scan handling
-- Unified result aggregation into the data board
+   ```powershell
+   .\mvnw.cmd clean package
+   ```
 
-### Burp Integration
+2. Load `extender/target/OST-v1.2.0.jar` in Burp Suite under `Extensions` -> `Add`.
 
-- Burp tab integration
-- Context-menu send-to-plugin support
-- Proxy traffic listener support
+3. Open the OST tab and configure dictionaries, request behavior, browser replay, redirects,
+   persistence, and optional MCP from `Config`.
 
-### Browser Request Support
+4. If browser replay is needed, install DrissionPage into the configured Python environment:
 
-- Browser-assisted target page access
-- Edge / Chrome support
-- Manual Python path configuration
-- Manual browser binary path configuration
-- Browser request timeout configuration
+   ```bash
+   python -m pip install DrissionPage
+   ```
 
-### MCP / AI Integration
+## Configuration Guide
 
-- Localhost MCP-style JSON-RPC endpoint
-- Tool discovery for OST capabilities
-- Runtime status, task search, task detail, fingerprint, collect, wordlist, history, and CSV export tools
-- Active scan submission through OST URL and raw-request workflows
-- Summary-first task responses; raw request/response bodies are opt-in with `include_body`
-- In `auto` request mode, suspected interception / verification pages can fall back to browser requests when browser
-  request support is enabled
+| Area                   | What it controls                                                                  |
+|------------------------|-----------------------------------------------------------------------------------|
+| `Variables & Identity` | Named variables, variable dictionaries, and identity Profiles.                    |
+| `Payload`              | Path dictionaries and request-processing rules that generate variants.            |
+| `Request`              | Request method/suffix filters, browser settings, headers, and the path blocklist. |
+| `Redirect`             | Redirect following, cookie propagation, and target-host restrictions.             |
+| `Other`                | Local SQLite persistence, save interval, selected fields, and the MCP server.     |
 
-MCP is disabled by default. Enable it in `Config` -> `Other` -> `MCP server`. After it starts, the same panel shows:
+### Variables and Dictionaries
 
-- Current status
-- Actual MCP endpoint
-- Health-check URL
+Use `{{value.name}}` for fixed or round-robin variables, and `{{random.name}}` for random
+variables. The default entries are ordinary editable named variables:
 
-Default endpoint after MCP is enabled:
+| Name       | Placeholder           | Default dictionary |
+|------------|-----------------------|--------------------|
+| `ip`       | `{{random.ip}}`       | `random-ip`        |
+| `local-ip` | `{{random.local-ip}}` | `random-local-ip`  |
+| `ua`       | `{{random.ua}}`       | `user-agent`       |
+
+They can be edited, replaced, or removed like any other named variable. The random value comes
+from the associated dictionary; there is no separate built-in IP or User-Agent generator.
+
+For the complete variable, Profile, request-processing, and response-comparison behavior, see
+the [detailed guide (Chinese)](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md).
+
+### Identity Profile Replay
+
+Profiles are applied only from the explicit Profile replay context-menu actions. This makes it
+possible to replay one processed request variant as several identities without silently changing
+ordinary scan traffic. Profile credentials and request values are stored locally; protect the OST
+work directory, SQLite database, exports, and screenshots accordingly.
+
+### Path Blocklist
+
+Add one path fragment per line under `Config` -> `Request` -> `Path blocklist`. A request is
+skipped when its URL path contains any non-empty fragment, ignoring case. OST checks both the
+incoming path and the final path after request processing. Host names and query strings are not
+matched by this list.
+
+## MCP / AI Integration
+
+MCP is disabled by default. Enable `MCP server` under `Config` -> `Other`. The panel shows the
+actual endpoint and health-check URL after startup.
+
+Default endpoint:
 
 ```text
 http://127.0.0.1:8765/mcp
 ```
-
-If the port is occupied, OST tries the next ports up to `8785`. Use the endpoint shown in the config panel as the source
-of truth.
 
 Health check:
 
@@ -90,11 +121,10 @@ Health check:
 http://127.0.0.1:8765/health
 ```
 
-MCP server name:
-
-```text
-ost-burp-mcp
-```
+If the port is occupied, OST tries subsequent ports through `8785`. Start with
+`ost.capabilities.list` to discover available operations. Task data, raw requests, responses,
+Cookies, and Profile values may contain sensitive information; use the local endpoint only in a
+trusted environment.
 
 Example JSON-RPC request:
 
@@ -110,143 +140,22 @@ Example JSON-RPC request:
 }
 ```
 
-Useful first tools:
+## Requirements
+
+- Burp Suite with support for external Java extensions. The project depends on
+  `burp-extender-api 2.3` and `montoya-api 2023.12.1`.
+- JDK 21 to build the project.
+- Python 3.9+ and DrissionPage only when browser-request mode is used.
+- Edge or Chrome only when browser-request mode is used.
+
+## Build Output
+
+Run the Quick Start build command from the repository root. The packaged extension is:
 
 ```text
-ost.capabilities.list
-ost.status.get
-ost.tasks.list
-ost.tasks.search
-ost.fingerprint.check
-ost.collect.node.get
-ost.wordlists.list
-ost.wordlist.select
-ost.wordlist.create
-ost.wordlist.append
-ost.wordlist.put
-ost.wordlist.import_file
-ost.wordlist.delete
-ost.scan.urls
-ost.scan.request
+extender/target/OST-v1.2.0.jar
 ```
-
-### MCP Tool Groups
-
-- `ost.status.*`: read runtime status and configuration
-- `ost.scan.*`: submit URL or raw HTTP request scan tasks
-- `ost.tasks.*`: list, search, and read scan results
-- `ost.fingerprint.*`: run or inspect fingerprint rules
-- `ost.collect.*`: read collected response data
-- `ost.wordlist.*`: read, select, create, update, import, and delete wordlists
-- `ost.history.*`: list persisted history labels
-- `ost.export.*`: export persisted data to CSV
-
----
-
-## Runtime Requirements
-
-### Burp Suite
-
-This project depends on:
-
-- `burp-extender-api 2.3`
-- `montoya-api 2023.12.1`
-
-A relatively recent Burp Suite version is recommended.
-The plugin still works with older Burp-based projects that load external extensions, but the code itself now requires a
-modern Java toolchain to build.
-
-### Java
-
-- **JDK 21**
-- The project now targets Java 21 bytecode and no longer supports JDK 8.
-
-### Python
-
-- **Python 3.x**
-- Recommended: **Python 3.9+**
-
-### Browser
-
-Current browser-request mode supports:
-
-- **Edge**
-- **Chrome**
-
----
-
-## DrissionPage Installation
-
-Browser-request functionality depends on `DrissionPage` in the local Python environment.
-
-Install with:
-
-```bash
-pip install DrissionPage
-```
-
-If a specific Python interpreter is used:
-
-```bash
-python -m pip install DrissionPage
-```
-
-Or:
-
-```bash
-python3 -m pip install DrissionPage
-```
-
----
-
-## Repository Structure
-
-```text
-OST/
-|- burp-extender-api/
-|- montoya-api/
-|- extender/
-|  |- src/main/java/
-|  |- src/main/resources/
-|  `- pom.xml
-|- pom.xml
-`- README.md
-```
-
----
-
-## Build
-
-Run in the project root:
-
-```bash
-./mvnw clean package
-```
-
-On Windows:
-
-```powershell
-.\mvnw.cmd clean package
-```
-
-Default output:
-
-```text
-extender/target/OST-v1.1.9.jar
-```
-
----
-
-## Load in Burp Suite
-
-1. Open Burp Suite
-2. Go to `Extensions`
-3. Click `Add`
-4. Select the built JAR file
-5. Load the extension
-
----
 
 ## License
 
-This project follows the `LICENSE` file in the repository.
+This project follows the repository [LICENSE](LICENSE).

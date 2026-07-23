@@ -52,6 +52,8 @@ public class TaskTable extends JTable implements ActionListener {
             70, // Status
             100, // Length
             70, // Color
+            120, // Profile
+            180, // Variant
     };
 
     private static Vector<String> sColumnNames;
@@ -149,7 +151,7 @@ public class TaskTable extends JTable implements ActionListener {
      */
     private void initColorLevelSorter() {
         // 颜色字段等级排序（固定最后一列为颜色等级）
-        int comparatorColumn = TaskTableModel.PRE_COLUMN_NAMES.length - 1;
+        int comparatorColumn = 9;
         mTableRowSorter.setComparator(comparatorColumn, (Comparator<String>) (left, right) -> {
             int leftLevel = getColorLevel(left);
             int rightLevel = getColorLevel(right);
@@ -205,6 +207,7 @@ public class TaskTable extends JTable implements ActionListener {
         addPopupMenuItem(menu, L.get("task_table_menu.get_body_hash"), "fetch-body-hash");
         addPopupMenuItem(menu, L.get("task_table_menu.copy_url"), "copy-url");
         addPopupMenuItem(menu, L.get("task_table_menu.send_to_repeater"), "send-to-repeater");
+        addPopupMenuItem(menu, L.get("task_table_menu.compare_profiles"), "compare-profiles");
         addPopupMenuItem(menu, L.get("task_table_menu.add_host_to_blocklist"), "add-host-to-blocklist");
         addPopupMenuItem(menu, L.get("task_table_menu.delete_selected_items"), "remove-items");
         addPopupMenuItem(menu, L.get("task_table_menu.clear_history"), "clean-all");
@@ -377,6 +380,9 @@ public class TaskTable extends JTable implements ActionListener {
             case "send-to-repeater":
                 doSendToRepeater(selectedRows);
                 break;
+            case "compare-profiles":
+                doCompareProfiles(selectedRows, item);
+                break;
             case "add-host-to-blocklist":
                 doAddHostToBlocklist(selectedRows);
                 break;
@@ -442,6 +448,28 @@ public class TaskTable extends JTable implements ActionListener {
             result.append(String.format("#%d：\n%s", data.getId(), value));
         }
         return result.toString();
+    }
+
+    private void doCompareProfiles(int[] selectedRows, JMenuItem item) {
+        ArrayList<TaskData> selected = new ArrayList<>();
+        for (int index : selectedRows) {
+            TaskData data = getTaskData(index);
+            if (data != null) {
+                selected.add(data);
+            }
+        }
+        JTextField regex = new JTextField(36);
+        JPanel form = new JPanel(new VLayout(5));
+        form.add(new JLabel(L.get("response_compare_regex_hint")));
+        form.add(regex, "1w");
+        if (UIHelper.showCustomDialog(item.getText(), form) != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            showTextAreaDialog(item.getText(), burp.vaycore.ost.common.ResponseComparison.compare(selected, regex.getText()));
+        } catch (IllegalArgumentException e) {
+            UIHelper.showTipsDialog(e.getMessage());
+        }
     }
 
     /**
@@ -720,7 +748,7 @@ public class TaskTable extends JTable implements ActionListener {
      */
     private static void showTextAreaDialog(String title, String text) {
         JPanel panel = new JPanel(new VLayout());
-        panel.setPreferredSize(new Dimension(400, 150));
+        panel.setPreferredSize(new Dimension(900, 600));
         JTextArea area = new JTextArea(text);
         area.setEditable(false);
         JScrollPane pane = new JScrollPane(area);
@@ -817,6 +845,8 @@ public class TaskTable extends JTable implements ActionListener {
                 L.get("task_table_columns.status"),
                 L.get("task_table_columns.length"),
                 L.get("task_table_columns.color"),
+                L.get("task_table_columns.profile"),
+                L.get("task_table_columns.variant"),
         };
         private final List<TaskData> mData;
         private final AtomicInteger mCounter;
@@ -866,27 +896,36 @@ public class TaskTable extends JTable implements ActionListener {
             fireTableDataChanged();
         }
 
-        public synchronized void clearAll() {
-            mData.clear();
-            mDataVersion.incrementAndGet();
-            fireTableDataChanged();
-        }
-
-        public synchronized void replaceAll(List<TaskData> items) {
+        public void clearAll() {
+            // Complete a batch already taken by the loader before clearing, otherwise it can
+            // reappear after the user clears the table.
             mItemLoader.flush();
-            mData.clear();
-            if (items != null && !items.isEmpty()) {
-                mData.addAll(items.stream().filter(Objects::nonNull).collect(Collectors.toList()));
+            synchronized (this) {
+                mData.clear();
+                mDataVersion.incrementAndGet();
+                fireTableDataChanged();
             }
-            int maxId = mData.stream().mapToInt(TaskData::getId).max().orElse(-1);
-            mCounter.set(maxId + 1);
-            mDataVersion.incrementAndGet();
-            fireTableDataChanged();
         }
 
-        public synchronized List<TaskData> getDataSnapshot() {
+        public void replaceAll(List<TaskData> items) {
             mItemLoader.flush();
-            return new ArrayList<>(mData);
+            synchronized (this) {
+                mData.clear();
+                if (items != null && !items.isEmpty()) {
+                    mData.addAll(items.stream().filter(Objects::nonNull).collect(Collectors.toList()));
+                }
+                int maxId = mData.stream().mapToInt(TaskData::getId).max().orElse(-1);
+                mCounter.set(maxId + 1);
+                mDataVersion.incrementAndGet();
+                fireTableDataChanged();
+            }
+        }
+
+        public List<TaskData> getDataSnapshot() {
+            mItemLoader.flush();
+            synchronized (this) {
+                return new ArrayList<>(mData);
+            }
         }
 
         public long getDataVersion() {
@@ -894,9 +933,11 @@ public class TaskTable extends JTable implements ActionListener {
             return mDataVersion.get();
         }
 
-        public synchronized TaskSnapshot getSnapshot() {
+        public TaskSnapshot getSnapshot() {
             mItemLoader.flush();
-            return new TaskSnapshot(new ArrayList<>(mData), mDataVersion.get());
+            synchronized (this) {
+                return new TaskSnapshot(new ArrayList<>(mData), mDataVersion.get());
+            }
         }
 
         @Override

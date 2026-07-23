@@ -12,8 +12,8 @@ import java.io.PrintWriter;
  */
 public class Logger {
 
-    private static PrintWriter stdout;
-    private static PrintWriter stderr;
+    private static PrintWriter stdout = new PrintWriter(System.out, true);
+    private static PrintWriter stderr = new PrintWriter(System.err, true);
     private static boolean isDebug;
 
     private Logger() {

@@ -1,50 +1,127 @@
 # OST
 
-[English](README.md)
+[English](README.md) | [动态变量与身份 Profile 详细说明](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)
 
-OST 是一个 Burp Suite 扩展。提供浏览器辅助请求重放、本地数据持久化和可选 MCP 接口。
+OST 是用于已获授权安全测试的 Burp Suite 扩展，提供请求重放、Payload 驱动扫描、浏览器辅助请求、本地结果持久化，以及可选的本地
+MCP 风格 JSON-RPC 服务。
 
-当前代码使用 **Java 21** 构建。不兼容 **JDK 8**。
+> 构建目标为 **Java 21**，不支持 JDK 8。
 
----
+## 功能概览
 
-## 功能
+### 扫描与请求流程
 
-- **数据面板**：集中查看扫描结果和请求/响应摘要。
-- **历史数据**：支持 SQLite 持久化、手动保存、自动保存、按时间标签查询、导入和导出。
-- **指纹识别**：支持规则匹配、指纹测试、历史查看和自定义字段。
-- **数据收集**：内置站点名称和 JSON 字段收集规则。
-- **Payload 处理**：对请求进行规则处理，生成请求变体并批量测试。
-- **路径扫描**：进行路径级扫描，统一关联到数据面板。
-- **Burp 集成**：支持标签页、右键菜单和代理流量监听。
-- **浏览器请求**：通过真实浏览器重放请求，支持 Edge 和 Chrome，可配置 Python 路径、浏览器路径和超时。
-- **MCP / AI 集成**：提供本地 JSON-RPC 接口，可读取状态、查询任务、执行指纹、管理字典、查询历史和导出 CSV。
+- 通过 Burp 右键菜单发送选中的请求到 OST，或监听符合条件的代理流量。
+- 使用路径字典和请求包处理规则生成请求变体。
+- 可选跟随重定向，并配置 Cookie 传递和目标 Host 限制。
+- 在请求处理前后检查路径黑名单，跳过命中大小写无关路径片段的请求。
+- 在数据面板集中查看请求、响应、指纹和收集结果。
 
----
+### 字典、变量与身份 Profile
+
+- 支持固定值、随机和轮询三种命名变量策略，变量取值由可编辑字典提供。
+- 默认随机变量为 `ip`、`local-ip`、`ua`，对应 `{{random.ip}}`、
+  `{{random.local-ip}}`、`{{random.ua}}`。
+- 可通过明确的 Profile 重放菜单，对同一请求变体应用 Cookie、Header、Query、Body
+  参数及 Profile 局部变量覆盖。
+- 可比较同一请求变体下不同 Profile 的响应差异；比较结果不自动判定权限漏洞。
+- 浏览器 Profile 重放会隔离 Cookie，避免与普通浏览器会话或其他 Profile 串用。
+
+### 浏览器、历史与 MCP
+
+- 通过 DrissionPage 使用 Edge 或 Chrome 重放请求；可配置 Python、浏览器路径、超时、
+  静态资源加载和目标 Host 限制。
+- 支持 SQLite 本地持久化、手动保存、周期自动保存、历史标签、导入及 CSV 导出。
+- 可选启用本地 MCP 风格 JSON-RPC 接口，提供状态、扫描、任务、指纹、收集、字典、
+  历史和导出能力。
+
+## 快速开始
+
+1. 使用 JDK 21 在项目根目录构建：
+
+   ```bash
+   ./mvnw clean package
+   ```
+
+   Windows 下：
+
+   ```powershell
+   .\mvnw.cmd clean package
+   ```
+
+2. 在 Burp Suite 的 `Extensions` -> `Add` 中加载：
+
+   ```text
+   extender/target/OST-v1.2.0.jar
+   ```
+
+3. 打开 OST 标签页，在 `Config` 中配置字典、请求行为、浏览器重放、重定向、持久化和
+   可选 MCP 服务。
+
+4. 如需浏览器请求模式，在配置的 Python 环境中安装 DrissionPage：
+
+   ```bash
+   python -m pip install DrissionPage
+   ```
+
+## 配置说明
+
+| 配置区域       | 用途                            |
+|------------|-------------------------------|
+| `字典与变量`    | 命名变量、变量字典和身份 Profile。         |
+| `Payload`  | 生成请求变体的路径字典和请求包处理规则。          |
+| `Request`  | 请求方法/后缀过滤、浏览器设置、请求头及路径黑名单。    |
+| `Redirect` | 重定向跟随、Cookie 传递和目标 Host 限制。   |
+| `Other`    | SQLite 持久化、保存周期、选定字段和 MCP 服务。 |
+
+### 命名变量与变量字典
+
+固定值或轮询变量使用 `{{value.name}}`，随机变量使用 `{{random.name}}`。默认项是普通的
+可编辑命名变量：
+
+| 名称         | 占位符                   | 默认字典              |
+|------------|-----------------------|-------------------|
+| `ip`       | `{{random.ip}}`       | `random-ip`       |
+| `local-ip` | `{{random.local-ip}}` | `random-local-ip` |
+| `ua`       | `{{random.ua}}`       | `user-agent`      |
+
+这三项和其他命名变量一样，可以编辑、替换或删除。随机值由关联字典决定，不存在单独的
+内置 IP 或 User-Agent 生成算法。
+
+关于变量、Profile、请求包处理和响应比较的完整行为，请参阅[详细说明](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)。
+
+### 身份 Profile 重放
+
+Profile 只会通过右键菜单中明确的 Profile 重放操作应用，因此可以让同一个处理后请求变体
+以多个身份发送，而不会悄悄影响普通扫描流量。Profile 凭据和请求值保存在本地，请妥善保护
+OST 工作目录、SQLite 数据库、导出文件和截图。
+
+### 路径黑名单
+
+在 `Config` -> `Request` -> `路径黑名单` 中每行填写一个路径片段。URL path 包含任一非空
+片段时将跳过扫描，匹配忽略大小写。OST 会检查入口路径和请求包处理后的最终路径；该黑名单
+不匹配 Host 或查询参数。
 
 ## MCP / AI 集成
 
-MCP 默认关闭。在 `Config` -> `Other` -> `MCP server` 中启用后，配置面板会显示运行状态、实际 MCP 端点和健康检查地址。
+MCP 默认关闭。在 `Config` -> `Other` 中启用 `MCP server` 后，界面会显示实际端点和健康
+检查地址。
 
-默认 MCP 端点：
+默认端点：
 
 ```text
 http://127.0.0.1:8765/mcp
 ```
 
-默认健康检查地址：
+健康检查：
 
 ```text
 http://127.0.0.1:8765/health
 ```
 
-如果端口被占用，OST 会依次尝试至 `8785`。请以配置面板显示的实际地址为准。
-
-MCP 服务名称：
-
-```text
-ost-burp-mcp
-```
+如果端口被占用，OST 会继续尝试至 `8785`。可先调用 `ost.capabilities.list` 查看可用能力。
+任务数据、原始请求/响应、Cookie 和 Profile 值可能包含敏感信息，应只在可信本地环境使用
+该接口。
 
 JSON-RPC 请求示例：
 
@@ -60,143 +137,14 @@ JSON-RPC 请求示例：
 }
 ```
 
-常用工具：
+## 运行环境
 
-```text
-ost.capabilities.list
-ost.status.get
-ost.scan.urls
-ost.scan.request
-ost.tasks.list
-ost.tasks.search
-ost.tasks.get
-ost.fingerprint.check
-ost.collect.node.get
-ost.wordlists.list
-ost.wordlist.select
-ost.wordlist.create
-ost.wordlist.append
-ost.wordlist.put
-ost.wordlist.import_file
-ost.wordlist.delete
-ost.history.labels
-ost.export.csv
-```
-
-工具分组：
-
-- `ost.status.*`：读取运行状态和配置。
-- `ost.scan.*`：提交 URL 或原始 HTTP 请求扫描任务。
-- `ost.tasks.*`：列出、搜索和读取扫描结果。
-- `ost.fingerprint.*`：执行或查看指纹规则。
-- `ost.collect.*`：读取已收集的响应数据。
-- `ost.wordlist.*`：读取、选择、创建、更新、导入和删除字典。
-- `ost.history.*`：读取持久化历史标签。
-- `ost.export.*`：将持久化数据导出为 CSV。
-
----
-
-## 运行环境要求
-
-### Burp Suite
-
-本项目依赖：
-
-- `burp-extender-api 2.3`
-- `montoya-api 2023.12.1`
-
-建议使用较新版本的 Burp Suite。插件可在支持外部扩展的旧版 Burp 环境中加载，但构建需要现代 Java 工具链。
-
-### Java
-
-- **JDK 21**
-- 项目目标字节码为 Java 21，不支持 JDK 8。
-
-### Python
-
-- **Python 3.x**
-- 推荐 **Python 3.9+**
-
-### 浏览器
-
-当前浏览器请求模式支持：
-
-- **Edge**
-- **Chrome**
-
----
-
-## 安装 DrissionPage
-
-浏览器请求功能依赖本地 Python 环境中的 `DrissionPage`。
-
-```bash
-pip install DrissionPage
-```
-
-如果需要指定 Python 解释器：
-
-```bash
-python -m pip install DrissionPage
-```
-
-或：
-
-```bash
-python3 -m pip install DrissionPage
-```
-
----
-
-## 仓库结构
-
-```text
-OST/
-|- burp-extender-api/
-|- montoya-api/
-|- extender/
-|  |- src/main/java/
-|  |- src/main/resources/
-|  `- pom.xml
-|- pom.xml
-|- README.md
-`- README_zh_CN.md
-```
-
----
-
-## 构建
-
-在项目根目录执行：
-
-```bash
-./mvnw clean package
-```
-
-Windows 下执行：
-
-```powershell
-.\mvnw.cmd clean package
-```
-
-默认产物：
-
-```text
-extender/target/OST-v1.1.9.jar
-```
-
----
-
-## 在 Burp Suite 中加载
-
-1. 打开 Burp Suite。
-2. 进入 `Extensions`。
-3. 点击 `Add`。
-4. 选择构建生成的 JAR 文件。
-5. 加载扩展。
-
----
+- 支持加载外部 Java 扩展的 Burp Suite；项目依赖 `burp-extender-api 2.3` 和
+  `montoya-api 2023.12.1`。
+- 构建需要 JDK 21。
+- 仅使用浏览器请求模式时需要 Python 3.9+ 与 DrissionPage。
+- 仅使用浏览器请求模式时需要 Edge 或 Chrome。
 
 ## 许可证
 
-本项目遵循仓库中的 [LICENSE](LICENSE) 文件。
+本项目遵循仓库中的 [LICENSE](LICENSE)。

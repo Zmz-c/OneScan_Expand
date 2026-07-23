@@ -66,12 +66,13 @@ public class RequestTab extends BaseConfigTab {
         addTextConfigPanel(L.get("include_method"), L.get("include_method_sub_title"), 20, Config.KEY_INCLUDE_METHOD);
         // 根据后缀过滤请求包
         addTextConfigPanel(L.get("exclude_suffix"), L.get("exclude_suffix_sub_title"), 50, Config.KEY_EXCLUDE_SUFFIX);
+        addWordListPanel(L.get("path_blocklist"), L.get("path_blocklist_sub_title"),
+                WordlistManager.KEY_PATH_BLOCKLIST);
         // 请求头配置
         addWordListPanel(L.get("header"), L.get("header_sub_title"), WordlistManager.KEY_HEADERS);
         // 移除请求头配置
         addWordListPanel(L.get("remove_header"), L.get("remove_header_sub_title"), WordlistManager.KEY_REMOVE_HEADERS);
-        // 请求头UserAgent配置
-        addWordListPanel(L.get("user_agent"), L.get("user_agent_sub_title"), WordlistManager.KEY_USER_AGENT);
+
     }
 
     private void addBrowserTypeConfigPanel() {

@@ -39,6 +39,7 @@ public class DataTableItemLoader<T> {
     private final long mMinBatchSize;
     private final long mMaxBatchSize;
     private final ConcurrentLinkedQueue<T> mDataQueue;
+    private final Object mDrainLock = new Object();
     private final AtomicBoolean mIsRunning = new AtomicBoolean(false);
 
     /**
@@ -184,25 +185,38 @@ public class DataTableItemLoader<T> {
      */
     private void run() {
         if (mDataQueue.isEmpty()) {
-            long stopMillis = System.currentTimeMillis() - mStopMillis.get();
-            // 限制时间内无数据，自动进入停止状态
-            if (stopMillis >= NO_DATA_STOP_MILLIS) {
-                Logger.debug("DataTableItemLoader no data, stopping...");
-                stop();
+            synchronized (this) {
+                // Recheck while serialized with restart(): an item may have arrived after
+                // the first empty check and must not be stranded in a stopped loader.
+                if (mDataQueue.isEmpty()) {
+                    long stopMillis = System.currentTimeMillis() - mStopMillis.get();
+                    // 限制时间内无数据，自动进入停止状态
+                    if (stopMillis >= NO_DATA_STOP_MILLIS) {
+                        Logger.debug("DataTableItemLoader no data, stopping...");
+                        stop();
+                    }
+                    return;
+                }
             }
-            return;
         }
-        long batchSize = Utils.nextLong(mMinBatchSize, mMaxBatchSize);
-        int counter = 0;
-        // 取出队列的数据
-        ArrayList<T> temps = new ArrayList<>();
-        while (counter < batchSize && !mDataQueue.isEmpty()) {
-            T data = mDataQueue.poll();
-            temps.add(data);
-            counter++;
+        synchronized (mDrainLock) {
+            if (mDataQueue.isEmpty()) {
+                return;
+            }
+            long batchSize = Utils.nextLong(mMinBatchSize, mMaxBatchSize);
+            int counter = 0;
+            // 取出队列的数据，并在回调结束前阻止 flush 越过正在加载的批次。
+            ArrayList<T> temps = new ArrayList<>();
+            while (counter < batchSize && !mDataQueue.isEmpty()) {
+                T data = mDataQueue.poll();
+                if (data != null) {
+                    temps.add(data);
+                }
+                counter++;
+            }
+            invokeOnDataItemLoadEvent(temps);
+            temps.clear();
         }
-        invokeOnDataItemLoadEvent(temps);
-        temps.clear();
     }
 
     /**
@@ -211,7 +225,14 @@ public class DataTableItemLoader<T> {
      * @param item 数据实例
      */
     public void pushItem(T item) {
-        mDataQueue.offer(item);
+        synchronized (this) {
+            mDataQueue.offer(item);
+            // 添加数据后，重置计数器，并在释放锁前恢复消费者，避免与自动停止竞争。
+            mStopMillis.set(System.currentTimeMillis());
+            if (!isRunning()) {
+                start();
+            }
+        }
         while (mDataQueue.size() > MAX_DATA_QUEUE_SIZE) {
             // 队列数据达到限制，暂停生产，等待消费
             try {
@@ -223,25 +244,21 @@ public class DataTableItemLoader<T> {
                 return;
             }
         }
-        // 添加数据后，重置计数器
-        mStopMillis.set(System.currentTimeMillis());
-        // 检测是否已经停止运行
-        if (!isRunning()) {
-            restart();
-        }
     }
 
     /**
      * 刷出所有队列数据，全部加载
      */
     public void flush() {
-        List<T> temps = new ArrayList<>();
-        while (!mDataQueue.isEmpty()) {
-            T item = mDataQueue.poll();
-            temps.add(item);
+        synchronized (mDrainLock) {
+            List<T> temps = new ArrayList<>();
+            T item;
+            while ((item = mDataQueue.poll()) != null) {
+                temps.add(item);
+            }
+            invokeOnDataItemLoadEvent(temps);
+            temps.clear();
         }
-        invokeOnDataItemLoadEvent(temps);
-        temps.clear();
         Logger.debug("DataTableItemLoader flushed");
     }
 

@@ -4,20 +4,23 @@ import burp.vaycore.common.config.ConfigManager;
 import burp.vaycore.common.filter.FilterRule;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
+import burp.vaycore.ost.bean.IdentityProfile;
+import burp.vaycore.ost.bean.VariableDefinition;
 import burp.vaycore.ost.manager.CollectManager;
 import burp.vaycore.ost.manager.FpManager;
+import burp.vaycore.ost.manager.VariableManager;
 import burp.vaycore.ost.manager.WordlistManager;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
 import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
 import burp.vaycore.ost.ui.widget.payloadlist.SimplePayloadList;
-import com.google.gson.internal.LinkedTreeMap;
 
 import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 配置类
@@ -49,6 +52,10 @@ public class Config {
     public static final String KEY_REDIRECT_COOKIES_FOLLOW = "redirect-cookies-follow";
     public static final String KEY_REDIRECT_TARGET_HOST_LIMIT = "redirect-target-host-limit";
     public static final String KEY_INTERCEPT_TIMEOUT_HOST = "intercept-timeout-host";
+    public static final String KEY_VARIABLE_DEFINITIONS = "variable-definitions";
+    public static final String KEY_IDENTITY_PROFILES = "identity-profiles";
+    public static final String KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED =
+            "named-variable-defaults-initialized";
     // 首页开关配置项
     public static final String KEY_ENABLE_LISTEN_PROXY = "enable-listen-proxy";
     public static final String KEY_ENABLE_BROWSER_REQUEST = "enable-browser-request";
@@ -96,12 +103,14 @@ public class Config {
         initDefaultConfig(Config.KEY_DATA_PERSISTENCE_ENABLED, "false");
         initDefaultConfig(Config.KEY_DATA_PERSISTENCE_DB_PATH, getWorkDir() + "ost-data.sqlite");
         initDefaultConfig(Config.KEY_DATA_PERSISTENCE_AUTO_SAVE_INTERVAL, "60");
-        initDefaultConfig(Config.KEY_DATA_PERSISTENCE_FIELDS, "from,method,host,url,title,ip,status,length,color");
+        initDefaultConfig(Config.KEY_DATA_PERSISTENCE_FIELDS, "from,method,host,url,title,ip,status,length,color,profile,variant");
         initDefaultConfig(Config.KEY_ENABLE_MCP, "false");
         initDefaultConfig(Config.KEY_FOLLOW_REDIRECT, "true");
         initDefaultConfig(Config.KEY_REDIRECT_COOKIES_FOLLOW, "true");
         initDefaultConfig(Config.KEY_REDIRECT_TARGET_HOST_LIMIT, "true");
         initDefaultConfig(Config.KEY_INTERCEPT_TIMEOUT_HOST, "false");
+        initDefaultConfig(Config.KEY_VARIABLE_DEFINITIONS, "[]");
+        initDefaultConfig(Config.KEY_IDENTITY_PROFILES, "[]");
         // 默认开关配置
         initDefaultConfig(Config.KEY_ENABLE_LISTEN_PROXY, "false");
         initDefaultConfig(Config.KEY_ENABLE_BROWSER_REQUEST, "false");
@@ -269,6 +278,7 @@ public class Config {
         if (hasKey("user-agent-list")) {
             list = getList("user-agent-list");
             WordlistManager.putList(WordlistManager.KEY_USER_AGENT, list);
+            WordlistManager.replaceMigratedUserAgentValues(list);
             sConfigManager.remove("user-agent-list");
         }
 
@@ -312,25 +322,16 @@ public class Config {
             put(Config.KEY_ENABLE_PAYLOAD_PROCESSING, String.valueOf(configValue));
             sConfigManager.remove("merge-payload-processing");
         }
-        // Payload Processing 配置结构更新
-        if (hasKey(Config.KEY_PAYLOAD_PROCESS_LIST)) {
-            ArrayList<LinkedTreeMap<String, Object>> items = sConfigManager.get(Config.KEY_PAYLOAD_PROCESS_LIST);
-            ArrayList<ProcessingItem> newItems = new ArrayList<>();
-            if (items != null && !items.isEmpty()) {
-                ArrayList<PayloadItem> result = mapItemsConvert(items);
-                ProcessingItem item = new ProcessingItem();
-                item.setEnabled(true);
-                item.setItems(result);
-                item.setName("Low version rules");
-                newItems.add(item);
-            }
-            sConfigManager.put(Config.KEY_PAYLOAD_PROCESS_LIST, newItems);
-        }
+        // Payload Processing 的结构迁移统一由 preparePayloadProcessList() 完成，
+        // 避免同一次初始化中重复转换已实例化的 ProcessingItem。
     }
 
     private static void onPreloadConfig() {
         preparePayloadProcessList();
         prepareDataboardFilterRules();
+        prepareVariableDefinitions();
+        ensureBundledNamedVariableDefinitions();
+        prepareIdentityProfiles();
     }
 
     private static void initDefaultConfig(String key, String defValue) {
@@ -392,6 +393,11 @@ public class Config {
 
     public static void put(String key, Object obj) {
         checkInit();
+        if (Config.KEY_VARIABLE_DEFINITIONS.equals(key)) {
+            obj = copyVariableDefinitions(obj);
+        } else if (Config.KEY_IDENTITY_PROFILES.equals(key)) {
+            obj = copyIdentityProfiles(obj);
+        }
         sConfigManager.put(key, obj);
     }
 
@@ -428,56 +434,113 @@ public class Config {
     }
 
     private static void preparePayloadProcessList() {
-        ArrayList<LinkedTreeMap<String, Object>> items;
         try {
-            items = sConfigManager.get(Config.KEY_PAYLOAD_PROCESS_LIST);
+            Object rawValue = sConfigManager.get(Config.KEY_PAYLOAD_PROCESS_LIST);
+            List<?> items = asList(rawValue);
+            if (items == null) {
+                return;
+            }
             ArrayList<ProcessingItem> result = new ArrayList<>();
-            if (items != null && !items.isEmpty()) {
-                for (LinkedTreeMap<String, Object> mapItem : items) {
-                    ProcessingItem item = new ProcessingItem();
-                    item.setEnabled((Boolean) mapItem.get("enabled"));
-                    String mergeValue = String.valueOf(mapItem.get("merge"));
-                    item.setMerge(Boolean.parseBoolean(mergeValue));
-                    String name = String.valueOf(mapItem.get("name"));
-                    item.setName(name);
-                    ArrayList<LinkedTreeMap<String, Object>> payloadMapItems =
-                            (ArrayList<LinkedTreeMap<String, Object>>) mapItem.get("items");
-                    ArrayList<PayloadItem> payloadItems = mapItemsConvert(payloadMapItems);
-                    item.setItems(payloadItems);
-                    result.add(item);
+            ArrayList<Map<String, Object>> legacyRules = new ArrayList<>();
+            for (Object rawItem : items) {
+                if (rawItem instanceof ProcessingItem) {
+                    result.add((ProcessingItem) rawItem);
+                    continue;
                 }
+                Map<String, Object> mapItem = asMap(rawItem);
+                if (mapItem == null) {
+                    continue;
+                }
+                if (mapItem.containsKey("ruleType")) {
+                    legacyRules.add(mapItem);
+                    continue;
+                }
+                ProcessingItem item = new ProcessingItem();
+                item.setEnabled(Boolean.TRUE.equals(mapItem.get("enabled")));
+                item.setMerge(Boolean.parseBoolean(stringValue(mapItem.get("merge"))));
+                String name = stringValue(mapItem.get("name"));
+                item.setName(name == null ? "" : name);
+                item.setItems(mapItemsConvert(asPayloadMaps(asList(mapItem.get("items")))));
+                result.add(item);
+            }
+            if (!legacyRules.isEmpty()) {
+                ProcessingItem migrated = new ProcessingItem();
+                migrated.setEnabled(true);
+                migrated.setMerge(false);
+                migrated.setName("Low version rules");
+                migrated.setItems(mapItemsConvert(legacyRules));
+                result.add(0, migrated);
             }
             put(Config.KEY_PAYLOAD_PROCESS_LIST, result);
         } catch (Exception e) {
-            // 版本更新时，前面会有一次配置转换过程
-            // 已经转换成 ArrayList<ProcessingItem> 类型的实例，类型会转换失败。忽略此错误即可
+            Logger.debug("Skip invalid payload processing configuration: %s", e.getMessage());
         }
     }
 
-    private static ArrayList<PayloadItem> mapItemsConvert(ArrayList<LinkedTreeMap<String, Object>> items) {
+    private static ArrayList<Map<String, Object>> asPayloadMaps(List<?> items) {
+        ArrayList<Map<String, Object>> result = new ArrayList<>();
+        if (items == null) {
+            return result;
+        }
+        for (Object item : items) {
+            Map<String, Object> map = asMap(item);
+            if (map != null) {
+                result.add(map);
+            }
+        }
+        return result;
+    }
+
+    static ArrayList<PayloadItem> mapItemsConvert(List<? extends Map<String, Object>> items) {
         ArrayList<PayloadItem> result = new ArrayList<>();
         if (items == null || items.isEmpty()) {
             return result;
         }
-        // 转换 LinkedTreeMap 数据为 PayloadItem 对象
-        for (LinkedTreeMap<String, Object> mapItem : items) {
-            PayloadItem item = new PayloadItem();
-            Double scope = (Double) mapItem.get("scope");
-            item.setScope(scope.intValue());
-            PayloadRule rule = SimplePayloadList.getPayloadRuleByType((String) mapItem.get("ruleType"));
-            if (rule == null) {
+        // Older configurations can omit fields; keep valid rules and use safe defaults.
+        for (Map<String, Object> mapItem : items) {
+            if (mapItem == null) {
                 continue;
             }
-            LinkedTreeMap<String, Object> ruleMap = (LinkedTreeMap<String, Object>) mapItem.get("rule");
-            ArrayList<String> ruleParamValues = (ArrayList<String>) ruleMap.get("paramValues");
+            PayloadRule rule = SimplePayloadList.getPayloadRuleByType(stringValue(mapItem.get("ruleType")));
+            if (rule == null) {
+                Logger.debug("Skip invalid payload processing rule during config migration");
+                continue;
+            }
+            PayloadItem item = new PayloadItem();
+            item.setScope(payloadScope(mapItem.get("scope")));
+            Map<String, Object> ruleMap = asMap(mapItem.get("rule"));
+            List<?> ruleParamValues = ruleMap == null ? null : asList(ruleMap.get("paramValues"));
             for (int j = 0; j < rule.paramCount(); j++) {
-                String paramValue = ruleParamValues.get(j);
-                rule.setParamValue(j, paramValue);
+                String paramValue = ruleParamValues != null && j < ruleParamValues.size()
+                        ? stringValue(ruleParamValues.get(j)) : "";
+                rule.setParamValue(j, paramValue == null ? "" : paramValue);
             }
             item.setRule(rule);
             result.add(item);
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        return value instanceof Map<?, ?> ? (Map<String, Object>) value : null;
+    }
+
+    private static List<?> asList(Object value) {
+        return value instanceof List ? (List<?>) value : null;
+    }
+
+    private static String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static int payloadScope(Object value) {
+        if (!(value instanceof Number)) {
+            return PayloadRule.SCOPE_URL;
+        }
+        int scope = ((Number) value).intValue();
+        return scope >= PayloadRule.SCOPE_URL && scope <= PayloadRule.SCOPE_REQUEST
+                ? scope : PayloadRule.SCOPE_URL;
     }
 
     private static void prepareDataboardFilterRules() {
@@ -498,5 +561,79 @@ public class Config {
     public static ArrayList<FilterRule> getDataboardFilterRules() {
         checkInit();
         return sConfigManager.get(Config.KEY_DATABOARD_FILTER_RULES);
+    }
+
+    private static void prepareVariableDefinitions() {
+        Object obj = sConfigManager.get(Config.KEY_VARIABLE_DEFINITIONS);
+        String json = obj instanceof String ? (String) obj : GsonUtils.toJson(obj);
+        ArrayList<VariableDefinition> definitions = GsonUtils.toList(json, VariableDefinition.class);
+        put(Config.KEY_VARIABLE_DEFINITIONS, definitions == null ? new ArrayList<>() : definitions);
+    }
+
+    /**
+     * Adds the packaged variables once after persisted JSON has been converted to typed objects.
+     * A later user deletion remains intentional and is not recreated on every startup.
+     */
+    private static void ensureBundledNamedVariableDefinitions() {
+        if (getBoolean(KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED)) {
+            return;
+        }
+        ArrayList<VariableDefinition> definitions = getVariableDefinitions();
+        boolean changed = false;
+        for (VariableDefinition defaultDefinition : VariableManager.getBundledVariableDefinitions()) {
+            boolean exists = definitions.stream().anyMatch(item -> item != null
+                    && defaultDefinition.getName().equalsIgnoreCase(item.getName()));
+            if (!exists) {
+                definitions.add(new VariableDefinition(defaultDefinition));
+                changed = true;
+            }
+        }
+        if (changed) {
+            put(KEY_VARIABLE_DEFINITIONS, definitions);
+        }
+        put(KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED, "true");
+    }
+
+    private static void prepareIdentityProfiles() {
+        Object obj = sConfigManager.get(Config.KEY_IDENTITY_PROFILES);
+        String json = obj instanceof String ? (String) obj : GsonUtils.toJson(obj);
+        ArrayList<IdentityProfile> profiles = GsonUtils.toList(json, IdentityProfile.class);
+        put(Config.KEY_IDENTITY_PROFILES, profiles == null ? new ArrayList<>() : profiles);
+    }
+
+    public static ArrayList<VariableDefinition> getVariableDefinitions() {
+        checkInit();
+        return copyVariableDefinitions(sConfigManager.get(Config.KEY_VARIABLE_DEFINITIONS));
+    }
+
+    public static ArrayList<IdentityProfile> getIdentityProfiles() {
+        checkInit();
+        return copyIdentityProfiles(sConfigManager.get(Config.KEY_IDENTITY_PROFILES));
+    }
+
+    private static ArrayList<VariableDefinition> copyVariableDefinitions(Object source) {
+        ArrayList<VariableDefinition> result = new ArrayList<>();
+        if (!(source instanceof Iterable<?> values)) {
+            return result;
+        }
+        for (Object value : values) {
+            if (value instanceof VariableDefinition definition) {
+                result.add(new VariableDefinition(definition));
+            }
+        }
+        return result;
+    }
+
+    private static ArrayList<IdentityProfile> copyIdentityProfiles(Object source) {
+        ArrayList<IdentityProfile> result = new ArrayList<>();
+        if (!(source instanceof Iterable<?> values)) {
+            return result;
+        }
+        for (Object value : values) {
+            if (value instanceof IdentityProfile profile) {
+                result.add(new IdentityProfile(profile));
+            }
+        }
+        return result;
     }
 }

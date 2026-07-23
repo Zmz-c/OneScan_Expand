@@ -169,6 +169,7 @@ public class BrowserRequestManager {
                     StandardCharsets.UTF_8));
             writeLine(writer, "METHOD", encodeString(request.getMethod()));
             writeLine(writer, "URL", encodeString(request.getUrl()));
+            writeLine(writer, "ISOLATE_COOKIES", String.valueOf(request.isolateCookies()));
             writeLine(writer, "HEADER_COUNT", String.valueOf(request.getHeaders().size()));
             for (int i = 0; i < request.getHeaders().size(); i++) {
                 writeLine(writer, "HEADER_" + i, encodeString(request.getHeaders().get(i)));

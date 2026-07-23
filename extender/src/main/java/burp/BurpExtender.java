@@ -8,6 +8,7 @@ import burp.vaycore.common.utils.*;
 import burp.vaycore.ost.Ost;
 import burp.vaycore.ost.bean.CollectNode;
 import burp.vaycore.ost.bean.FpData;
+import burp.vaycore.ost.bean.IdentityProfile;
 import burp.vaycore.ost.bean.TaskData;
 import burp.vaycore.ost.browser.BrowserRequest;
 import burp.vaycore.ost.browser.BrowserRequestManager;
@@ -16,6 +17,7 @@ import burp.vaycore.ost.info.OstInfoTab;
 import burp.vaycore.ost.manager.CollectManager;
 import burp.vaycore.ost.manager.FpManager;
 import burp.vaycore.ost.manager.TaskPersistenceManager;
+import burp.vaycore.ost.manager.VariableManager;
 import burp.vaycore.ost.manager.WordlistManager;
 import burp.vaycore.ost.mcp.OstMcpServer;
 import burp.vaycore.ost.mcp.OstMcpTool;
@@ -57,6 +59,9 @@ import java.util.stream.Collectors;
 public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
         TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
         IExtensionStateListener, IContextMenuFactory, OstMcpToolProvider {
+
+    private static final Pattern PROFILE_VARIABLE_PATTERN = Pattern.compile("\\{\\{profile\\.([^}]+)}}");
+    private static final String REDIRECT_VARIANT_PREFIX = "redirect:";
 
     /**
      * 任务线程数量
@@ -154,6 +159,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
     private final AtomicLong mTaskGeneration = new AtomicLong(0);
     private final ThreadLocal<Long> mTaskGenerationContext = new ThreadLocal<Long>();
+    private final ThreadLocal<Boolean> mForceRescanContext = ThreadLocal.withInitial(() -> false);
     private IBurpExtenderCallbacks mCallbacks;
     private IExtensionHelpers mHelpers;
     private Ost mOst;
@@ -178,30 +184,34 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param rule 规则
      * @return true=匹配；false=不匹配
      */
-    private static boolean matchHost(String host, String rule) {
-        if (StringUtils.isEmpty(host)) {
-            return StringUtils.isEmpty(rule);
+    static boolean matchHost(String host, String rule) {
+        if (StringUtils.isEmpty(host) || StringUtils.isEmpty(rule) || rule.isBlank()) {
+            return false;
         }
-        // 规则就是*号，直接返回true
-        if (rule.equals("*")) {
-            return true;
+        String value = host.toLowerCase(Locale.ROOT);
+        String pattern = rule.trim().toLowerCase(Locale.ROOT);
+        int valueIndex = 0;
+        int patternIndex = 0;
+        int starIndex = -1;
+        int retryValueIndex = -1;
+        while (valueIndex < value.length()) {
+            if (patternIndex < pattern.length() && pattern.charAt(patternIndex) == value.charAt(valueIndex)) {
+                valueIndex++;
+                patternIndex++;
+            } else if (patternIndex < pattern.length() && pattern.charAt(patternIndex) == '*') {
+                starIndex = patternIndex++;
+                retryValueIndex = valueIndex;
+            } else if (starIndex >= 0) {
+                patternIndex = starIndex + 1;
+                valueIndex = ++retryValueIndex;
+            } else {
+                return false;
+            }
         }
-        // 不包含*号，检测 Host 与规则是否相等
-        if (!rule.contains("*")) {
-            return host.equals(rule);
+        while (patternIndex < pattern.length() && pattern.charAt(patternIndex) == '*') {
+            patternIndex++;
         }
-        // 根据*号位置，进行匹配
-        String ruleValue = rule.replace("*", "");
-        if (rule.startsWith("*") && rule.endsWith("*")) {
-            return host.contains(ruleValue);
-        } else if (rule.startsWith("*")) {
-            return host.endsWith(ruleValue);
-        } else if (rule.endsWith("*")) {
-            return host.startsWith(ruleValue);
-        } else {
-            String[] split = rule.split("\\*");
-            return host.startsWith(split[0]) && host.endsWith(split[1]);
-        }
+        return patternIndex == pattern.length();
     }
 
     /**
@@ -215,7 +225,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         String host = service.getHost();
         int port = service.getPort();
-        if (Utils.isIgnorePort(port)) {
+        if (UrlUtils.isDefaultPort(service.getProtocol(), port)) {
             return host;
         }
         return host + ":" + port;
@@ -443,6 +453,13 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 FROM_SEND_BURP);
         addSendToOSTMenuItem(sendToOSTMenu, invocation, L.get("send_to_plugin_browser"),
                 RequestMode.BROWSER, FROM_SEND_BROWSER);
+        if (!enabledProfiles().isEmpty()) {
+            sendToOSTMenu.addSeparator();
+            addProfileReplayMenuItem(sendToOSTMenu, invocation, L.get("send_to_plugin_profiles_burp"),
+                    RequestMode.BURP, FROM_SEND_BURP, WordlistManager.getItem(WordlistManager.KEY_PAYLOAD), false);
+            addProfileReplayMenuItem(sendToOSTMenu, invocation, L.get("send_to_plugin_profiles_browser"),
+                    RequestMode.BROWSER, FROM_SEND_BROWSER, WordlistManager.getItem(WordlistManager.KEY_PAYLOAD), false);
+        }
         // 选择 Payload 扫描
         List<String> payloadList = WordlistManager.getItemList(WordlistManager.KEY_PAYLOAD);
         if (!payloadList.isEmpty() && payloadList.size() > 1) {
@@ -455,48 +472,154 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         RequestMode.BURP, FROM_SEND_BURP);
                 addPayloadScanMenuItem(payloadMenu, invocation, L.get("send_to_plugin_browser"), itemName,
                         RequestMode.BROWSER, FROM_SEND_BROWSER);
+                if (!enabledProfiles().isEmpty()) {
+                    payloadMenu.addSeparator();
+                    addProfileReplayMenuItem(payloadMenu, invocation, L.get("send_to_plugin_profiles_burp"),
+                            RequestMode.BURP, FROM_SEND_BURP, itemName, true);
+                    addProfileReplayMenuItem(payloadMenu, invocation, L.get("send_to_plugin_profiles_browser"),
+                            RequestMode.BROWSER, FROM_SEND_BROWSER, itemName, true);
+                }
+
             }
         }
         return items;
     }
 
     private void addSendToOSTMenuItem(JMenu menu, IContextMenuInvocation invocation, String name,
-                                          RequestMode requestMode, String from) {
+                                      RequestMode requestMode, String from) {
+        IHttpRequestResponse[] messages = snapshotSelectedMessages(invocation);
         JMenuItem item = new JMenuItem(name);
         menu.add(item);
         item.addActionListener((event) -> {
             final long taskGeneration = captureTaskGeneration();
             new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
-                IHttpRequestResponse[] messages = invocation.getSelectedMessages();
-                for (IHttpRequestResponse httpReqResp : messages) {
-                    doScan(httpReqResp, from, requestMode);
-                    if (isTaskStopRequested(taskGeneration)) {
-                        Logger.debug("sendToPlugin: task stop requested, stop sending scan task");
-                        return;
+                runManualScan(() -> {
+                    for (IHttpRequestResponse httpReqResp : messages) {
+                        doScan(httpReqResp, from, requestMode);
+                        if (isTaskStopRequested(taskGeneration)) {
+                            Logger.debug("sendToPlugin: task stop requested, stop sending scan task");
+                            return;
+                        }
                     }
-                }
+                });
             })).start();
         });
     }
 
+    private void addProfileReplayMenuItem(JMenu menu, IContextMenuInvocation invocation, String name,
+                                          RequestMode requestMode, String from, String payloadItem,
+                                          boolean expandDirectories) {
+        IHttpRequestResponse[] messages = snapshotSelectedMessages(invocation);
+        JMenuItem item = new JMenuItem(name);
+        menu.add(item);
+        item.addActionListener(event -> {
+            List<IdentityProfile> profiles = selectProfiles();
+            if (profiles.isEmpty()) {
+                return;
+            }
+            final long taskGeneration = captureTaskGeneration();
+            new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
+                runManualScan(() -> {
+                    for (IHttpRequestResponse message : messages) {
+                        doScan(message, from, payloadItem, requestMode, profiles, expandDirectories);
+                        if (isTaskStopRequested(taskGeneration)) {
+                            return;
+                        }
+                    }
+                });
+            }), "OST-profile-replay").start();
+        });
+    }
+
+    private List<IdentityProfile> enabledProfiles() {
+        return Config.getIdentityProfiles().stream()
+                .filter(profile -> profile != null && profile.isEnabled() && StringUtils.isNotEmpty(profile.getName()))
+                .collect(Collectors.toList());
+    }
+
+    private List<IdentityProfile> selectProfiles() {
+        List<IdentityProfile> profiles = enabledProfiles();
+        JList<IdentityProfile> list = new JList<>(new Vector<>(profiles));
+        list.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        if (!profiles.isEmpty()) {
+            list.setSelectionInterval(0, profiles.size() - 1);
+        }
+        JScrollPane pane = new JScrollPane(list);
+        pane.setPreferredSize(new Dimension(360, 220));
+        int result = UIHelper.showCustomDialog(L.get("select_identity_profiles"), pane);
+        return result == JOptionPane.OK_OPTION ? list.getSelectedValuesList() : new ArrayList<>();
+    }
+
     private void addPayloadScanMenuItem(JMenu menu, IContextMenuInvocation invocation, String name, String payloadItem,
                                         RequestMode requestMode, String from) {
+        IHttpRequestResponse[] messages = snapshotSelectedMessages(invocation);
         JMenuItem item = new JMenuItem(name);
         menu.add(item);
         item.addActionListener((event) -> {
             final long taskGeneration = captureTaskGeneration();
             new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
-                IHttpRequestResponse[] messages = invocation.getSelectedMessages();
-                for (IHttpRequestResponse httpReqResp : messages) {
-                    doScan(httpReqResp, from, payloadItem, requestMode);
-                    // 线程池关闭后，停止发送扫描任务
-                    if (isTaskStopRequested(taskGeneration)) {
-                        Logger.debug("usePayloadScan: task stop requested, stop sending scan task");
-                        return;
+                runManualScan(() -> {
+                    for (IHttpRequestResponse httpReqResp : messages) {
+                        doScan(httpReqResp, from, payloadItem, requestMode);
+                        if (isTaskStopRequested(taskGeneration)) {
+                            Logger.debug("usePayloadScan: task stop requested, stop sending scan task");
+                            return;
+                        }
                     }
-                }
+                });
             })).start();
         });
+    }
+
+    private IHttpRequestResponse[] snapshotSelectedMessages(IContextMenuInvocation invocation) {
+        IHttpRequestResponse[] selected = invocation == null ? null : invocation.getSelectedMessages();
+        if ((selected == null || selected.length == 0) && isOstMessageEditor(invocation)) {
+            selected = mCurrentReqResp == null ? null : new IHttpRequestResponse[]{mCurrentReqResp};
+        }
+        if (selected == null || selected.length == 0) {
+            return new IHttpRequestResponse[0];
+        }
+        ArrayList<IHttpRequestResponse> snapshots = new ArrayList<>();
+        for (IHttpRequestResponse message : selected) {
+            if (message == null || message.getHttpService() == null || message.getRequest() == null) {
+                continue;
+            }
+            IHttpService service = message.getHttpService();
+            IHttpService serviceSnapshot = mHelpers.buildHttpService(service.getHost(), service.getPort(), service.getProtocol());
+            HttpReqRespAdapter snapshot = HttpReqRespAdapter.from(serviceSnapshot,
+                    Arrays.copyOf(message.getRequest(), message.getRequest().length));
+            byte[] response = message.getResponse();
+            if (response != null) {
+                snapshot.setResponse(Arrays.copyOf(response, response.length));
+            }
+            snapshots.add(snapshot);
+        }
+        return snapshots.toArray(new IHttpRequestResponse[0]);
+    }
+
+    private boolean isOstMessageEditor(IContextMenuInvocation invocation) {
+        if (invocation == null || invocation.getToolFlag() != IBurpExtenderCallbacks.TOOL_EXTENDER) {
+            return false;
+        }
+        byte context = invocation.getInvocationContext();
+        return context == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST
+                || context == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_RESPONSE
+                || context == IContextMenuInvocation.CONTEXT_MESSAGE_VIEWER_REQUEST
+                || context == IContextMenuInvocation.CONTEXT_MESSAGE_VIEWER_RESPONSE;
+    }
+
+    private void runManualScan(Runnable action) {
+        boolean previous = Boolean.TRUE.equals(mForceRescanContext.get());
+        mForceRescanContext.set(true);
+        try {
+            action.run();
+        } finally {
+            if (previous) {
+                mForceRescanContext.set(true);
+            } else {
+                mForceRescanContext.remove();
+            }
+        }
     }
 
     @Override
@@ -542,6 +665,29 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem, RequestMode requestMode) {
+        doScan(httpReqResp, from, payloadItem, requestMode, List.of());
+    }
+
+    private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem, RequestMode requestMode,
+                        List<IdentityProfile> profiles) {
+        doScan(httpReqResp, from, payloadItem, requestMode, profiles, true);
+    }
+
+    private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem, RequestMode requestMode,
+                        List<IdentityProfile> profiles, boolean expandDirectories) {
+        doScan(httpReqResp, from, payloadItem, requestMode, profiles, expandDirectories, true);
+    }
+
+    private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem, RequestMode requestMode,
+                        List<IdentityProfile> profiles, boolean expandDirectories,
+                        boolean applyPayloadProcessing) {
+        doScan(httpReqResp, from, payloadItem, requestMode, profiles, expandDirectories,
+                applyPayloadProcessing, null);
+    }
+
+    private void doScan(IHttpRequestResponse httpReqResp, String from, String payloadItem, RequestMode requestMode,
+                        List<IdentityProfile> profiles, boolean expandDirectories,
+                        boolean applyPayloadProcessing, String variantIdOverride) {
         if (httpReqResp == null || httpReqResp.getHttpService() == null) {
             return;
         }
@@ -584,14 +730,17 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         // 准备生成任务
         URL url = getUrlByRequestInfo(info);
+        if (pathBlocklistFilter(url.getPath())) {
+            return;
+        }
         // 原始请求也需要经过 Payload Process 处理（不过需要过滤一些后缀的流量）
         if (!proxyExcludeSuffixFilter(url.getPath())) {
-            runScanTask(httpReqResp, info, null, from, requestMode);
+            runScanTask(httpReqResp, info, null, from, requestMode, profiles, applyPayloadProcessing, variantIdOverride);
         } else {
             Logger.debug("proxyExcludeSuffixFilter filter request path: %s", url.getPath());
         }
-        // 检测是否禁用递归扫描
-        if (!mDataBoardTab.hasDirScan()) {
+        // Profile replay is limited to the selected request and must not fan out through dictionaries.
+        if (!expandDirectories || !mDataBoardTab.hasDirScan()) {
             return;
         }
         // 获取一下请求数据包中的请求路径
@@ -618,21 +767,28 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 if (isTaskStopRequested()) {
                     return;
                 }
-                // 对完整 Host 地址的字典取消递归扫描（直接替换请求路径扫描）
-                if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(item)) {
+                // Expand named variables before deciding whether this dictionary entry is an absolute URL.
+                String payload = setupVariable(httpReqResp.getHttpService(), url, item);
+                if (StringUtils.isEmpty(payload) || VariableManager.hasUnresolvedVariables(payload)) {
+                    Logger.debug("doScan skip unresolved payload variables: %s", item);
                     continue;
                 }
-                String urlPath = path + item;
+                // 对完整 Host 地址的字典取消递归扫描（直接替换请求路径扫描）
+                if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(payload)) {
+                    continue;
+                }
+                String urlPath = path + payload;
                 // 如果配置的字典不含 '/' 前缀，在根目录下扫描时，自动添加 '/' 符号
-                if (StringUtils.isEmpty(path) && !item.startsWith("/") && !UrlUtils.isHTTP(item)) {
-                    urlPath = "/" + item;
+                if (StringUtils.isEmpty(path) && !payload.startsWith("/") && !UrlUtils.isHTTP(payload)) {
+                    urlPath = "/" + payload;
                 }
                 // 检测一下是否携带完整的 Host 地址（兼容一下携带了完整的 Host 地址的情况）
                 // 但有个前提：如果字典存在完整的 Host 地址，直接不做处理
-                if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(item)) {
+                if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(payload)) {
                     urlPath = reqHost + urlPath;
                 }
-                runScanTask(httpReqResp, info, urlPath, FROM_SCAN, requestMode);
+                // A selected identity must be applied to every generated Payload variant.
+                runScanTask(httpReqResp, info, urlPath, FROM_SCAN, requestMode, profiles, applyPayloadProcessing, variantIdOverride);
             }
         }
     }
@@ -742,6 +898,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return false;
     }
 
+    private boolean pathBlocklistFilter(String path) {
+        if (!WordlistManager.isPathBlocked(path)) {
+            return false;
+        }
+        Logger.debug("pathBlocklistFilter filter request path: %s", path);
+        return true;
+    }
+
     /**
      * 代理请求的后缀过滤
      *
@@ -835,6 +999,24 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from,
                              RequestMode requestMode) {
+        runScanTask(httpReqResp, info, pathWithQuery, from, requestMode, List.of());
+    }
+
+    private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from,
+                             RequestMode requestMode, List<IdentityProfile> profiles) {
+        runScanTask(httpReqResp, info, pathWithQuery, from, requestMode, profiles, true);
+    }
+
+    private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from,
+                             RequestMode requestMode, List<IdentityProfile> profiles,
+                             boolean applyPayloadProcessing) {
+        runScanTask(httpReqResp, info, pathWithQuery, from, requestMode, profiles,
+                applyPayloadProcessing, null);
+    }
+
+    private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from,
+                             RequestMode requestMode, List<IdentityProfile> profiles,
+                             boolean applyPayloadProcessing, String variantIdOverride) {
         if (isTaskStopRequested()) {
             Logger.debug("runScanTask: task stop requested, intercept source: %s", from);
             return;
@@ -847,20 +1029,28 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         IRequestInfo newInfo = mHelpers.analyzeRequest(service, request);
-        String reqId = generateReqId(newInfo, from, requestMode);
+        if (pathBlocklistFilter(getUrlByRequestInfo(newInfo).getPath())) {
+            return;
+        }
+        String reqId = scopeRedirectRequestId(generateReqId(newInfo, from, requestMode), from, profiles,
+                variantIdOverride);
+        // Explicit context-menu replays are allowed to run again with the same request ID.
+        if (Boolean.TRUE.equals(mForceRescanContext.get())) {
+            sRepeatFilter.remove(reqId);
+        }
         // 如果当前 URL 已经扫描，中止任务
         if (checkRepeatFilterByReqId(reqId)) {
             return;
         }
         // 如果未启用“请求包处理”功能，直接对扫描的任务发起请求
-        if (!mDataBoardTab.hasPayloadProcessing()) {
-            doBurpRequest(service, reqId, request, from, requestMode);
+        if (!applyPayloadProcessing || !mDataBoardTab.hasPayloadProcessing()) {
+            dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride);
             return;
         }
         // 运行已经启用并且需要合并的任务
-        runEnableAndMergeTask(service, reqId, request, from, requestMode);
+        runEnableAndMergeTask(service, reqId, request, from, requestMode, profiles, variantIdOverride);
         // 运行已经启用并且不需要合并的任务
-        runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode);
+        runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode, profiles, variantIdOverride);
     }
 
     /**
@@ -898,6 +1088,30 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return reqHost + url.getPath();
     }
 
+    static String scopeRedirectRequestId(String reqId, String from, List<IdentityProfile> profiles) {
+        return scopeRedirectRequestId(reqId, from, profiles, null);
+    }
+
+    static String scopeRedirectRequestId(String reqId, String from, List<IdentityProfile> profiles,
+                                         String variantId) {
+        if (StringUtils.isEmpty(from) || !from.startsWith(FROM_REDIRECT)) {
+            return reqId;
+        }
+        StringBuilder scoped = new StringBuilder(reqId);
+        // Redirect de-duplication must be isolated per identity. Otherwise the first
+        // Profile reaching a shared Location prevents every other Profile from following it.
+        if (profiles != null && profiles.size() == 1 && profiles.get(0) != null
+                && StringUtils.isNotEmpty(profiles.get(0).getName())) {
+            scoped.append("\nprofile=").append(profiles.get(0).getName());
+        }
+        // Different POST bodies or processing variants may redirect to the same URL.
+        // Keep them independent so 307/308 requests are not silently discarded.
+        if (StringUtils.isNotEmpty(variantId)) {
+            scoped.append("\nvariant=").append(variantId);
+        }
+        return scoped.toString();
+    }
+
     /**
      * 根据 Url 检测是否重复扫描
      *
@@ -920,14 +1134,15 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param from        请求来源
      */
     private void runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from,
-                                       RequestMode requestMode) {
+                                       RequestMode requestMode, List<IdentityProfile> profiles,
+                                       String variantIdOverride) {
         // 获取已经启用并且需要合并的“请求包处理”规则
         List<ProcessingItem> processList = getPayloadProcess()
                 .stream().filter(ProcessingItem::isEnabledAndMerge)
                 .collect(Collectors.toList());
         // 如果规则为空，直接发起请求
         if (processList.isEmpty()) {
-            doBurpRequest(service, reqId, reqRawBytes, from, requestMode);
+            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride);
             return;
         }
         byte[] resultBytes = reqRawBytes;
@@ -940,10 +1155,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             boolean equals = Arrays.equals(reqRawBytes, resultBytes);
             // 未进行任何处理时，不变更 from 值
             String newFrom = equals ? from : from + "（" + FROM_PROCESS + "）";
-            doBurpRequest(service, reqId, resultBytes, newFrom, requestMode);
+            dispatchRequestProfiles(service, reqId, resultBytes, newFrom, requestMode, profiles, variantIdOverride);
         } else {
             // 如果规则处理异常导致数据返回为空，则发送原来的请求
-            doBurpRequest(service, reqId, reqRawBytes, from, requestMode);
+            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride);
         }
     }
 
@@ -955,7 +1170,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param reqRawBytes 请求数据包
      */
     private void runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes,
-                                                      RequestMode requestMode) {
+                                                      RequestMode requestMode, List<IdentityProfile> profiles,
+                                                      String variantIdOverride) {
         final long taskGeneration = resolveTaskGeneration();
         // 遍历规则列表，进行 Payload Processing 处理后，再次请求数据包
         getPayloadProcess().parallelStream().filter(ProcessingItem::isEnabledWithoutMerge)
@@ -974,8 +1190,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     if (equals) {
                         return;
                     }
-                    doBurpRequest(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）",
-                            requestMode);
+                    dispatchRequestProfiles(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）",
+                            requestMode, profiles, variantIdOverride);
                 }));
     }
 
@@ -987,8 +1203,206 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param reqRawBytes 请求数据包
      * @param from        请求来源
      */
+
+    private void dispatchRequestProfiles(IHttpService service, String reqId, byte[] request, String from,
+                                         RequestMode requestMode, List<IdentityProfile> profiles,
+                                         String variantIdOverride) {
+        String variableRequest = VariableManager.resolveVariables(mHelpers.bytesToString(request));
+        if (variableRequest == null) {
+            return;
+        }
+        byte[] baseRequest = updateContentLength(mHelpers.stringToBytes(variableRequest));
+        if (baseRequest == null || requestPathBlocklistFilter(service, baseRequest)) {
+            return;
+        }
+        String variantId = StringUtils.isNotEmpty(variantIdOverride)
+                ? variantIdOverride : buildVariantId(service, baseRequest);
+        if (profiles == null || profiles.isEmpty()) {
+            doBurpRequest(service, reqId, baseRequest, from, requestMode, "", variantId);
+            return;
+        }
+        for (IdentityProfile profile : profiles) {
+            byte[] profiledRequest = applyIdentityProfile(service, baseRequest, profile);
+            if (profiledRequest != null && !requestPathBlocklistFilter(service, profiledRequest)) {
+                doBurpRequest(service, reqId, profiledRequest, from, requestMode, profile.getName(), variantId);
+            }
+        }
+    }
+
+    private boolean requestPathBlocklistFilter(IHttpService service, byte[] request) {
+        if (service == null || request == null || request.length == 0) {
+            return false;
+        }
+        try {
+            IRequestInfo info = mHelpers.analyzeRequest(service, request);
+            URL url = getUrlByRequestInfo(info);
+            return url != null && pathBlocklistFilter(url.getPath());
+        } catch (Exception e) {
+            Logger.debug("Final request path check failed: %s", e.getMessage());
+            return false;
+        }
+    }
+
+    static String buildVariantId(IHttpService service, byte[] request) {
+        byte[] serviceBytes = (getReqHostByHttpService(service) + "\n").getBytes(StandardCharsets.UTF_8);
+        byte[] requestBytes = request == null ? EMPTY_BYTES : request;
+        byte[] key = new byte[serviceBytes.length + requestBytes.length];
+        System.arraycopy(serviceBytes, 0, key, 0, serviceBytes.length);
+        System.arraycopy(requestBytes, 0, key, serviceBytes.length, requestBytes.length);
+        return Utils.md5(key);
+    }
+
+    static String buildRedirectVariantId(String parentVariantId, IHttpService service, byte[] request) {
+        if (StringUtils.isEmpty(parentVariantId)) {
+            return buildVariantId(service, request);
+        }
+        String rootVariantId = redirectRootVariantId(parentVariantId);
+        byte[] requestBytes = request == null ? EMPTY_BYTES : request;
+        int lineEnd = 0;
+        while (lineEnd < requestBytes.length && requestBytes[lineEnd] != '\r' && requestBytes[lineEnd] != '\n') {
+            lineEnd++;
+        }
+        String requestLine = new String(requestBytes, 0, lineEnd, StandardCharsets.ISO_8859_1);
+        String key = rootVariantId + "\n" + getReqHostByHttpService(service) + "\n" + requestLine;
+        return REDIRECT_VARIANT_PREFIX + rootVariantId + ":"
+                + Utils.md5(key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String redirectRootVariantId(String variantId) {
+        if (!variantId.startsWith(REDIRECT_VARIANT_PREFIX)) {
+            return variantId;
+        }
+        int separator = variantId.indexOf(':', REDIRECT_VARIANT_PREFIX.length());
+        if (separator <= REDIRECT_VARIANT_PREFIX.length()) {
+            return variantId;
+        }
+        return variantId.substring(REDIRECT_VARIANT_PREFIX.length(), separator);
+    }
+
+    private byte[] applyIdentityProfile(IHttpService service, byte[] request, IdentityProfile profile) {
+        if (profile == null) {
+            return null;
+        }
+        String raw = resolveProfileVariables(mHelpers.bytesToString(request), profile);
+        if (raw == null) {
+            return null;
+        }
+        Map<String, String> headers = resolveProfileVariables(profile.getHeaders(), profile);
+        Map<String, String> query = resolveProfileVariables(profile.getQuery(), profile);
+        Map<String, String> body = resolveProfileVariables(profile.getBody(), profile);
+        String cookie = resolveProfileVariables(profile.getCookie(), profile);
+        if (headers == null || query == null || body == null || cookie == null) {
+            return null;
+        }
+        byte[] result = mHelpers.stringToBytes(raw);
+        result = applyProfileHeaders(result, headers, profile.isReplaceCookie(), cookie);
+        result = applyProfileParameters(result, query, IParameter.PARAM_URL);
+        result = applyProfileParameters(result, body, IParameter.PARAM_BODY);
+        return updateContentLength(result);
+    }
+
+    private String resolveProfileVariables(String source, IdentityProfile profile) {
+        if (source == null) {
+            return "";
+        }
+        Matcher matcher = PROFILE_VARIABLE_PATTERN.matcher(source);
+        StringBuffer result = new StringBuffer();
+        Map<String, String> variables = profile.getVariables();
+        while (matcher.find()) {
+            String value = variables.get(matcher.group(1));
+            if (StringUtils.isEmpty(value)) {
+                return null;
+            }
+            matcher.appendReplacement(result, Matcher.quoteReplacement(value));
+        }
+        matcher.appendTail(result);
+        return result.toString();
+    }
+
+    private Map<String, String> resolveProfileVariables(Map<String, String> source, IdentityProfile profile) {
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : source.entrySet()) {
+            String value = resolveProfileVariables(entry.getValue(), profile);
+            if (value == null) {
+                return null;
+            }
+            result.put(entry.getKey(), value);
+        }
+        return result;
+    }
+
+    private byte[] applyProfileHeaders(byte[] request, Map<String, String> profileHeaders,
+                                       boolean replaceCookie, String cookie) {
+        IRequestInfo info = mHelpers.analyzeRequest(request);
+        ArrayList<String> headers = mergeProfileHeaders(info.getHeaders(), profileHeaders, replaceCookie, cookie);
+        byte[] body = Arrays.copyOfRange(request, Math.min(info.getBodyOffset(), request.length), request.length);
+        return mHelpers.buildHttpMessage(headers, body);
+    }
+
+    static ArrayList<String> mergeProfileHeaders(List<String> requestHeaders,
+                                                  Map<String, String> profileHeaders,
+                                                  boolean replaceCookie, String cookie) {
+        ArrayList<String> headers = new ArrayList<>(requestHeaders == null ? List.of() : requestHeaders);
+        LinkedHashMap<String, String> replacements = new LinkedHashMap<>(
+                profileHeaders == null ? Map.of() : profileHeaders);
+        String cookieValue = normalizeCookieHeaderValue(cookie);
+        if (replaceCookie && StringUtils.isNotEmpty(cookieValue)) {
+            replacements.entrySet().removeIf(entry -> entry.getKey() != null
+                    && "Cookie".equalsIgnoreCase(entry.getKey().trim()));
+            headers.removeIf(header -> headerNameEquals(header, "Cookie"));
+            replacements.put("Cookie", cookieValue);
+        }
+        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            String name = entry.getKey() == null ? "" : entry.getKey().trim();
+            String value = entry.getValue();
+            // Profile settings only replace headers. Header removal belongs to Request configuration.
+            if (StringUtils.isEmpty(name) || StringUtils.isEmpty(value)) {
+                continue;
+            }
+            headers.removeIf(header -> headerNameEquals(header, name));
+            headers.add(name + ": " + value);
+        }
+        return headers;
+    }
+
+    static String normalizeCookieHeaderValue(String cookie) {
+        String value = cookie == null ? "" : cookie.trim().replaceAll("\\R+", " ");
+        while (StringUtils.isNotEmpty(value)) {
+            int separator = value.indexOf(':');
+            if (separator <= 0
+                    || !"Cookie".equalsIgnoreCase(value.substring(0, separator).trim())) {
+                break;
+            }
+            value = value.substring(separator + 1).trim();
+        }
+        return value;
+    }
+
+    private static boolean headerNameEquals(String header, String expectedName) {
+        if (header == null || StringUtils.isEmpty(expectedName)) {
+            return false;
+        }
+        int separator = header.indexOf(':');
+        return separator > 0 && expectedName.equalsIgnoreCase(header.substring(0, separator).trim());
+    }
+    private byte[] applyProfileParameters(byte[] request, Map<String, String> values, byte type) {
+        byte[] result = request;
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            IParameter existing = findRequestParameter(result, entry.getKey(), type);
+            IParameter parameter = mHelpers.buildParameter(entry.getKey(), entry.getValue(), type);
+            result = existing == null ? mHelpers.addParameter(result, parameter) : mHelpers.updateParameter(result, parameter);
+        }
+        return result;
+    }
+
+    private IParameter findRequestParameter(byte[] request, String name, byte type) {
+        IRequestInfo info = mHelpers.analyzeRequest(request);
+        return info.getParameters().stream()
+                .filter(parameter -> parameter.getType() == type && name.equals(parameter.getName()))
+                .findFirst().orElse(null);
+    }
     private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from,
-                               RequestMode requestMode) {
+                               RequestMode requestMode, String profileName, String variantId) {
         final long taskGeneration = resolveTaskGeneration();
         // 线程池关闭后，不接收任何任务
         if (isTaskStopRequested(taskGeneration)) {
@@ -1033,7 +1447,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 // 获取配置的请求重试次数
                 int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
                 // 发起请求
-                    IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount, requestMode);
+                    IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount, requestMode, !StringUtils.isEmpty(profileName));
                     if (newReqResp == null) {
                         sRepeatFilter.remove(reqId);
                         incrementTaskOverCounter(from);
@@ -1048,6 +1462,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     boolean browserResult = requestMode == RequestMode.BROWSER || isBrowserRequestResponse(newReqResp);
                     String displayFrom = browserResult ? appendBrowserFrom(from) : from;
                 TaskData data = buildTaskData(newReqResp, displayFrom);
+                    data.setProfile(profileName);
+                    data.setVariantId(variantId);
                     mDataBoardTab.addTaskData(data, browserResult ? RequestMode.BROWSER : RequestMode.BURP);
                 // 收集数据
                 CollectManager.collect(false, service.getHost(), newReqResp.getResponse());
@@ -1125,8 +1541,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         int status = data.getStatus();
-        // 检测 30x 状态码
-        if (status < 300 || status >= 400) {
+        // 仅跟随定义了自动重定向语义的状态码；304 等响应不应发起新请求。
+        if (!isRedirectStatus(status)) {
             return;
         }
         // 如果线程中断，不继续往下执行
@@ -1138,7 +1554,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         IHttpRequestResponse reqResp = (IHttpRequestResponse) data.getReqResp();
         IResponseInfo respInfo = mHelpers.analyzeResponse(reqResp.getResponse());
         String location = getLocationByResponseInfo(respInfo);
-        if (location == null) {
+        if (location == null || isFragmentOnlyRedirect(location)) {
             return;
         }
         // 如果启用了 Cookie 跟随，获取响应头中的 Cookie 值
@@ -1150,26 +1566,61 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         String reqPath = data.getUrl();
         try {
             HttpReqRespAdapter httpReqResp;
-            IRequestInfo reqInfo = mHelpers.analyzeRequest(reqResp);
-            List<String> headers = reqInfo.getHeaders();
             // 兼容完整 Host 地址
             if (UrlUtils.isHTTP(reqPath)) {
                 URL originUrl = UrlUtils.parseURL(reqPath);
                 URL redirectUrl = UrlUtils.parseRedirectTargetURL(originUrl, location);
+                if (redirectUrl == null) {
+                    return;
+                }
                 IHttpService service = reqResp.getHttpService();
-                httpReqResp = HttpReqRespAdapter.from(service, redirectUrl.toString(), headers, cookies);
+                httpReqResp = HttpReqRespAdapter.followRedirect(
+                        service, UrlUtils.toRequestURL(redirectUrl), reqResp.getRequest(), cookies, status);
             } else {
                 URL originUrl = UrlUtils.parseURL(reqHost + reqPath);
                 URL redirectUrl = UrlUtils.parseRedirectTargetURL(originUrl, location);
+                if (redirectUrl == null) {
+                    return;
+                }
                 IHttpService service = buildHttpServiceByURL(redirectUrl);
-                httpReqResp = HttpReqRespAdapter.from(service, UrlUtils.toPQF(redirectUrl), headers, cookies);
+                httpReqResp = HttpReqRespAdapter.followRedirect(
+                        service, UrlUtils.toPQ(redirectUrl), reqResp.getRequest(), cookies, status);
             }
-            doScan(httpReqResp, FROM_REDIRECT + "（" + data.getId() + "）");
-        } catch (IllegalArgumentException e) {
+            RedirectScanContext context = redirectScanContext(data.getProfile());
+            String redirectVariantId = buildRedirectVariantId(data.getVariantId(),
+                    httpReqResp.getHttpService(), httpReqResp.getRequest());
+            doScan(httpReqResp, FROM_REDIRECT + "（" + data.getId() + "）",
+                    WordlistManager.getItem(WordlistManager.KEY_PAYLOAD), RequestMode.AUTO, context.profiles(),
+                    context.expandDirectories(), context.applyPayloadProcessing(), redirectVariantId);
+        } catch (Exception e) {
             Logger.error("Follow redirect error: " + e.getMessage());
         }
     }
 
+    static boolean isFragmentOnlyRedirect(String location) {
+        return StringUtils.isNotEmpty(location) && location.trim().startsWith("#");
+    }
+
+    static boolean isRedirectStatus(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    static RedirectScanContext redirectScanContext(String profileName) {
+        List<IdentityProfile> profiles = List.of();
+        if (StringUtils.isNotEmpty(profileName)) {
+            // 重定向请求已经包含原 Profile 处理后的 Header/Cookie/Query。只保留名称
+            // 用于去重隔离和展示，避免 302 改成 GET 后又把 Profile Body 参数加回去。
+            IdentityProfile profileContext = new IdentityProfile();
+            profileContext.setName(profileName);
+            profiles = List.of(profileContext);
+        }
+        // The final redirected request must not fan out directories or run Payload Processing again.
+        return new RedirectScanContext(profiles, false, false);
+    }
+
+    record RedirectScanContext(List<IdentityProfile> profiles, boolean expandDirectories,
+                               boolean applyPayloadProcessing) {
+    }
     /**
      * 从 IResponseInfo 实例获取响应头 Location 值
      *
@@ -1177,13 +1628,21 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @return 失败返回null
      */
     private String getLocationByResponseInfo(IResponseInfo info) {
-        String headerPrefix = "location: ";
-        List<String> headers = info.getHeaders();
-        for (int i = 1; i < headers.size(); i++) {
-            String header = headers.get(i);
-            // 检测时忽略大小写
-            if (header.toLowerCase().startsWith(headerPrefix)) {
-                return header.substring(headerPrefix.length());
+        return info == null ? null : findHeaderValue(info.getHeaders(), "Location");
+    }
+
+    static String findHeaderValue(List<String> headers, String expectedName) {
+        if (headers == null || StringUtils.isEmpty(expectedName)) {
+            return null;
+        }
+        for (String header : headers) {
+            if (header == null) {
+                continue;
+            }
+            int separator = header.indexOf(':');
+            if (separator > 0 && expectedName.equalsIgnoreCase(header.substring(0, separator).trim())) {
+                String value = header.substring(separator + 1).trim();
+                return StringUtils.isEmpty(value) ? null : value;
             }
         }
         return null;
@@ -1216,11 +1675,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @return 请求响应数据
      */
     private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount) {
-        return doMakeHttpRequest(service, reqRawBytes, retryCount, RequestMode.AUTO);
+        return doMakeHttpRequest(service, reqRawBytes, retryCount, RequestMode.AUTO, false);
     }
 
     private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount,
-                                                   RequestMode requestMode) {
+                                                   RequestMode requestMode, boolean isolateCookies) {
         if (isTaskStopRequested()) {
             Logger.debug("doMakeHttpRequest: task stop requested, intercept task");
             return HttpReqRespAdapter.from(service, reqRawBytes);
@@ -1232,14 +1691,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return HttpReqRespAdapter.from(service, reqRawBytes);
         }
         if (requestMode == RequestMode.BROWSER) {
-            return doBrowserRequest(service, reqRawBytes, true);
+            return doBrowserRequest(service, reqRawBytes, true, isolateCookies);
         }
         try {
             reqResp = mCallbacks.makeHttpRequest(service, reqRawBytes);
             byte[] respRawBytes = reqResp.getResponse();
             if (respRawBytes != null && respRawBytes.length > 0) {
                 IHttpRequestResponse browserFallback = tryBrowserFallbackForInterception(service, reqRawBytes,
-                        reqResp, requestMode);
+                        reqResp, requestMode, isolateCookies);
                 if (browserFallback != null) {
                     return browserFallback;
                 }
@@ -1271,7 +1730,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 return reqResp;
             }
         }
-        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode);
+        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode, isolateCookies);
     }
 
     /**
@@ -1280,7 +1739,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param reqHost Host（格式：http://x.x.x.x、http://x.x.x.x:8080）
      * @return true=存在；false=不存在
      */
-    private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, boolean forceBrowser) {
+    private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, boolean forceBrowser,
+                                                   boolean isolateCookies) {
         if (isTaskStopRequested()) {
             Logger.debug("doBrowserRequest: task stop requested, intercept browser request");
             return null;
@@ -1307,7 +1767,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
                 URL url = getUrlByRequestInfo(info);
                 Logger.debug("Do browser request: %s", url);
-                BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes);
+                BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes, isolateCookies);
                 long browserTimeout = getBrowserRequestTimeout();
                 BrowserRequestManager.BrowserResult result = mBrowserRequestManager.navigate(
                         browserRequest, Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
@@ -1346,7 +1806,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private IHttpRequestResponse tryBrowserFallbackForInterception(IHttpService service, byte[] reqRawBytes,
                                                                    IHttpRequestResponse burpResp,
-                                                                   RequestMode requestMode) {
+                                                                   RequestMode requestMode, boolean isolateCookies) {
         if (requestMode != RequestMode.AUTO || !Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST)) {
             return null;
         }
@@ -1359,7 +1819,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (!looksLikeInterceptionPage(service, burpResp)) {
             return null;
         }
-        IHttpRequestResponse browserResp = doBrowserRequest(service, reqRawBytes, false);
+        IHttpRequestResponse browserResp = doBrowserRequest(service, reqRawBytes, false, isolateCookies);
         if (browserResp == null || browserResp.getResponse() == null || browserResp.getResponse().length == 0) {
             return null;
         }
@@ -1446,7 +1906,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return false;
     }
 
-    private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes) throws MalformedURLException {
+    private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes, boolean isolateCookies) throws MalformedURLException {
         URL url = getUrlByRequestInfo(info);
         if (url == null) {
             throw new IllegalArgumentException("browser request url is empty");
@@ -1455,7 +1915,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         byte[] bodyBytes = bodyOffset >= 0 && bodyOffset < reqRawBytes.length
                 ? Arrays.copyOfRange(reqRawBytes, bodyOffset, reqRawBytes.length)
                 : EMPTY_BYTES;
-        return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes);
+        return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes, isolateCookies);
     }
 
     private boolean matchesBrowserRequestTarget(IHttpService service, IRequestInfo info) {
@@ -1479,6 +1939,21 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("Browser target host regex invalid: %s", e.getMessage());
             return false;
         }
+    }
+
+    private String getHeaderName(String header) {
+        if (StringUtils.isEmpty(header)) {
+            return "";
+        }
+        int separator = header.indexOf(':');
+        return (separator < 0 ? header : header.substring(0, separator)).trim();
+    }
+
+    private boolean containsHeaderName(List<String> headers, String name) {
+        if (headers == null || StringUtils.isEmpty(name)) {
+            return false;
+        }
+        return headers.stream().anyMatch(header -> name.equalsIgnoreCase(getHeaderName(header)));
     }
 
     /**
@@ -1513,9 +1988,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 请求头的参数处理（顺带处理移除的请求头），从 1 开始表示跳过首行（请求行）
         for (int i = 1; i < headers.size(); i++) {
             String item = headers.get(i);
-            String key = item.split(": ")[0];
+            String key = getHeaderName(item);
             // 是否需要移除当前请求头字段（优先级最高）
-            if (removeHeaders.contains(key)) {
+            if (containsHeaderName(removeHeaders, key)) {
                 continue;
             }
             // 如果是扫描的请求（只有 GET 请求），将 Content-Length 移除
@@ -1524,13 +1999,13 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             }
             // 检测配置中是否存在当前请求头字段
             String matchItem = configHeader.stream().filter(configHeaderItem -> {
-                if (StringUtils.isNotEmpty(configHeaderItem) && configHeaderItem.contains(": ")) {
-                    String configHeaderKey = configHeaderItem.split(": ")[0];
+                if (StringUtils.isNotEmpty(configHeaderItem) && configHeaderItem.indexOf(':') > 0) {
+                    String configHeaderKey = getHeaderName(configHeaderItem);
                     // 检测是否需要移除当前请求头字段
-                    if (removeHeaders.contains(key)) {
+                    if (containsHeaderName(removeHeaders, key)) {
                         return false;
                     }
-                    return configHeaderKey.equals(key);
+                    return configHeaderKey.equalsIgnoreCase(key);
                 }
                 return false;
             }).findFirst().orElse(null);
@@ -1546,9 +2021,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         // 将配置里剩下的值全部填充到请求头中
         for (String item : configHeader) {
-            String key = item.split(": ")[0];
+            String key = getHeaderName(item);
             // 检测是否需要移除当前KEY
-            if (!removeHeaders.contains(key)) {
+            if (!containsHeaderName(removeHeaders, key)) {
                 requestRaw.append(item).append("\r\n");
             }
         }
@@ -1559,7 +2034,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             int bodyOffset = info.getBodyOffset();
             int bodySize = httpRequest.length - bodyOffset;
             if (bodySize > 0) {
-                requestRaw.append(new String(httpRequest, bodyOffset, bodySize));
+                requestRaw.append(mHelpers.bytesToString(Arrays.copyOfRange(httpRequest, bodyOffset, httpRequest.length)));
             }
         }
         // 请求头构建完成后，对里面包含的动态变量进行赋值
@@ -1956,14 +2431,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private String setupVariable(IHttpService service, URL url, String requestRaw) {
         String protocol = service.getProtocol();
         String host = service.getHost() + ":" + service.getPort();
-        if (service.getPort() == 80 || service.getPort() == 443) {
+        if (UrlUtils.isDefaultPort(protocol, service.getPort())) {
             host = service.getHost();
         }
         String domain = service.getHost();
         String timestamp = String.valueOf(DateUtils.getTimestamp());
-        String randomIP = IPUtils.randomIPv4();
-        String randomLocalIP = IPUtils.randomIPv4ForLocal();
-        String randomUA = Utils.getRandomItem(WordlistManager.getUserAgent());
         String domainMain = DomainHelper.getDomain(domain, null);
         String domainName = DomainHelper.getDomainName(domain, null);
         String subdomain = getSubdomain(domain);
@@ -2000,10 +2472,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     return null;
                 }
             }
-            // 填充随机值相关动态变量
-            requestRaw = fillVariable(requestRaw, "random.ip", randomIP);
-            requestRaw = fillVariable(requestRaw, "random.local-ip", randomLocalIP);
-            requestRaw = fillVariable(requestRaw, "random.ua", randomUA);
+
             // 填充日期、时间相关的动态变量
             requestRaw = fillVariable(requestRaw, "timestamp", timestamp);
             if (requestRaw.contains("{{date.") || requestRaw.contains("{{time.")) {
@@ -2024,7 +2493,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 requestRaw = fillVariable(requestRaw, "time.m", rightDateTime[4]);
                 requestRaw = fillVariable(requestRaw, "time.s", rightDateTime[5]);
             }
-            return requestRaw;
+            String customVariables = VariableManager.resolveVariables(requestRaw);
+            if (customVariables == null) {
+                return null;
+            }
+            if (customVariables == null || VariableManager.hasUnresolvedVariables(customVariables)) {
+                return null;
+            }
+            return customVariables;
         } catch (IllegalArgumentException e) {
             Logger.debug(e.getMessage());
             return null;
@@ -2311,11 +2787,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param service IHttpService 实例
      * @return 返回请求的 Host 地址
      */
-    private String getReqHostByHttpService(IHttpService service) {
+    private static String getReqHostByHttpService(IHttpService service) {
         String protocol = service.getProtocol();
         String host = service.getHost();
         int port = service.getPort();
-        if (Utils.isIgnorePort(port)) {
+        if (UrlUtils.isDefaultPort(protocol, port)) {
             return protocol + "://" + host;
         }
         return protocol + "://" + host + ":" + port;
@@ -2369,16 +2845,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             onClearHistory();
             return;
         }
-        if (data.getReqResp() instanceof IHttpRequestResponse reqResp) {
-            mCurrentReqResp = reqResp;
-        } else {
-            // 历史加载的数据：从持久化的原始字节重建 IHttpRequestResponse
-            mCurrentReqResp = rebuildReqRespFromBytes(data);
-            if (mCurrentReqResp == null) {
-                mRequestTextEditor.setMessage(EMPTY_BYTES, true);
-                mResponseTextEditor.setMessage(EMPTY_BYTES, false);
-                return;
-            }
+        mCurrentReqResp = getReqResp(data);
+        if (mCurrentReqResp == null) {
+            mRequestTextEditor.setMessage(EMPTY_BYTES, true);
+            mResponseTextEditor.setMessage(EMPTY_BYTES, false);
+            return;
         }
         // 加载请求、响应数据包
         byte[] hintBytes = mHelpers.stringToBytes(L.get("message_editor_loading"));
@@ -2553,7 +3024,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         for (TaskData data : list) {
-            if (!(data.getReqResp() instanceof IHttpRequestResponse reqResp)) {
+            IHttpRequestResponse reqResp = getReqResp(data);
+            if (reqResp == null) {
                 continue;
             }
             byte[] reqBytes = reqResp.getRequest();
@@ -2574,11 +3046,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     @Override
     public byte[] getBodyByTaskData(TaskData data) {
-        if (data == null || !(data.getReqResp() instanceof IHttpRequestResponse reqResp)) {
+        if (data == null) {
             return new byte[]{};
         }
-        mCurrentReqResp = reqResp;
-        byte[] respBytes = mCurrentReqResp.getResponse();
+        IHttpRequestResponse reqResp = getReqResp(data);
+        if (reqResp != null) {
+            mCurrentReqResp = reqResp;
+        }
+        byte[] respBytes = reqResp == null ? data.getRespBytes() : reqResp.getResponse();
         if (respBytes == null || respBytes.length == 0) {
             return new byte[]{};
         }
@@ -2794,34 +3269,34 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 mcpTool("ost.wordlists.list", "List wordlist groups and selected wordlists.", objectSchema()),
                 mcpTool("ost.wordlist.get", "Get one wordlist content.", objectSchema(
                         required("key"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
                         property("limit", numberSchema(), "Maximum items, default 200.")
                 )),
                 mcpTool("ost.wordlist.select", "Select the active wordlist for a wordlist group.", objectSchema(
                         required("key", "name"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Existing wordlist name.")
                 )),
                 mcpTool("ost.wordlist.create", "Create an empty wordlist.", objectSchema(
                         required("key", "name"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "New wordlist name."),
                         property("select", booleanSchema(), "Select it after creation.")
                 )),
                 mcpTool("ost.wordlist.append", "Append unique items to a wordlist.", objectSchema(
                         required("key", "items"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
                         property("items", arraySchema(stringSchema()), "Items to append.")
                 )),
                 mcpTool("ost.wordlist.put", "Replace a wordlist with provided items. Requires confirm=true.", objectSchema(
                         required("key", "items", "confirm"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
                         property("items", arraySchema(stringSchema()), "Replacement items."),
@@ -2829,7 +3304,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 )),
                 mcpTool("ost.wordlist.import_file", "Import a local text file into a wordlist.", objectSchema(
                         required("key", "path"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("path", stringSchema(), "Local text file path."),
                         property("name", stringSchema(), "Destination wordlist name. Defaults to file name."),
@@ -2839,7 +3314,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 )),
                 mcpTool("ost.wordlist.delete", "Delete a wordlist. Requires confirm=true.", objectSchema(
                         required("key", "name", "confirm"),
-                        property("key", enumSchema("payload", "headers", "user-agent", "host-allowlist", "host-blocklist", "remove-headers"),
+                        property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Wordlist name."),
                         property("confirm", booleanSchema(), "Must be true to delete.")
@@ -3411,6 +3886,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 "status", data.getStatus(),
                 "length", data.getLength(),
                 "color", safe(data.getHighlight()),
+                "profile", safe(data.getProfile()),
+                "variant", safe(data.getVariantId()),
                 "fingerprint", new LinkedHashMap<>(data.getParams())
         );
         if (reqResp != null) {
@@ -3429,10 +3906,17 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private IHttpRequestResponse getReqResp(TaskData data) {
-        if (data == null || !(data.getReqResp() instanceof IHttpRequestResponse reqResp)) {
+        if (data == null) {
             return null;
         }
-        return reqResp;
+        if (data.getReqResp() instanceof IHttpRequestResponse reqResp) {
+            return reqResp;
+        }
+        IHttpRequestResponse rebuilt = rebuildReqRespFromBytes(data);
+        if (rebuilt != null) {
+            data.setReqResp(rebuilt);
+        }
+        return rebuilt;
     }
 
     private Map<String, Object> fpDataToMap(FpData data) {
@@ -3482,10 +3966,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return List.of(
                 WordlistManager.KEY_PAYLOAD,
                 WordlistManager.KEY_HEADERS,
-                WordlistManager.KEY_USER_AGENT,
                 WordlistManager.KEY_HOST_ALLOWLIST,
                 WordlistManager.KEY_HOST_BLOCKLIST,
-                WordlistManager.KEY_REMOVE_HEADERS
+                WordlistManager.KEY_PATH_BLOCKLIST,
+                WordlistManager.KEY_REMOVE_HEADERS,
+                WordlistManager.KEY_VARIABLES
         );
     }
 
@@ -3749,6 +4234,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 关闭数据收集线程池
         count = CollectManager.closeThreadPool();
         Logger.info("Close: data collection thread pool completed. Task %d records.", count);
+        // Stop new snapshots and let queued/manual saves finish before closing persistence resources.
+        if (mDataBoardTab != null) {
+            mDataBoardTab.closeAutoSaveTimer();
+            mDataBoardTab.closeDataSaveExecutor();
+        }
         TaskPersistenceManager.close();
         // 清除数据收集的去重过滤集合
         count = CollectManager.getRepeatFilterCount();
@@ -3789,8 +4279,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 count += taskTable.getTaskCount();
                 taskTable.clearAll();
             }
-            mDataBoardTab.closeAutoSaveTimer();
-            mDataBoardTab.closeDataSaveExecutor();
             // 关闭导入 URL 窗口
             mDataBoardTab.closeImportUrlWindow();
         }

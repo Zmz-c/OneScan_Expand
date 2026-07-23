@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrlListener, OnFpColumnModifyListener,
         ActionListener {
@@ -61,8 +62,8 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private JLabel mFpCacheStatus;
     private JLabel mTaskHistoryStatus;
     private Timer mAutoSaveTimer;
-    private long mLastAutoSavedVersion = -1L;
-    private long mLastAutoSaveQueuedVersion = -1L;
+    private volatile long mLastAutoSavedVersion = -1L;
+    private volatile long mLastAutoSaveQueuedVersion = -1L;
     private final ExecutorService mSaveExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "OST-data-save");
         thread.setDaemon(true);
@@ -461,10 +462,11 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
                         SwingUtilities.invokeLater(() -> showSaveResult(result));
                     } else {
                         mLastAutoSavedVersion = snapshot.version();
-                        mLastAutoSaveQueuedVersion = snapshot.version();
+                        // A newer snapshot may already be queued. Do not overwrite its marker
+                        // when this older save completes.
                     }
                 } catch (Exception ex) {
-                    if (!showTips) {
+                    if (!showTips && mLastAutoSaveQueuedVersion == snapshot.version()) {
                         mLastAutoSaveQueuedVersion = mLastAutoSavedVersion;
                     }
                     if (showTips) {
@@ -537,11 +539,56 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
                 return;
             }
             List<TaskData> items = TaskPersistenceManager.loadTaskDataByLabel(selected.label());
-            table.loadTaskData(items);
+            loadStoredTaskData(items, table);
             refreshTaskHistoryStatus();
             UIHelper.showTipsDialog(L.get("import_stored_data_success", selected.label(), items.size()));
         } catch (Exception ex) {
             UIHelper.showTipsDialog(L.get("error_hint", ex.getMessage()));
+        }
+    }
+
+    private void loadStoredTaskData(List<TaskData> items, TaskTable legacyTarget) {
+        boolean hasScope = items.stream().anyMatch(item -> item != null
+                && !item.getRequestScope().isEmpty());
+        if (!hasScope) {
+            legacyTarget.loadTaskData(items);
+            return;
+        }
+
+        ArrayList<TaskData> burpItems = new ArrayList<>();
+        ArrayList<TaskData> browserItems = new ArrayList<>();
+        for (TaskData item : items) {
+            if (item == null) {
+                continue;
+            }
+            if (TaskPersistenceManager.SCOPE_BROWSER.equalsIgnoreCase(item.getRequestScope())) {
+                browserItems.add(item);
+            } else if (TaskPersistenceManager.SCOPE_BURP.equalsIgnoreCase(item.getRequestScope())) {
+                burpItems.add(item);
+            } else if (legacyTarget == mBrowserTaskTable) {
+                browserItems.add(item);
+            } else {
+                burpItems.add(item);
+            }
+        }
+
+        TaskTable current = getTaskTable();
+        if (mBurpTaskTable != current && !burpItems.isEmpty()) {
+            mBurpTaskTable.loadTaskData(burpItems);
+        }
+        if (mBrowserTaskTable != current && !browserItems.isEmpty()) {
+            mBrowserTaskTable.loadTaskData(browserItems);
+        }
+        if (current == mBrowserTaskTable && !browserItems.isEmpty()) {
+            mBrowserTaskTable.loadTaskData(browserItems);
+        } else if (current == mBurpTaskTable && !burpItems.isEmpty()) {
+            mBurpTaskTable.loadTaskData(burpItems);
+        } else if (current == mBrowserTaskTable && !burpItems.isEmpty()) {
+            // The imported label only contains Burp data. Show the table whose selection
+            // was just restored so the shared request/response viewers stay consistent.
+            mTaskTabbedPane.setSelectedIndex(0);
+        } else if (current == mBurpTaskTable && !browserItems.isEmpty()) {
+            mTaskTabbedPane.setSelectedIndex(1);
         }
     }
 
@@ -558,6 +605,10 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
 
     public void addTaskData(TaskData data, RequestMode requestMode) {
         TaskTable table = requestMode == RequestMode.BROWSER ? mBrowserTaskTable : mBurpTaskTable;
+        if (data != null) {
+            data.setRequestScope(requestMode == RequestMode.BROWSER
+                    ? TaskPersistenceManager.SCOPE_BROWSER : TaskPersistenceManager.SCOPE_BURP);
+        }
         if (table != null) {
             table.addTaskData(data);
         }
@@ -706,7 +757,15 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     }
 
     public void closeDataSaveExecutor() {
-        mSaveExecutor.shutdownNow();
+        mSaveExecutor.shutdown();
+        try {
+            if (!mSaveExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                mSaveExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            mSaveExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void showSetupFilterDialog() {

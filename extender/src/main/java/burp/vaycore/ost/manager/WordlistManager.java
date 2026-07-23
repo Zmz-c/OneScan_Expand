@@ -9,8 +9,11 @@ import burp.vaycore.ost.common.Config;
 import java.io.File;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 字典管理
@@ -23,7 +26,13 @@ public class WordlistManager {
     public static final String KEY_USER_AGENT = "user-agent";
     public static final String KEY_HOST_ALLOWLIST = "host-allowlist";
     public static final String KEY_HOST_BLOCKLIST = "host-blocklist";
+    public static final String KEY_PATH_BLOCKLIST = "path-blocklist";
     public static final String KEY_REMOVE_HEADERS = "remove-headers";
+    public static final String KEY_VARIABLES = "variables";
+    public static final String VARIABLE_DICTIONARY_RANDOM_IP = "random-ip";
+    public static final String VARIABLE_DICTIONARY_RANDOM_LOCAL_IP = "random-local-ip";
+    public static final String VARIABLE_DICTIONARY_USER_AGENT = "user-agent";
+    static final String CONFIG_VARIABLE_USER_AGENT_MIGRATED = "variables-user-agent-migrated";
     private static String sWordlistDir;
 
     private WordlistManager() {
@@ -53,7 +62,45 @@ public class WordlistManager {
         initDefaultWordlist(WordlistManager.KEY_USER_AGENT, "user_agent.txt", reInitFile);
         initDefaultWordlist(WordlistManager.KEY_HOST_ALLOWLIST, "host_allowlist.txt", reInitFile);
         initDefaultWordlist(WordlistManager.KEY_HOST_BLOCKLIST, "host_blocklist.txt", reInitFile);
+        initDefaultWordlist(WordlistManager.KEY_PATH_BLOCKLIST, "path_blocklist.txt", reInitFile);
         initDefaultWordlist(WordlistManager.KEY_REMOVE_HEADERS, "remove_header.txt", reInitFile);
+        initDefaultWordlist(WordlistManager.KEY_VARIABLES, "variables.txt", reInitFile);
+        initRandomIpVariableDictionaries();
+        initUserAgentVariableDictionary();
+    }
+
+    private static void initRandomIpVariableDictionaries() {
+        initDefaultVariableDictionary(VARIABLE_DICTIONARY_RANDOM_IP, "random_ip.txt");
+        initDefaultVariableDictionary(VARIABLE_DICTIONARY_RANDOM_LOCAL_IP, "random_local_ip.txt");
+    }
+
+    private static void initDefaultVariableDictionary(String name, String resourceName) {
+        if (wordlistFileExists(KEY_VARIABLES, name)) {
+            return;
+        }
+        InputStream input = Config.class.getClassLoader().getResourceAsStream(resourceName);
+        putList(KEY_VARIABLES, name, FileUtils.readStreamToList(input));
+    }
+
+    private static void initUserAgentVariableDictionary() {
+        if (Config.getBoolean(CONFIG_VARIABLE_USER_AGENT_MIGRATED)
+                && wordlistFileExists(KEY_VARIABLES, VARIABLE_DICTIONARY_USER_AGENT)) {
+            return;
+        }
+        // Preserve the legacy selection once, then use variables/user-agent as the active source.
+        if (!wordlistFileExists(KEY_VARIABLES, VARIABLE_DICTIONARY_USER_AGENT)) {
+            putList(KEY_VARIABLES, VARIABLE_DICTIONARY_USER_AGENT, getList(KEY_USER_AGENT));
+        }
+        Config.put(CONFIG_VARIABLE_USER_AGENT_MIGRATED, "true");
+    }
+
+    /**
+     * Completes migration from pre-variable User-Agent configuration after Config has upgraded it.
+     */
+    public static void replaceMigratedUserAgentValues(List<String> values) {
+        putList(KEY_VARIABLES, VARIABLE_DICTIONARY_USER_AGENT,
+                values == null ? new ArrayList<>() : new ArrayList<>(values));
+        Config.put(CONFIG_VARIABLE_USER_AGENT_MIGRATED, "true");
     }
 
     /**
@@ -320,6 +367,13 @@ public class WordlistManager {
      */
     public static boolean wordlistFileExists(String key) {
         String item = getItem(key);
+        return wordlistFileExists(key, item);
+    }
+
+    private static boolean wordlistFileExists(String key, String item) {
+        if (StringUtils.isEmpty(item)) {
+            return false;
+        }
         String path = sWordlistDir + File.separator + key + File.separator + item + ".txt";
         return FileUtils.isFile(path);
     }
@@ -342,7 +396,7 @@ public class WordlistManager {
     }
 
     public static List<String> getUserAgent() {
-        return getList(WordlistManager.KEY_USER_AGENT);
+        return getList(WordlistManager.KEY_VARIABLES, VARIABLE_DICTIONARY_USER_AGENT);
     }
 
     public static List<String> getHostAllowlist() {
@@ -351,6 +405,55 @@ public class WordlistManager {
 
     public static List<String> getHostBlocklist() {
         return getList(WordlistManager.KEY_HOST_BLOCKLIST);
+    }
+
+    public static List<String> getPathBlocklist() {
+        return getList(WordlistManager.KEY_PATH_BLOCKLIST);
+    }
+
+    public static boolean isPathBlocked(String path) {
+        return matchesPathBlocklist(path, getPathBlocklist());
+    }
+
+    static boolean matchesPathBlocklist(String path, List<String> rules) {
+        if (StringUtils.isEmpty(path) || rules == null || rules.isEmpty()) {
+            return false;
+        }
+        ArrayList<String> candidates = new ArrayList<>();
+        String candidate = path;
+        for (int i = 0; i < 3; i++) {
+            String lower = candidate.toLowerCase(Locale.ROOT);
+            if (!candidates.contains(lower)) {
+                candidates.add(lower);
+            }
+            String decoded = decodePath(candidate);
+            if (decoded.equals(candidate)) {
+                break;
+            }
+            candidate = decoded;
+        }
+        for (String rule : rules) {
+            String normalized = rule == null ? "" : rule.trim();
+            if (normalized.isEmpty()) {
+                continue;
+            }
+            String ruleValue = normalized.toLowerCase(Locale.ROOT);
+            String decodedRule = decodePath(normalized).toLowerCase(Locale.ROOT);
+            if (candidates.stream().anyMatch(value -> value.contains(ruleValue)
+                    || value.contains(decodedRule))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String decodePath(String value) {
+        try {
+            // URLDecoder treats '+' as a space, which is incorrect for a URL path.
+            return URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return value;
+        }
     }
 
     public static List<String> getRemoveHeaders() {

@@ -10,6 +10,7 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -36,7 +37,7 @@ public class HttpReqRespAdapter implements IHttpRequestResponse {
             URL u = new URL(url);
             IHttpService service = BurpExtender.buildHttpServiceByURL(u);
             String host = UrlUtils.getHostByURL(u);
-            byte[] requestBytes = buildRequestBytes(host, UrlUtils.toPQF(u));
+            byte[] requestBytes = buildRequestBytes(host, UrlUtils.toPQ(u));
             return new HttpReqRespAdapter(service, requestBytes);
         } catch (MalformedURLException e) {
             throw new IllegalArgumentException("Url: " + url + " format error.");
@@ -45,59 +46,169 @@ public class HttpReqRespAdapter implements IHttpRequestResponse {
 
     public static HttpReqRespAdapter from(IHttpService service, String reqPQF,
                                           List<String> headers, List<String> cookies) {
-        boolean existsCookie = existsCookieByHeader(headers);
         StringBuilder builder = new StringBuilder();
         String host = BurpExtender.getHostByHttpService(service);
-        builder.append("GET ").append(reqPQF).append(" HTTP/1.1").append("\r\n");
+        builder.append("GET ").append(stripFragment(reqPQF)).append(" HTTP/1.1").append("\r\n");
         builder.append("Host: ").append(host).append("\r\n");
-        for (int i = 1; i < headers.size(); i++) {
-            String item = headers.get(i);
+        ArrayList<String> oldCookies = new ArrayList<>();
+        List<String> safeHeaders = headers == null ? List.of() : headers;
+        for (int i = 1; i < safeHeaders.size(); i++) {
+            String item = safeHeaders.get(i);
+            String name = headerName(item);
             // 排除 Host 请求头（需要特殊定制）
-            if (item.toLowerCase().startsWith("host: ")) {
+            if ("Host".equalsIgnoreCase(name)) {
                 continue;
             }
-            // 合并请求的 Cookie 值（如果原请求中不存在 Cookie 值，将 Cookie 插入到 2 的位置）
-            if (!existsCookie && i == 2) {
-                String cookie = mergeCookie(null, cookies);
-                if (StringUtils.isNotEmpty(cookie)) {
-                    builder.append("Cookie: ").append(cookie).append("\r\n");
-                }
-            } else if (item.toLowerCase().startsWith("cookie: ")) {
-                // 分割 Header 的 name 和 value 值
-                String cookieValue = item.split(": ")[1];
-                // 分割 Cookie 的 key 和 value 值
-                String[] oldCookie = cookieValue.split(";\\s*");
-                String cookie = mergeCookie(oldCookie, cookies);
-                if (StringUtils.isNotEmpty(cookie)) {
-                    builder.append("Cookie: ").append(cookie).append("\r\n");
+            if ("Cookie".equalsIgnoreCase(name)) {
+                String cookieValue = headerValue(item);
+                if (StringUtils.isNotEmpty(cookieValue)) {
+                    oldCookies.addAll(Arrays.asList(cookieValue.split(";\\s*")));
                 }
                 continue;
             }
             builder.append(item).append("\r\n");
+        }
+        String cookie = mergeCookie(oldCookies.isEmpty() ? null : oldCookies.toArray(new String[0]), cookies);
+        if (StringUtils.isNotEmpty(cookie)) {
+            builder.append("Cookie: ").append(cookie).append("\r\n");
         }
         builder.append("\r\n");
         byte[] requestBytes = builder.toString().getBytes(StandardCharsets.UTF_8);
         return new HttpReqRespAdapter(service, requestBytes);
     }
 
+    /**
+     * Builds a redirect request while preserving the HTTP method and body rules from RFC 9110.
+     * 303 always becomes a body-less retrieval (HEAD remains HEAD), 301/302 may rewrite POST
+     * to GET, and 307/308 preserve both the original method and raw body bytes.
+     */
+    public static HttpReqRespAdapter followRedirect(IHttpService service, String reqPQF,
+                                                    byte[] originalRequest, List<String> cookies,
+                                                    int statusCode) {
+        if (service == null || originalRequest == null) {
+            throw new IllegalArgumentException("service or original request is null");
+        }
+        int headerEnd = findHeaderEnd(originalRequest);
+        int separatorLength = headerEnd < 0 ? 0 : headerSeparatorLength(originalRequest, headerEnd);
+        int bodyOffset = headerEnd < 0 ? originalRequest.length : headerEnd + separatorLength;
+        byte[] headerBytes = Arrays.copyOfRange(originalRequest, 0,
+                headerEnd < 0 ? originalRequest.length : headerEnd);
+        byte[] originalBody = Arrays.copyOfRange(originalRequest,
+                Math.min(bodyOffset, originalRequest.length), originalRequest.length);
+
+        String headerText = new String(headerBytes, StandardCharsets.ISO_8859_1);
+        String[] lines = headerText.split("\\r?\\n", -1);
+        String originalMethod = requestMethod(lines);
+        String method = redirectMethod(originalMethod, statusCode);
+        boolean dropBody = statusCode == 303
+                || ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(originalMethod));
+        byte[] body = dropBody ? new byte[0] : originalBody;
+
+        StringBuilder builder = new StringBuilder();
+        builder.append(method).append(' ').append(stripFragment(reqPQF)).append(" HTTP/1.1\r\n");
+        builder.append("Host: ").append(BurpExtender.getHostByHttpService(service)).append("\r\n");
+
+        ArrayList<String> oldCookies = new ArrayList<>();
+        for (int i = 1; i < lines.length; i++) {
+            String header = lines[i];
+            String name = headerName(header);
+            if (StringUtils.isEmpty(name) || "Host".equalsIgnoreCase(name)) {
+                continue;
+            }
+            if ("Cookie".equalsIgnoreCase(name)) {
+                String value = headerValue(header);
+                if (StringUtils.isNotEmpty(value)) {
+                    oldCookies.addAll(Arrays.asList(value.split(";\\s*")));
+                }
+                continue;
+            }
+            if (dropBody && ("Content-Length".equalsIgnoreCase(name)
+                    || "Transfer-Encoding".equalsIgnoreCase(name))) {
+                continue;
+            }
+            builder.append(header).append("\r\n");
+        }
+        String cookie = mergeCookie(oldCookies.isEmpty() ? null : oldCookies.toArray(new String[0]), cookies);
+        if (StringUtils.isNotEmpty(cookie)) {
+            builder.append("Cookie: ").append(cookie).append("\r\n");
+        }
+        builder.append("\r\n");
+
+        byte[] rebuiltHeaders = builder.toString().getBytes(StandardCharsets.ISO_8859_1);
+        byte[] requestBytes = new byte[rebuiltHeaders.length + body.length];
+        System.arraycopy(rebuiltHeaders, 0, requestBytes, 0, rebuiltHeaders.length);
+        System.arraycopy(body, 0, requestBytes, rebuiltHeaders.length, body.length);
+        return new HttpReqRespAdapter(service, requestBytes);
+    }
+
+    private static String stripFragment(String requestTarget) {
+        if (requestTarget == null) {
+            return "/";
+        }
+        int fragment = requestTarget.indexOf('#');
+        String result = fragment < 0 ? requestTarget : requestTarget.substring(0, fragment);
+        return StringUtils.isEmpty(result) ? "/" : result;
+    }
+
+    private static String requestMethod(String[] lines) {
+        if (lines == null || lines.length == 0 || StringUtils.isEmpty(lines[0])) {
+            return "GET";
+        }
+        String[] parts = lines[0].trim().split("\\s+", 2);
+        return parts.length == 0 || StringUtils.isEmpty(parts[0]) ? "GET" : parts[0];
+    }
+
+    private static String redirectMethod(String originalMethod, int statusCode) {
+        if (statusCode == 303) {
+            return "HEAD".equalsIgnoreCase(originalMethod) ? "HEAD" : "GET";
+        }
+        if ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(originalMethod)) {
+            return "GET";
+        }
+        return StringUtils.isEmpty(originalMethod) ? "GET" : originalMethod;
+    }
+
+    private static int findHeaderEnd(byte[] request) {
+        for (int i = 0; i <= request.length - 4; i++) {
+            if (request[i] == '\r' && request[i + 1] == '\n'
+                    && request[i + 2] == '\r' && request[i + 3] == '\n') {
+                return i;
+            }
+        }
+        for (int i = 0; i <= request.length - 2; i++) {
+            if (request[i] == '\n' && request[i + 1] == '\n') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int headerSeparatorLength(byte[] request, int headerEnd) {
+        return headerEnd + 3 < request.length
+                && request[headerEnd] == '\r' && request[headerEnd + 1] == '\n'
+                && request[headerEnd + 2] == '\r' && request[headerEnd + 3] == '\n' ? 4 : 2;
+    }
+
+    private static String headerName(String header) {
+        if (StringUtils.isEmpty(header)) {
+            return "";
+        }
+        int separator = header.indexOf(':');
+        return separator < 0 ? header.trim() : header.substring(0, separator).trim();
+    }
+
+    private static String headerValue(String header) {
+        if (StringUtils.isEmpty(header)) {
+            return "";
+        }
+        int separator = header.indexOf(':');
+        return separator < 0 ? "" : header.substring(separator + 1).trim();
+    }
+
     public static HttpReqRespAdapter from(IHttpService service, byte[] requestBytes) {
         return new HttpReqRespAdapter(service, requestBytes);
     }
 
-    /**
-     * 检测 Header 列表是否存在 Cookie 字段
-     *
-     * @param headers Header 列表
-     * @return true=存在；false=不存在
-     */
-    private static boolean existsCookieByHeader(List<String> headers) {
-        for (String header : headers) {
-            if (header.toLowerCase().startsWith("cookie: ")) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     /**
      * 合并 Cookie 列表
@@ -114,12 +225,12 @@ public class HttpReqRespAdapter implements IHttpRequestResponse {
         }
         // 合并 Cookie 值
         for (String cookie : cookies) {
-            String[] split = cookie.split("=");
-            if (split.length < 2) {
+            int separator = cookie == null ? -1 : cookie.indexOf('=');
+            if (separator <= 0) {
                 continue;
             }
-            String key = split[0];
-            String value = split[1];
+            String key = cookie.substring(0, separator);
+            String value = cookie.substring(separator + 1);
             int index = cookieKeyIndexOf(oldCookies, key);
             if (index >= 0) {
                 oldCookies[index] = null;
@@ -155,7 +266,7 @@ public class HttpReqRespAdapter implements IHttpRequestResponse {
         for (int i = 0; i < cookies.length; i++) {
             String item = cookies[i];
             if (item != null && item.contains("=")) {
-                String key = item.split("=")[0];
+                String key = item.substring(0, item.indexOf('='));
                 if (key.equals(cookieKey)) {
                     return i;
                 }
@@ -189,7 +300,7 @@ public class HttpReqRespAdapter implements IHttpRequestResponse {
 
     private static StringBuilder buildRequest(String host, String reqPQF) {
         return new StringBuilder()
-                .append("GET ").append(reqPQF).append(" HTTP/1.1").append("\r\n")
+                .append("GET ").append(stripFragment(reqPQF)).append(" HTTP/1.1").append("\r\n")
                 .append("Host: ").append(host).append("\r\n")
                 .append("Accept: ").append("text/html,application/xhtml+xml,")
                 .append("application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;")

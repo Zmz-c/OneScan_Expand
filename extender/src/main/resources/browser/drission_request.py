@@ -103,6 +103,7 @@ def read_request_file(request_file):
     return {
         "method": base64.b64decode(data.get("METHOD", "")).decode("utf-8", errors="replace").upper(),
         "url": base64.b64decode(data.get("URL", "")).decode("utf-8", errors="replace"),
+        "isolate_cookies": data.get("ISOLATE_COOKIES", "false").strip().lower() == "true",
         "headers": headers,
         "body": base64.b64decode(data.get("BODY", "") or ""),
     }
@@ -564,6 +565,47 @@ def set_request_cookies(tab, request):
             current_tab.run_cdp("Network.setCookie", name=cookie_name, value=cookie_value, url=request["url"])
         except Exception:
             pass
+
+
+def snapshot_request_cookies(tab):
+    current_tab = resolve_live_tab(tab)
+    if current_tab is None:
+        raise RuntimeError("browser tab is unavailable for cookie isolation")
+    result = current_tab.run_cdp("Network.getAllCookies") or {}
+    cookies = result.get("cookies") if isinstance(result, dict) else None
+    return list(cookies or [])
+
+
+def clear_request_cookies(tab):
+    current_tab = resolve_live_tab(tab)
+    if current_tab is None:
+        raise RuntimeError("browser tab is unavailable for cookie isolation")
+    current_tab.run_cdp("Network.clearBrowserCookies")
+
+
+def restore_request_cookies(tab, cookies):
+    current_tab = resolve_live_tab(tab)
+    if current_tab is None:
+        raise RuntimeError("browser tab is unavailable for cookie restoration")
+    current_tab.run_cdp("Network.clearBrowserCookies")
+    allowed_fields = {
+        "name", "value", "url", "domain", "path", "secure", "httpOnly", "sameSite",
+        "expires", "priority", "sameParty", "sourceScheme", "sourcePort", "partitionKey",
+    }
+    restored = []
+    for cookie in cookies or []:
+        if not isinstance(cookie, dict):
+            continue
+        value = {key: item for key, item in cookie.items()
+                 if key in allowed_fields and item is not None}
+        if value.get("expires", 0) <= 0:
+            value.pop("expires", None)
+        if not value.get("sameSite"):
+            value.pop("sameSite", None)
+        if value.get("name") is not None and value.get("value") is not None:
+            restored.append(value)
+    if restored:
+        current_tab.run_cdp("Network.setCookies", cookies=restored)
 
 
 def submit_form_post_request(tab, request):
@@ -2738,12 +2780,21 @@ def navigate(args):
 
     for port in candidate_existing_ports(args):
         tab = None
+        cookie_snapshot = None
         try:
             browser = Chromium(build_options(args, port, existing_only=True))
             save_state(args.state_file, port)
             tab = resolve_request_tab(browser, request)
+            if request["isolate_cookies"]:
+                cookie_snapshot = snapshot_request_cookies(tab)
+                clear_request_cookies(tab)
         except Exception as exc:
             last_error = exc
+            if cookie_snapshot is not None and tab is not None:
+                try:
+                    restore_request_cookies(tab, cookie_snapshot)
+                except Exception as restore_exc:
+                    raise RuntimeError("failed to restore browser cookies after isolation setup") from restore_exc
             clear_state(args.state_file)
             continue
         try:
@@ -2761,13 +2812,20 @@ def navigate(args):
             except Exception:
                 pass
             raise last_error
+        finally:
+            if cookie_snapshot is not None:
+                restore_request_cookies(tab, cookie_snapshot)
 
     launch_port = next_launch_port(args)
     tab = None
+    cookie_snapshot = None
     try:
         browser = Chromium(build_options(args, launch_port))
         save_state(args.state_file, launch_port)
         tab = resolve_request_tab(browser, request)
+        if request["isolate_cookies"]:
+            cookie_snapshot = snapshot_request_cookies(tab)
+            clear_request_cookies(tab)
         if request["method"] == "POST":
             result = execute_post_request(tab, request, timeout_seconds, args.load_static_resources)
         else:
@@ -2781,6 +2839,9 @@ def navigate(args):
                 tab.listen.stop()
         except Exception:
             pass
+    finally:
+        if cookie_snapshot is not None:
+            restore_request_cookies(tab, cookie_snapshot)
 
     if last_error is not None:
         raise last_error
