@@ -6,8 +6,10 @@ import org.junit.Test;
 
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -120,6 +122,45 @@ public class BurpExtenderFunctionalTest {
         String secondId = BurpExtender.scopeRedirectRequestId(
                 "https://example.test/next", "Redirect（2）", List.of(), "another-parent-variant");
         assertNotEquals(firstId, secondId);
+    }
+
+    @Test
+    public void manualReplayRescansOnceButKeepsDuplicatePathsDeduplicated() {
+        Set<String> requestIds = new HashSet<>();
+
+        assertTrue(BurpExtender.isFirstManualReplayRequest(requestIds, "BURP https://example.test/api"));
+        assertFalse(BurpExtender.isFirstManualReplayRequest(requestIds, "BURP https://example.test/api"));
+        assertTrue(BurpExtender.isFirstManualReplayRequest(requestIds, "BURP https://example.test/other"));
+
+        Set<String> nextManualAction = new HashSet<>();
+        assertTrue(BurpExtender.isFirstManualReplayRequest(nextManualAction, "BURP https://example.test/api"));
+    }
+    @Test
+    public void requestGroupTracksAllProfilesUntilTheGroupSettles() {
+        BurpExtender.RequestGroup successfulGroup = new BurpExtender.RequestGroup("successful");
+        assertTrue(successfulGroup.registerTask());
+        assertTrue(successfulGroup.registerTask());
+        successfulGroup.completeTask(false);
+        successfulGroup.finishGeneration();
+        assertFalse(successfulGroup.isSettled());
+        successfulGroup.completeTask(true);
+        assertTrue(successfulGroup.isSettled());
+        assertFalse(successfulGroup.shouldReleaseRepeatFilter());
+
+        BurpExtender.RequestGroup failedGroup = new BurpExtender.RequestGroup("failed");
+        assertTrue(failedGroup.registerTask());
+        assertTrue(failedGroup.registerTask());
+        failedGroup.finishGeneration();
+        assertFalse(failedGroup.registerTask());
+        failedGroup.completeTask(false);
+        assertFalse(failedGroup.isSettled());
+        failedGroup.completeTask(false);
+        assertTrue(failedGroup.isSettled());
+        assertTrue(failedGroup.shouldReleaseRepeatFilter());
+
+        BurpExtender.RequestGroup emptyGroup = new BurpExtender.RequestGroup("empty");
+        emptyGroup.finishGeneration();
+        assertTrue(emptyGroup.shouldReleaseRepeatFilter());
     }
 
     @Test

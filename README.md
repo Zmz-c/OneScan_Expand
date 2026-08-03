@@ -106,39 +106,68 @@ matched by this list.
 
 ## MCP / AI Integration
 
-MCP is disabled by default. Enable `MCP server` under `Config` -> `Other`. The panel shows the
-actual endpoint and health-check URL after startup.
-
-Default endpoint:
+MCP is disabled by default. Enable `MCP server` under `Config` -> `Other`; the panel then shows the
+actual endpoint and health check. The server binds only to `127.0.0.1`, using port `8765` by default
+and trying through `8785` if necessary.
 
 ```text
 http://127.0.0.1:8765/mcp
-```
-
-Health check:
-
-```text
 http://127.0.0.1:8765/health
 ```
 
-If the port is occupied, OST tries subsequent ports through `8785`. Start with
-`ost.capabilities.list` to discover available operations. Task data, raw requests, responses,
-Cookies, and Profile values may contain sensitive information; use the local endpoint only in a
-trusted environment.
+This is a standard HTTP JSON-RPC MCP endpoint. Clients should send `initialize`, notify
+`notifications/initialized`, discover operations through `tools/list`, and invoke them through
+`tools/call`. The server negotiates and returns `MCP-Protocol-Version`; supported versions are
+`2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`. POST requests must use
+`Content-Type: application/json`; when an `Accept` header is sent, it must permit
+`application/json` (standard Streamable HTTP clients commonly advertise JSON and SSE together).
 
-Example JSON-RPC request:
+In addition to status, scanning, tasks, fingerprints, collection, wordlists, history, and export, MCP
+exposes:
+
+- `ost.variables.list` and `ost.variable.get/create/update/delete` for named variables.
+- `ost.profiles.list` and `ost.profile.get/create/update/delete` for identity Profiles.
+- Optional `profiles: ["reader", "admin"]` on `ost.scan.urls` and `ost.scan.request`; only enabled
+  existing Profiles can be applied.
+- Read persisted records with `ost.history.tasks.list`; delete selected history labels only with
+  `ost.history.delete` and `confirm: true`.
+- CSV export requires `confirm: true` before replacing an existing file. Wordlist replacement and
+  replace-mode file import also require confirmation.
+- Tool annotations identify read-only, destructive, idempotent, and network-scanning behavior.
+
+Profile queries return summaries by default and do not disclose Cookie, headers, parameters, or
+Profile-local values. Use `include_sensitive: true` only in a trusted local environment. Likewise, raw
+task requests and responses require `include_body: true`.
+
+Initialization example:
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": { "name": "local-client", "version": "1.0" }
+  }
+}
+```
+
+Tool-call example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "ost.status.get",
+    "name": "ost.profiles.list",
     "arguments": {}
   }
 }
 ```
+
 
 ## Requirements
 

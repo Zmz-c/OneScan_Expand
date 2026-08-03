@@ -10,6 +10,7 @@ import burp.vaycore.ost.bean.CollectNode;
 import burp.vaycore.ost.bean.FpData;
 import burp.vaycore.ost.bean.IdentityProfile;
 import burp.vaycore.ost.bean.TaskData;
+import burp.vaycore.ost.bean.VariableDefinition;
 import burp.vaycore.ost.browser.BrowserRequest;
 import burp.vaycore.ost.browser.BrowserRequestManager;
 import burp.vaycore.ost.common.*;
@@ -141,6 +142,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final Set<String> sRepeatFilter = ConcurrentHashMap.newKeySet(500000);
 
     /**
+     * Request groups currently owning a repeat-filter entry.
+     */
+    private final ConcurrentHashMap<String, RequestGroup> mRequestGroups = new ConcurrentHashMap<>();
+
+    /**
      * 超时的请求主机集合
      */
     private final Set<String> sTimeoutReqHost = ConcurrentHashMap.newKeySet();
@@ -159,7 +165,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
     private final AtomicLong mTaskGeneration = new AtomicLong(0);
     private final ThreadLocal<Long> mTaskGenerationContext = new ThreadLocal<Long>();
-    private final ThreadLocal<Boolean> mForceRescanContext = ThreadLocal.withInitial(() -> false);
+    // A manual action can rescan a known request once without expanding duplicate paths.
+    private final ThreadLocal<Set<String>> mManualReplayRequestIds = new ThreadLocal<>();
     private IBurpExtenderCallbacks mCallbacks;
     private IExtensionHelpers mHelpers;
     private Ost mOst;
@@ -404,7 +411,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         try {
-            mMcpServer = new OstMcpServer(this);
+            mMcpServer = new OstMcpServer(this, Constants.PLUGIN_VERSION);
             mMcpServer.start();
             Logger.info("OST MCP server listening on %s", mMcpServer.getEndpoint());
             refreshMcpServerInfoPanel();
@@ -609,15 +616,17 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private void runManualScan(Runnable action) {
-        boolean previous = Boolean.TRUE.equals(mForceRescanContext.get());
-        mForceRescanContext.set(true);
+        Set<String> previous = mManualReplayRequestIds.get();
+        if (previous == null) {
+            mManualReplayRequestIds.set(new HashSet<>());
+        }
         try {
             action.run();
         } finally {
-            if (previous) {
-                mForceRescanContext.set(true);
+            if (previous != null) {
+                mManualReplayRequestIds.set(previous);
             } else {
-                mForceRescanContext.remove();
+                mManualReplayRequestIds.remove();
             }
         }
     }
@@ -1034,23 +1043,29 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         String reqId = scopeRedirectRequestId(generateReqId(newInfo, from, requestMode), from, profiles,
                 variantIdOverride);
-        // Explicit context-menu replays are allowed to run again with the same request ID.
-        if (Boolean.TRUE.equals(mForceRescanContext.get())) {
-            sRepeatFilter.remove(reqId);
-        }
-        // 如果当前 URL 已经扫描，中止任务
-        if (checkRepeatFilterByReqId(reqId)) {
+        // A manual action can claim a known request once, while duplicate paths in the
+        // same action still share the same request group.
+        RequestGroup requestGroup = claimRequestGroup(reqId,
+                isFirstManualReplayRequest(mManualReplayRequestIds.get(), reqId));
+        if (requestGroup == null) {
             return;
         }
-        // 如果未启用“请求包处理”功能，直接对扫描的任务发起请求
-        if (!applyPayloadProcessing || !mDataBoardTab.hasPayloadProcessing()) {
-            dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride);
-            return;
+        try {
+            // 如果未启用“请求包处理”功能，直接对扫描的任务发起请求
+            if (!applyPayloadProcessing || !mDataBoardTab.hasPayloadProcessing()) {
+                dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride,
+                        requestGroup);
+                return;
+            }
+            // 运行已经启用并且需要合并的任务
+            runEnableAndMergeTask(service, reqId, request, from, requestMode, profiles, variantIdOverride,
+                    requestGroup);
+            // 运行已经启用并且不需要合并的任务
+            runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode, profiles, variantIdOverride,
+                    requestGroup);
+        } finally {
+            finishRequestGroupGeneration(requestGroup);
         }
-        // 运行已经启用并且需要合并的任务
-        runEnableAndMergeTask(service, reqId, request, from, requestMode, profiles, variantIdOverride);
-        // 运行已经启用并且不需要合并的任务
-        runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode, profiles, variantIdOverride);
     }
 
     /**
@@ -1113,16 +1128,96 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     /**
-     * 根据 Url 检测是否重复扫描
+     * Atomically reserves a request ID for all tasks generated from one scan variant.
      *
-     * @param reqId 请求 ID
-     * @return true=重复；false=不重复
+     * @return the new group, or {@code null} when the request is already in progress or complete
      */
-    private synchronized boolean checkRepeatFilterByReqId(String reqId) {
-        if (sRepeatFilter.contains(reqId)) {
+    private synchronized RequestGroup claimRequestGroup(String reqId, boolean resetForManualReplay) {
+        if (resetForManualReplay) {
+            sRepeatFilter.remove(reqId);
+            mRequestGroups.remove(reqId);
+        }
+        if (!sRepeatFilter.add(reqId)) {
+            return null;
+        }
+        RequestGroup requestGroup = new RequestGroup(reqId);
+        mRequestGroups.put(reqId, requestGroup);
+        return requestGroup;
+    }
+
+    static boolean isFirstManualReplayRequest(Set<String> requestIds, String reqId) {
+        return requestIds != null && requestIds.add(reqId);
+    }
+
+    private synchronized boolean registerRequestGroupTask(RequestGroup requestGroup) {
+        return requestGroup.registerTask();
+    }
+
+    private synchronized void completeRequestGroupTask(RequestGroup requestGroup, boolean requestSucceeded) {
+        requestGroup.completeTask(requestSucceeded);
+        settleRequestGroup(requestGroup);
+    }
+
+    private synchronized void finishRequestGroupGeneration(RequestGroup requestGroup) {
+        requestGroup.finishGeneration();
+        settleRequestGroup(requestGroup);
+    }
+
+    private void settleRequestGroup(RequestGroup requestGroup) {
+        if (!requestGroup.isSettled()) {
+            return;
+        }
+        if (mRequestGroups.remove(requestGroup.getReqId(), requestGroup)
+                && requestGroup.shouldReleaseRepeatFilter()) {
+            sRepeatFilter.remove(requestGroup.getReqId());
+        }
+    }
+
+    private synchronized void clearRepeatFilter() {
+        sRepeatFilter.clear();
+        mRequestGroups.clear();
+    }
+
+    static final class RequestGroup {
+        private final String reqId;
+        private int pendingTasks;
+        private boolean generationFinished;
+        private boolean requestSucceeded;
+
+        RequestGroup(String reqId) {
+            this.reqId = reqId;
+        }
+
+        boolean registerTask() {
+            if (generationFinished) {
+                return false;
+            }
+            pendingTasks++;
             return true;
         }
-        return !sRepeatFilter.add(reqId);
+
+        void completeTask(boolean succeeded) {
+            if (pendingTasks > 0) {
+                pendingTasks--;
+            }
+            requestSucceeded |= succeeded;
+        }
+
+        void finishGeneration() {
+            generationFinished = true;
+        }
+
+        boolean isSettled() {
+            return generationFinished && pendingTasks == 0;
+        }
+
+        boolean shouldReleaseRepeatFilter() {
+            return isSettled() && !requestSucceeded;
+        }
+
+        String getReqId() {
+            return reqId;
+        }
     }
 
     /**
@@ -1135,14 +1230,15 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      */
     private void runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from,
                                        RequestMode requestMode, List<IdentityProfile> profiles,
-                                       String variantIdOverride) {
+                                       String variantIdOverride, RequestGroup requestGroup) {
         // 获取已经启用并且需要合并的“请求包处理”规则
         List<ProcessingItem> processList = getPayloadProcess()
                 .stream().filter(ProcessingItem::isEnabledAndMerge)
                 .collect(Collectors.toList());
         // 如果规则为空，直接发起请求
         if (processList.isEmpty()) {
-            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride);
+            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride,
+                    requestGroup);
             return;
         }
         byte[] resultBytes = reqRawBytes;
@@ -1155,10 +1251,12 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             boolean equals = Arrays.equals(reqRawBytes, resultBytes);
             // 未进行任何处理时，不变更 from 值
             String newFrom = equals ? from : from + "（" + FROM_PROCESS + "）";
-            dispatchRequestProfiles(service, reqId, resultBytes, newFrom, requestMode, profiles, variantIdOverride);
+            dispatchRequestProfiles(service, reqId, resultBytes, newFrom, requestMode, profiles, variantIdOverride,
+                    requestGroup);
         } else {
             // 如果规则处理异常导致数据返回为空，则发送原来的请求
-            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride);
+            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride,
+                    requestGroup);
         }
     }
 
@@ -1171,7 +1269,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      */
     private void runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes,
                                                       RequestMode requestMode, List<IdentityProfile> profiles,
-                                                      String variantIdOverride) {
+                                                      String variantIdOverride, RequestGroup requestGroup) {
         final long taskGeneration = resolveTaskGeneration();
         // 遍历规则列表，进行 Payload Processing 处理后，再次请求数据包
         getPayloadProcess().parallelStream().filter(ProcessingItem::isEnabledWithoutMerge)
@@ -1191,7 +1289,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         return;
                     }
                     dispatchRequestProfiles(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）",
-                            requestMode, profiles, variantIdOverride);
+                            requestMode, profiles, variantIdOverride, requestGroup);
                 }));
     }
 
@@ -1206,7 +1304,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private void dispatchRequestProfiles(IHttpService service, String reqId, byte[] request, String from,
                                          RequestMode requestMode, List<IdentityProfile> profiles,
-                                         String variantIdOverride) {
+                                         String variantIdOverride, RequestGroup requestGroup) {
         String variableRequest = VariableManager.resolveVariables(mHelpers.bytesToString(request));
         if (variableRequest == null) {
             return;
@@ -1218,13 +1316,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         String variantId = StringUtils.isNotEmpty(variantIdOverride)
                 ? variantIdOverride : buildVariantId(service, baseRequest);
         if (profiles == null || profiles.isEmpty()) {
-            doBurpRequest(service, reqId, baseRequest, from, requestMode, "", variantId);
+            doBurpRequest(service, reqId, baseRequest, from, requestMode, "", variantId, requestGroup);
             return;
         }
         for (IdentityProfile profile : profiles) {
             byte[] profiledRequest = applyIdentityProfile(service, baseRequest, profile);
             if (profiledRequest != null && !requestPathBlocklistFilter(service, profiledRequest)) {
-                doBurpRequest(service, reqId, profiledRequest, from, requestMode, profile.getName(), variantId);
+                doBurpRequest(service, reqId, profiledRequest, from, requestMode, profile.getName(), variantId,
+                        requestGroup);
             }
         }
     }
@@ -1402,96 +1501,78 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 .findFirst().orElse(null);
     }
     private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from,
-                               RequestMode requestMode, String profileName, String variantId) {
+                               RequestMode requestMode, String profileName, String variantId,
+                               RequestGroup requestGroup) {
         final long taskGeneration = resolveTaskGeneration();
-        // 线程池关闭后，不接收任何任务
         if (isTaskStopRequested(taskGeneration)) {
             Logger.debug("doBurpRequest: task stop requested, intercept req id: %s", reqId);
-            // 将未执行的任务从去重过滤集合中移除
-            sRepeatFilter.remove(reqId);
             return;
         }
-        // 创建任务运行实例
+        if (!registerRequestGroupTask(requestGroup)) {
+            return;
+        }
         TaskRunnable task = new TaskRunnable(reqId, from) {
             @Override
             public void run() {
                 runWithTaskGeneration(taskGeneration, () -> {
-                String reqId = getReqId();
-                    if (isTaskStopRequested()) {
-                        sRepeatFilter.remove(reqId);
-                        incrementTaskOverCounter(from);
-                        return;
-                    }
-                // 低频任务不进行 QPS 限制
-                    if (requestMode != RequestMode.BROWSER && !isLowFrequencyTask(from) && checkQPSLimit()) {
-                    // 拦截后，将未执行的任务从去重过滤集合中移除
-                    sRepeatFilter.remove(reqId);
-                    // 任务完成计数
-                    incrementTaskOverCounter(from);
-                    return;
-                }
-                Logger.debug("Do Send Request id: %s", reqId);
+                    boolean requestSucceeded = false;
                     try {
-                        waitForRequestMode(requestMode);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        sRepeatFilter.remove(reqId);
+                        if (isTaskStopRequested()) {
+                            return;
+                        }
+                        // 低频任务不进行 QPS 限制
+                        if (requestMode != RequestMode.BROWSER && !isLowFrequencyTask(from) && checkQPSLimit()) {
+                            return;
+                        }
+                        Logger.debug("Do Send Request id: %s", getReqId());
+                        try {
+                            waitForRequestMode(requestMode);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        if (isTaskStopRequested()) {
+                            return;
+                        }
+                        int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
+                        IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount,
+                                requestMode, !StringUtils.isEmpty(profileName));
+                        if (newReqResp == null || isTaskStopRequested()) {
+                            return;
+                        }
+                        // A completed HTTP request keeps the group deduplicated even if
+                        // later display or collection work fails.
+                        requestSucceeded = true;
+                        boolean browserResult = requestMode == RequestMode.BROWSER
+                                || isBrowserRequestResponse(newReqResp);
+                        String displayFrom = browserResult ? appendBrowserFrom(from) : from;
+                        TaskData data = buildTaskData(newReqResp, displayFrom);
+                        data.setProfile(profileName);
+                        data.setVariantId(variantId);
+                        mDataBoardTab.addTaskData(data, browserResult ? RequestMode.BROWSER : RequestMode.BURP);
+                        CollectManager.collect(false, service.getHost(), newReqResp.getResponse());
+                        handleFollowRedirect(data);
+                    } finally {
+                        completeRequestGroupTask(requestGroup, requestSucceeded);
                         incrementTaskOverCounter(from);
-                        return;
                     }
-                    if (isTaskStopRequested()) {
-                        sRepeatFilter.remove(reqId);
-                        incrementTaskOverCounter(from);
-                        return;
-                    }
-                // 获取配置的请求重试次数
-                int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
-                // 发起请求
-                    IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount, requestMode, !StringUtils.isEmpty(profileName));
-                    if (newReqResp == null) {
-                        sRepeatFilter.remove(reqId);
-                        incrementTaskOverCounter(from);
-                        return;
-                    }
-                    if (isTaskStopRequested()) {
-                        sRepeatFilter.remove(reqId);
-                        incrementTaskOverCounter(from);
-                        return;
-                    }
-                // 构建展示的数据包
-                    boolean browserResult = requestMode == RequestMode.BROWSER || isBrowserRequestResponse(newReqResp);
-                    String displayFrom = browserResult ? appendBrowserFrom(from) : from;
-                TaskData data = buildTaskData(newReqResp, displayFrom);
-                    data.setProfile(profileName);
-                    data.setVariantId(variantId);
-                    mDataBoardTab.addTaskData(data, browserResult ? RequestMode.BROWSER : RequestMode.BURP);
-                // 收集数据
-                CollectManager.collect(false, service.getHost(), newReqResp.getResponse());
-                // 处理重定向
-                handleFollowRedirect(data);
-                // 任务完成计数
-                incrementTaskOverCounter(from);
                 });
             }
         };
-        // 将任务添加线程池
         try {
-            // 如果是低频任务，使用低频的任务线程池
             if (requestMode == RequestMode.BROWSER) {
                 mBrowserTaskThreadPool.execute(task);
                 mTaskCommitCounter.incrementAndGet();
             } else if (isLowFrequencyTask(from)) {
                 mLFTaskThreadPool.execute(task);
-                // 低频任务提交计数
                 mLFTaskCommitCounter.incrementAndGet();
             } else {
-                // 否则使用常规的任务线程池
                 mTaskThreadPool.execute(task);
-                // 任务提交计数
                 mTaskCommitCounter.incrementAndGet();
             }
         } catch (Exception e) {
             Logger.error("doBurpRequest thread execute error: %s", e.getMessage());
+            completeRequestGroupTask(requestGroup, false);
         }
     }
 
@@ -2905,7 +2986,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private void onClearHistory() {
         mCurrentReqResp = null;
         // 清空去重过滤集合
-        sRepeatFilter.clear();
+        clearRepeatFilter();
         // 清空超时的请求主机集合
         sTimeoutReqHost.clear();
         mBrowserFallbackStats.clear();
@@ -2994,6 +3075,30 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      *
      * @param list URL 列表
      */
+    private void importUrl(List<?> list, RequestMode requestMode, List<IdentityProfile> profiles,
+                           boolean expandDirectories) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        final long taskGeneration = captureTaskGeneration();
+        new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
+            for (Object item : list) {
+                try {
+                    IHttpRequestResponse httpReqResp = HttpReqRespAdapter.from(String.valueOf(item));
+                    doScan(httpReqResp, FROM_IMPORT, WordlistManager.getItem(WordlistManager.KEY_PAYLOAD),
+                            requestMode, profiles, expandDirectories);
+                } catch (IllegalArgumentException e) {
+                    Logger.error("Import error: " + e.getMessage());
+                }
+                if (isTaskStopRequested(taskGeneration)) {
+                    Logger.debug("importUrl: task stop requested, stop import url");
+                    return;
+                }
+            }
+        })).start();
+    }
+
+
     private void importUrl(List<?> list, RequestMode requestMode) {
         if (list == null || list.isEmpty()) {
             return;
@@ -3169,7 +3274,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             mPausedRequestModes.clear();
             mRequestPauseLock.notifyAll();
         }
-        sRepeatFilter.clear();
+        clearRepeatFilter();
         sTimeoutReqHost.clear();
         mBrowserFallbackStats.clear();
         // 提示信息
@@ -3218,21 +3323,66 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 mcpTool("ost.scan.urls", "Submit one or more URLs to OST scanning.", objectSchema(
                         required("urls"),
                         property("urls", arraySchema(stringSchema()), "URL list."),
-                        property("mode", enumSchema("auto", "burp", "browser"), "Request mode.")
+                        property("mode", enumSchema("auto", "burp", "browser"), "Request mode."),
+                        property("profiles", arraySchema(stringSchema()), "Enabled identity Profile names to apply."),
+                        property("expand_directories", booleanSchema(), "Expand payload paths; defaults to true.")
                 )),
                 mcpTool("ost.scan.request", "Submit a raw HTTP request to OST scanning.", objectSchema(
                         required("request", "protocol", "host"),
                         property("request", stringSchema(), "Raw HTTP request."),
-                        property("protocol", enumSchema("http", "https"), "Request protocol."),
+                        property("protocol", enumSchema("http", "https"), "Target protocol."),
                         property("host", stringSchema(), "Target host."),
-                        property("port", numberSchema(), "Target port."),
+                        property("port", integerSchema(), "Target port."),
                         property("mode", enumSchema("auto", "burp", "browser"), "Request mode."),
-                        property("payload", stringSchema(), "Payload wordlist name.")
+                        property("payload", stringSchema(), "Payload wordlist name."),
+                        property("profiles", arraySchema(stringSchema()), "Enabled identity Profile names to apply."),
+                        property("expand_directories", booleanSchema(), "Expand payload paths; defaults to true.")
+                )),
+                mcpTool("ost.variables.list", "List named variable definitions.", objectSchema()),
+                mcpTool("ost.variable.get", "Get a named variable definition.", objectSchema(
+                        required("name"), property("name", stringSchema(), "Variable name.")
+                )),
+                mcpTool("ost.variable.create", "Create a named variable.", objectSchema(
+                        required("name"),
+                        property("name", stringSchema(), "New variable name."),
+                        property("enabled", booleanSchema(), "Whether the variable is enabled; defaults to true."),
+                        property("strategy", enumSchema("fixed", "random", "round-robin"), "Value strategy; defaults to fixed."),
+                        property("dictionary", stringSchema(), "Variable dictionary for random or round-robin."),
+                        property("fixed_value", stringSchema(), "Fixed value for the fixed strategy.")
+                )),
+                mcpTool("ost.variable.update", "Update a named variable.", objectSchema(
+                        required("name"),
+                        property("name", stringSchema(), "Existing variable name."),
+                        property("new_name", stringSchema(), "Optional replacement name."),
+                        property("enabled", booleanSchema(), "Whether the variable is enabled."),
+                        property("strategy", enumSchema("fixed", "random", "round-robin"), "Value strategy."),
+                        property("dictionary", stringSchema(), "Variable dictionary for random or round-robin."),
+                        property("fixed_value", stringSchema(), "Fixed value for the fixed strategy.")
+                )),
+                mcpTool("ost.variable.delete", "Delete a named variable. Requires confirm=true.", objectSchema(
+                        required("name", "confirm"),
+                        property("name", stringSchema(), "Variable name."),
+                        property("confirm", booleanSchema(), "Must be true to delete.")
+                )),
+                mcpTool("ost.profiles.list", "List identity Profiles without credentials by default.", objectSchema(
+                        property("include_sensitive", booleanSchema(), "Include Cookie, headers and variable values; defaults to false.")
+                )),
+                mcpTool("ost.profile.get", "Get an identity Profile.", objectSchema(
+                        required("name"),
+                        property("name", stringSchema(), "Profile name."),
+                        property("include_sensitive", booleanSchema(), "Include credential and value fields; defaults to false.")
+                )),
+                mcpTool("ost.profile.create", "Create an identity Profile.", profileInputSchema(true)),
+                mcpTool("ost.profile.update", "Update an identity Profile.", profileInputSchema(false)),
+                mcpTool("ost.profile.delete", "Delete an identity Profile. Requires confirm=true.", objectSchema(
+                        required("name", "confirm"),
+                        property("name", stringSchema(), "Profile name."),
+                        property("confirm", booleanSchema(), "Must be true to delete.")
                 )),
                 mcpTool("ost.tasks.list", "List OST task results with pagination.", objectSchema(
                         property("scope", enumSchema("all", "burp", "browser"), "Task table scope."),
-                        property("offset", numberSchema(), "Zero-based offset."),
-                        property("limit", numberSchema(), "Maximum results, default 50."),
+                        property("offset", integerSchema(), "Zero-based offset."),
+                        property("limit", integerSchema(), "Maximum results, default 50."),
                         property("include_body", booleanSchema(), "Include raw request/response body.")
                 )),
                 mcpTool("ost.tasks.search", "Search OST task results by structured filters.", objectSchema(
@@ -3241,25 +3391,25 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         property("url", stringSchema(), "URL path contains filter."),
                         property("title", stringSchema(), "Title contains filter."),
                         property("fingerprint", stringSchema(), "Fingerprint parameter contains filter."),
-                        property("status", numberSchema(), "HTTP status code."),
-                        property("limit", numberSchema(), "Maximum results, default 50."),
+                        property("status", integerSchema(), "HTTP status code."),
+                        property("limit", integerSchema(), "Maximum results, default 50."),
                         property("include_body", booleanSchema(), "Include raw request/response body.")
                 )),
                 mcpTool("ost.tasks.get", "Get a task result by id.", objectSchema(
                         required("id"),
-                        property("id", numberSchema(), "Task id."),
+                        property("id", integerSchema(), "Task id."),
                         property("scope", enumSchema("all", "burp", "browser"), "Task table scope."),
                         property("include_body", booleanSchema(), "Include raw request/response body.")
                 )),
                 mcpTool("ost.fingerprint.check", "Run OST fingerprint matching on request/response bytes.", objectSchema(
                         property("request", stringSchema(), "Raw HTTP request."),
                         property("response", stringSchema(), "Raw HTTP response."),
-                        property("task_id", numberSchema(), "Existing task id."),
+                        property("task_id", integerSchema(), "Existing task id."),
                         property("scope", enumSchema("all", "burp", "browser"), "Task table scope.")
                 )),
                 mcpTool("ost.fingerprint.rules.list", "List fingerprint rule summaries.", objectSchema(
-                        property("limit", numberSchema(), "Maximum results, default 100."),
-                        property("offset", numberSchema(), "Zero-based offset.")
+                        property("limit", integerSchema(), "Maximum results, default 100."),
+                        property("offset", integerSchema(), "Zero-based offset.")
                 )),
                 mcpTool("ost.collect.modules.list", "List OST data collection modules.", objectSchema()),
                 mcpTool("ost.collect.node.get", "Get collected data by node path.", objectSchema(
@@ -3272,7 +3422,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         property("key", enumSchema("payload", "headers", "host-allowlist", "host-blocklist", "path-blocklist", "remove-headers", "variables"),
                                 "Wordlist key."),
                         property("name", stringSchema(), "Wordlist name. Defaults to selected item."),
-                        property("limit", numberSchema(), "Maximum items, default 200.")
+                        property("limit", integerSchema(), "Maximum items, default 200.")
                 )),
                 mcpTool("ost.wordlist.select", "Select the active wordlist for a wordlist group.", objectSchema(
                         required("key", "name"),
@@ -3320,14 +3470,28 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         property("confirm", booleanSchema(), "Must be true to delete.")
                 )),
                 mcpTool("ost.history.labels", "List persisted history labels.", objectSchema()),
+                mcpTool("ost.history.tasks.list", "List persisted task results by history label.", objectSchema(
+                        required("label"),
+                        property("label", stringSchema(), "History label."),
+                        property("offset", integerSchema(), "Zero-based offset."),
+                        property("limit", integerSchema(), "Maximum results, default 50."),
+                        property("include_body", booleanSchema(), "Include raw request and response data.")
+                )),
+                mcpTool("ost.history.delete", "Delete persisted history labels. Requires confirm=true.", objectSchema(
+                        required("labels", "confirm"),
+                        property("labels", arraySchema(stringSchema()), "History labels to delete."),
+                        property("confirm", booleanSchema(), "Must be true to delete.")
+                )),
                 mcpTool("ost.export.csv", "Export persisted OST data to CSV.", objectSchema(
                         required("path"),
                         property("path", stringSchema(), "CSV output path."),
                         property("label", stringSchema(), "Optional history label."),
-                        property("fields", arraySchema(stringSchema()), "Field keys to export.")
+                        property("fields", arraySchema(stringSchema()), "Field keys to export."),
+                        property("confirm", booleanSchema(), "Must be true when replacing an existing file.")
                 ))
         );
     }
+
 
     @Override
     public Object callTool(String name, Map<String, Object> arguments) throws Exception {
@@ -3338,6 +3502,16 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             case "ost.status.get" -> mcpStatus();
             case "ost.scan.urls" -> mcpScanUrls(args);
             case "ost.scan.request" -> mcpScanRequest(args);
+            case "ost.variables.list" -> mcpVariablesList();
+            case "ost.variable.get" -> mcpVariableGet(args);
+            case "ost.variable.create" -> mcpVariableCreate(args);
+            case "ost.variable.update" -> mcpVariableUpdate(args);
+            case "ost.variable.delete" -> mcpVariableDelete(args);
+            case "ost.profiles.list" -> mcpProfilesList(args);
+            case "ost.profile.get" -> mcpProfileGet(args);
+            case "ost.profile.create" -> mcpProfileCreate(args);
+            case "ost.profile.update" -> mcpProfileUpdate(args);
+            case "ost.profile.delete" -> mcpProfileDelete(args);
             case "ost.tasks.list" -> mcpListTasks(args);
             case "ost.tasks.search" -> mcpSearchTasks(args);
             case "ost.tasks.get" -> mcpGetTask(args);
@@ -3354,10 +3528,13 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             case "ost.wordlist.import_file" -> mcpWordlistImportFile(args);
             case "ost.wordlist.delete" -> mcpWordlistDelete(args);
             case "ost.history.labels" -> mcpHistoryLabels();
+            case "ost.history.tasks.list" -> mcpHistoryTasksList(args);
+            case "ost.history.delete" -> mcpHistoryDelete(args);
             case "ost.export.csv" -> mcpExportCsv(args);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
         };
     }
+
 
     private String normalizeMcpToolName(String name) {
         return name;
@@ -3366,28 +3543,299 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private Map<String, Object> mcpCapabilities() {
         return mapOf(
                 "server", mapOf("name", "ost-burp-mcp", "endpoint", mMcpServer == null ? "" : mMcpServer.getEndpoint()),
-                "capabilities", List.of(
-                        capability("ost.status.get", "passive", "Read runtime status."),
-                        capability("ost.tasks.list", "passive", "Read summarized task results."),
-                        capability("ost.tasks.search", "passive", "Search summarized task results."),
-                        capability("ost.tasks.get", "passive", "Read one task result, raw data opt-in."),
-                        capability("ost.fingerprint.check", "passive", "Run local fingerprint rules."),
-                        capability("ost.collect.node.get", "passive", "Read collected data."),
-                        capability("ost.wordlists.list", "passive", "Read wordlist metadata."),
-                        capability("ost.wordlist.select", "configuration-write", "Switch active wordlists."),
-                        capability("ost.wordlist.append", "filesystem-write", "Append items to local wordlists."),
-                        capability("ost.wordlist.put", "filesystem-write", "Replace local wordlists, confirm required."),
-                        capability("ost.wordlist.import_file", "filesystem-write", "Import local text files into wordlists."),
-                        capability("ost.wordlist.delete", "destructive", "Delete local wordlists, confirm required."),
-                        capability("ost.history.labels", "passive", "Read persistence labels."),
-                        capability("ost.scan.urls", "active", "Submit URL scan tasks."),
-                        capability("ost.scan.request", "active", "Submit raw request scan tasks."),
-                        capability("ost.export.csv", "filesystem-write", "Write CSV export to a local path.")
-                ),
-
-                "default_response_policy", "Summaries are returned by default. Raw request/response bodies require include_body=true."
+                "capabilities", listTools().stream().map(this::capability).collect(Collectors.toList()),
+                "default_response_policy", "Summaries are returned by default. Raw request/response bodies require include_body=true. Profile credentials require include_sensitive=true."
         );
     }
+
+
+    private void refreshMcpVariablesTab() {
+        if (mOst != null && mOst.getConfigPanel() != null) {
+            mOst.getConfigPanel().refreshVariablesTab();
+        }
+    }
+
+
+    private Map<String, Object> mcpVariablesList() {
+        return mapOf("items", Config.getVariableDefinitions().stream()
+                .filter(Objects::nonNull)
+                .map(this::variableToMap)
+                .collect(Collectors.toList()));
+    }
+
+    private Map<String, Object> mcpVariableGet(Map<String, Object> args) {
+        VariableDefinition variable = findVariable(requireNamedValue(args, "name"));
+        return variableToMap(variable);
+    }
+
+    private Map<String, Object> mcpVariableCreate(Map<String, Object> args) {
+        String name = requireMcpEntityName(args, "name", "variable");
+        ArrayList<VariableDefinition> variables = Config.getVariableDefinitions();
+        if (findVariable(variables, name) != null) {
+            throw new IllegalArgumentException("variable already exists: " + name);
+        }
+        VariableDefinition variable = new VariableDefinition();
+        variable.setName(name);
+        applyVariableInput(variable, args, true);
+        variables.add(variable);
+        Config.put(Config.KEY_VARIABLE_DEFINITIONS, variables);
+        refreshMcpVariablesTab();
+        return variableToMap(variable);
+    }
+
+    private Map<String, Object> mcpVariableUpdate(Map<String, Object> args) {
+        String name = requireNamedValue(args, "name");
+        ArrayList<VariableDefinition> variables = Config.getVariableDefinitions();
+        VariableDefinition variable = findVariable(variables, name);
+        if (variable == null) {
+            throw new IllegalArgumentException("variable not found: " + name);
+        }
+        if (hasArg(args, "new_name")) {
+            String newName = requireMcpEntityName(args, "new_name", "variable");
+            VariableDefinition duplicate = findVariable(variables, newName);
+            if (duplicate != null && duplicate != variable) {
+                throw new IllegalArgumentException("variable already exists: " + newName);
+            }
+            variable.setName(newName);
+        }
+        applyVariableInput(variable, args, false);
+        Config.put(Config.KEY_VARIABLE_DEFINITIONS, variables);
+        refreshMcpVariablesTab();
+        return variableToMap(variable);
+    }
+
+    private Map<String, Object> mcpVariableDelete(Map<String, Object> args) {
+        requireConfirm(args, "delete a variable");
+        String name = requireNamedValue(args, "name");
+        ArrayList<VariableDefinition> variables = Config.getVariableDefinitions();
+        VariableDefinition variable = findVariable(variables, name);
+        if (variable == null) {
+            throw new IllegalArgumentException("variable not found: " + name);
+        }
+        variables.remove(variable);
+        Config.put(Config.KEY_VARIABLE_DEFINITIONS, variables);
+        refreshMcpVariablesTab();
+        return mapOf("deleted", true, "name", variable.getName());
+    }
+
+    private Map<String, Object> mcpProfilesList(Map<String, Object> args) {
+        boolean includeSensitive = booleanArg(args, "include_sensitive", false);
+        return mapOf(
+                "include_sensitive", includeSensitive,
+                "items", Config.getIdentityProfiles().stream()
+                        .filter(Objects::nonNull)
+                        .map(profile -> profileToMap(profile, includeSensitive))
+                        .collect(Collectors.toList())
+        );
+    }
+
+    private Map<String, Object> mcpProfileGet(Map<String, Object> args) {
+        IdentityProfile profile = findProfile(requireNamedValue(args, "name"));
+        return profileToMap(profile, booleanArg(args, "include_sensitive", false));
+    }
+
+    private Map<String, Object> mcpProfileCreate(Map<String, Object> args) {
+        String name = requireMcpEntityName(args, "name", "profile");
+        ArrayList<IdentityProfile> profiles = Config.getIdentityProfiles();
+        if (findProfile(profiles, name) != null) {
+            throw new IllegalArgumentException("profile already exists: " + name);
+        }
+        IdentityProfile profile = new IdentityProfile();
+        profile.setName(name);
+        applyProfileInput(profile, args, true);
+        profiles.add(profile);
+        Config.put(Config.KEY_IDENTITY_PROFILES, profiles);
+        refreshMcpVariablesTab();
+        return profileToMap(profile, false);
+    }
+
+    private Map<String, Object> mcpProfileUpdate(Map<String, Object> args) {
+        String name = requireNamedValue(args, "name");
+        ArrayList<IdentityProfile> profiles = Config.getIdentityProfiles();
+        IdentityProfile profile = findProfile(profiles, name);
+        if (profile == null) {
+            throw new IllegalArgumentException("profile not found: " + name);
+        }
+        if (hasArg(args, "new_name")) {
+            String newName = requireMcpEntityName(args, "new_name", "profile");
+            IdentityProfile duplicate = findProfile(profiles, newName);
+            if (duplicate != null && duplicate != profile) {
+                throw new IllegalArgumentException("profile already exists: " + newName);
+            }
+            profile.setName(newName);
+        }
+        applyProfileInput(profile, args, false);
+        Config.put(Config.KEY_IDENTITY_PROFILES, profiles);
+        refreshMcpVariablesTab();
+        return profileToMap(profile, false);
+    }
+
+    private Map<String, Object> mcpProfileDelete(Map<String, Object> args) {
+        requireConfirm(args, "delete a profile");
+        String name = requireNamedValue(args, "name");
+        ArrayList<IdentityProfile> profiles = Config.getIdentityProfiles();
+        IdentityProfile profile = findProfile(profiles, name);
+        if (profile == null) {
+            throw new IllegalArgumentException("profile not found: " + name);
+        }
+        profiles.remove(profile);
+        Config.put(Config.KEY_IDENTITY_PROFILES, profiles);
+        refreshMcpVariablesTab();
+        return mapOf("deleted", true, "name", profile.getName());
+    }
+
+    private Map<String, Object> variableToMap(VariableDefinition variable) {
+        return mapOf(
+                "name", variable.getName(),
+                "enabled", variable.isEnabled(),
+                "strategy", variable.getStrategy(),
+                "dictionary", variable.getDictionary(),
+                "fixed_value", variable.getFixedValue(),
+                "placeholder", variable.placeholder()
+        );
+    }
+
+    private Map<String, Object> profileToMap(IdentityProfile profile, boolean includeSensitive) {
+        Map<String, Object> result = mapOf(
+                "name", profile.getName(),
+                "enabled", profile.isEnabled(),
+                "replace_cookie", profile.isReplaceCookie(),
+                "header_count", profile.getHeaders().size(),
+                "query_count", profile.getQuery().size(),
+                "body_count", profile.getBody().size(),
+                "variable_count", profile.getVariables().size(),
+                "sensitive_included", includeSensitive
+        );
+        if (includeSensitive) {
+            result.put("cookie", profile.getCookie());
+            result.put("headers", new LinkedHashMap<>(profile.getHeaders()));
+            result.put("query", new LinkedHashMap<>(profile.getQuery()));
+            result.put("body", new LinkedHashMap<>(profile.getBody()));
+            result.put("variables", new LinkedHashMap<>(profile.getVariables()));
+        }
+        return result;
+    }
+
+    private VariableDefinition findVariable(String name) {
+        VariableDefinition variable = findVariable(Config.getVariableDefinitions(), name);
+        if (variable == null) {
+            throw new IllegalArgumentException("variable not found: " + name);
+        }
+        return variable;
+    }
+
+    private VariableDefinition findVariable(List<VariableDefinition> variables, String name) {
+        return variables.stream().filter(Objects::nonNull)
+                .filter(variable -> variable.getName().equalsIgnoreCase(name))
+                .findFirst().orElse(null);
+    }
+
+    private IdentityProfile findProfile(String name) {
+        IdentityProfile profile = findProfile(Config.getIdentityProfiles(), name);
+        if (profile == null) {
+            throw new IllegalArgumentException("profile not found: " + name);
+        }
+        return profile;
+    }
+
+    private IdentityProfile findProfile(List<IdentityProfile> profiles, String name) {
+        return profiles.stream().filter(Objects::nonNull)
+                .filter(profile -> profile.getName().equalsIgnoreCase(name))
+                .findFirst().orElse(null);
+    }
+
+    private void applyVariableInput(VariableDefinition variable, Map<String, Object> args, boolean creating) {
+        if (creating || hasArg(args, "enabled")) {
+            variable.setEnabled(booleanArg(args, "enabled", true));
+        }
+        if (creating || hasArg(args, "strategy")) {
+            String strategy = hasArg(args, "strategy") ? stringArg(args, "strategy")
+                    : VariableDefinition.STRATEGY_FIXED;
+            if (!VariableDefinition.STRATEGY_FIXED.equals(strategy)
+                    && !VariableDefinition.STRATEGY_RANDOM.equals(strategy)
+                    && !VariableDefinition.STRATEGY_ROUND_ROBIN.equals(strategy)) {
+                throw new IllegalArgumentException("unsupported variable strategy: " + strategy);
+            }
+            variable.setStrategy(strategy);
+        }
+        if (creating || hasArg(args, "dictionary")) {
+            String dictionary = stringArg(args, "dictionary").trim();
+            if (VariableDefinition.STRATEGY_FIXED.equals(variable.getStrategy()) && dictionary.isEmpty()) {
+                dictionary = "default";
+            }
+            if (!dictionary.isEmpty() && !WordlistManager.getItemList(WordlistManager.KEY_VARIABLES).contains(dictionary)) {
+                throw new IllegalArgumentException("variable dictionary not found: " + dictionary);
+            }
+            variable.setDictionary(dictionary.isEmpty() ? "default" : dictionary);
+        }
+        if (creating || hasArg(args, "fixed_value")) {
+            variable.setFixedValue(stringArg(args, "fixed_value"));
+        }
+    }
+
+    private void applyProfileInput(IdentityProfile profile, Map<String, Object> args, boolean creating) {
+        if (creating || hasArg(args, "enabled")) {
+            profile.setEnabled(booleanArg(args, "enabled", true));
+        }
+        if (creating || hasArg(args, "replace_cookie")) {
+            profile.setReplaceCookie(booleanArg(args, "replace_cookie", false));
+        }
+        if (hasArg(args, "cookie")) {
+            profile.setCookie(stringArg(args, "cookie"));
+        }
+        if (hasArg(args, "headers")) {
+            profile.setHeaders(stringMapArg(args, "headers"));
+        }
+        if (hasArg(args, "query")) {
+            profile.setQuery(stringMapArg(args, "query"));
+        }
+        if (hasArg(args, "body")) {
+            profile.setBody(stringMapArg(args, "body"));
+        }
+        if (hasArg(args, "variables")) {
+            profile.setVariables(stringMapArg(args, "variables"));
+        }
+    }
+
+    private Map<String, String> stringMapArg(Map<String, Object> args, String key) {
+        Object raw = args.get(key);
+        if (!(raw instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException(key + " must be an object");
+        }
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String mapKey) || !(entry.getValue() instanceof String mapValue)
+                    || mapKey.trim().isEmpty()) {
+                throw new IllegalArgumentException(key + " must contain non-empty string keys and string values");
+            }
+            result.put(mapKey.trim(), mapValue);
+        }
+        return result;
+    }
+
+
+    private String requireNamedValue(Map<String, Object> args, String key) {
+        String value = stringArg(args, key).trim();
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(key + " is required");
+        }
+        return value;
+    }
+
+    private String requireMcpEntityName(Map<String, Object> args, String key, String type) {
+        String value = requireNamedValue(args, key);
+        if (!value.matches("[A-Za-z0-9_.-]{1,64}")) {
+            throw new IllegalArgumentException("invalid " + type + " name: " + value);
+        }
+        return value;
+    }
+
+    private void requireConfirm(Map<String, Object> args, String action) {
+        if (!booleanArg(args, "confirm", false)) {
+            throw new IllegalArgumentException("confirm=true is required to " + action);
+        }
+    }
+
 
     private Map<String, Object> mcpStatus() {
         return mapOf(
@@ -3426,68 +3874,147 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private Map<String, Object> mcpScanUrls(Map<String, Object> args) {
-        List<?> rawUrls = listArg(args, "urls");
+        if (!(args.get("urls") instanceof List<?> rawUrls)) {
+            throw new IllegalArgumentException("urls must be an array of HTTP URLs");
+        }
         if (rawUrls.isEmpty()) {
             throw new IllegalArgumentException("urls is required");
         }
         ArrayList<String> urls = new ArrayList<>();
         for (Object item : rawUrls) {
-            if (item != null && StringUtils.isNotEmpty(String.valueOf(item))) {
-                urls.add(String.valueOf(item));
+            if (!(item instanceof String rawUrl) || rawUrl.trim().isEmpty()) {
+                throw new IllegalArgumentException("urls must contain non-empty HTTP URLs");
             }
+            String url = rawUrl.trim();
+            if (!UrlUtils.isHTTP(url)) {
+                throw new IllegalArgumentException("invalid HTTP URL: " + url);
+            }
+            urls.add(url);
         }
-        if (urls.isEmpty()) {
-            throw new IllegalArgumentException("urls is empty");
-        }
-        RequestMode mode = parseRequestMode(stringArg(args, "mode"), RequestMode.AUTO);
-        importUrl(urls, mode);
-        return mapOf("submitted_urls", urls.size(), "mode", mode.name().toLowerCase(Locale.ROOT));
+        RequestMode mode = requireRequestMode(args, RequestMode.AUTO);
+        List<IdentityProfile> profiles = resolveMcpProfiles(args);
+        boolean expandDirectories = booleanArg(args, "expand_directories", true);
+        importUrl(urls, mode, profiles, expandDirectories);
+        return mapOf(
+                "submitted_urls", urls.size(),
+                "mode", mode.name().toLowerCase(Locale.ROOT),
+                "profiles", profileNames(profiles),
+                "expand_directories", expandDirectories
+        );
     }
 
     private Map<String, Object> mcpScanRequest(Map<String, Object> args) {
-        String request = stringArg(args, "request");
-        String host = stringArg(args, "host");
-        String protocol = stringArg(args, "protocol");
-        if (StringUtils.isEmpty(request) || StringUtils.isEmpty(host) || StringUtils.isEmpty(protocol)) {
-            throw new IllegalArgumentException("request, host and protocol are required");
+        String request = requireNamedValue(args, "request");
+        String host = requireNamedValue(args, "host");
+        String protocol = requireNamedValue(args, "protocol").toLowerCase(Locale.ROOT);
+        if (!"http".equals(protocol) && !"https".equals(protocol)) {
+            throw new IllegalArgumentException("protocol must be http or https");
         }
-        int port = intArg(args, "port", "https".equalsIgnoreCase(protocol) ? 443 : 80);
-        RequestMode mode = parseRequestMode(stringArg(args, "mode"), RequestMode.AUTO);
+        if (host.contains("/") || host.contains("\\") || host.contains("@") || host.contains(":")) {
+            throw new IllegalArgumentException("host must not include a scheme, path, user info, or port");
+        }
+        int port = requirePort(args, "https".equals(protocol) ? 443 : 80);
+        RequestMode mode = requireRequestMode(args, RequestMode.AUTO);
         String payload = stringArg(args, "payload");
         if (StringUtils.isEmpty(payload)) {
             payload = WordlistManager.getItem(WordlistManager.KEY_PAYLOAD);
+        } else {
+            payload = normalizeWordlistName(payload);
+            ensureWordlistExists(WordlistManager.KEY_PAYLOAD, payload);
         }
-        IHttpService service = mHelpers.buildHttpService(host, port, protocol);
-        IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, mHelpers.stringToBytes(request));
-        doScan(reqResp, "MCP", payload, mode);
+        List<IdentityProfile> profiles = resolveMcpProfiles(args);
+        boolean expandDirectories = booleanArg(args, "expand_directories", true);
+        IHttpService service = mHelpers == null
+                ? buildMcpHttpService(host, port, protocol)
+                : mHelpers.buildHttpService(host, port, protocol);
+        byte[] requestBytes = mHelpers == null
+                ? request.getBytes(StandardCharsets.ISO_8859_1) : mHelpers.stringToBytes(request);
+        IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, requestBytes);
+        doScan(reqResp, "MCP", payload, mode, profiles, expandDirectories);
         return mapOf(
                 "submitted", true,
                 "host", host,
                 "port", port,
                 "protocol", protocol,
                 "payload", payload,
-                "mode", mode.name().toLowerCase(Locale.ROOT)
+                "mode", mode.name().toLowerCase(Locale.ROOT),
+                "profiles", profileNames(profiles),
+                "expand_directories", expandDirectories
         );
     }
 
+    private IHttpService buildMcpHttpService(String host, int port, String protocol) {
+        return new IHttpService() {
+            @Override
+            public String getHost() {
+                return host;
+            }
+
+            @Override
+            public int getPort() {
+                return port;
+            }
+
+            @Override
+            public String getProtocol() {
+                return protocol;
+            }
+        };
+    }
+
+    private List<IdentityProfile> resolveMcpProfiles(Map<String, Object> args) {
+        if (!hasArg(args, "profiles")) {
+            return List.of();
+        }
+        if (!(args.get("profiles") instanceof List<?>)) {
+            throw new IllegalArgumentException("profiles must be an array of Profile names");
+        }
+        List<?> rawProfiles = listArg(args, "profiles");
+        LinkedHashMap<String, IdentityProfile> selected = new LinkedHashMap<>();
+        ArrayList<IdentityProfile> available = Config.getIdentityProfiles();
+        for (Object rawProfile : rawProfiles) {
+            if (!(rawProfile instanceof String profileName)) {
+                throw new IllegalArgumentException("profiles must contain only string Profile names");
+            }
+            String name = profileName.trim();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("profiles must contain non-empty Profile names");
+            }
+            IdentityProfile profile = findProfile(available, name);
+            if (profile == null) {
+                throw new IllegalArgumentException("profile not found: " + name);
+            }
+            if (!profile.isEnabled()) {
+                throw new IllegalArgumentException("profile is disabled: " + profile.getName());
+            }
+            selected.putIfAbsent(profile.getName().toLowerCase(Locale.ROOT), profile);
+        }
+        return new ArrayList<>(selected.values());
+    }
+
+    private List<String> profileNames(List<IdentityProfile> profiles) {
+        return profiles.stream().map(IdentityProfile::getName).collect(Collectors.toList());
+    }
+
+
     private Map<String, Object> mcpListTasks(Map<String, Object> args) {
-        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
-        int offset = Math.max(0, intArg(args, "offset", 0));
-        int limit = clamp(intArg(args, "limit", 50), 1, 500);
+        RequestScope scope = requireRequestScope(args, RequestScope.ALL);
+        int offset = requireNonNegativeInt(args, "offset", 0);
+        int limit = clamp(requirePositiveInt(args, "limit", 50), 1, 500);
         boolean includeBody = booleanArg(args, "include_body", false);
         List<TaskRecord> records = getTaskRecords(scope);
         return paginateTaskRecords(records, offset, limit, includeBody);
     }
 
     private Map<String, Object> mcpSearchTasks(Map<String, Object> args) {
-        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
-        int limit = clamp(intArg(args, "limit", 50), 1, 500);
+        RequestScope scope = requireRequestScope(args, RequestScope.ALL);
+        int limit = clamp(requirePositiveInt(args, "limit", 50), 1, 500);
         boolean includeBody = booleanArg(args, "include_body", false);
         String host = lower(stringArg(args, "host"));
         String url = lower(stringArg(args, "url"));
         String title = lower(stringArg(args, "title"));
         String fingerprint = lower(stringArg(args, "fingerprint"));
-        Integer status = hasArg(args, "status") ? intArg(args, "status", -1) : null;
+        Integer status = hasArg(args, "status") ? requireInteger(args, "status", -1) : null;
         ArrayList<TaskRecord> matches = new ArrayList<>();
         for (TaskRecord record : getTaskRecords(scope)) {
             TaskData data = record.data();
@@ -3519,43 +4046,50 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private Map<String, Object> mcpGetTask(Map<String, Object> args) {
-        int id = intArg(args, "id", -1);
-        if (id < 0) {
-            throw new IllegalArgumentException("id is required");
-        }
-        RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
+        int id = requireNonNegativeInt(args, "id", -1);
+        RequestScope scope = requireRequestScope(args, RequestScope.ALL);
         boolean includeBody = booleanArg(args, "include_body", false);
-        for (TaskRecord record : getTaskRecords(scope)) {
-            if (record.data().getId() == id) {
-                return taskRecordToMap(record, includeBody);
-            }
+        List<TaskRecord> matches = getTaskRecords(scope).stream()
+                .filter(record -> record.data().getId() == id)
+                .collect(Collectors.toList());
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("task not found: " + id);
         }
-        throw new IllegalArgumentException("task not found: " + id);
+        if (matches.size() > 1 && scope == RequestScope.ALL) {
+            throw new IllegalArgumentException("task id is ambiguous; specify scope as burp or browser");
+        }
+        return taskRecordToMap(matches.get(0), includeBody);
     }
 
     private Map<String, Object> mcpFingerprintCheck(Map<String, Object> args) {
         byte[] requestBytes = bytesArg(args, "request");
         byte[] responseBytes = bytesArg(args, "response");
-        if ((requestBytes.length == 0 && responseBytes.length == 0) && hasArg(args, "task_id")) {
-            int taskId = intArg(args, "task_id", -1);
-            RequestScope scope = parseRequestScope(stringArg(args, "scope"), RequestScope.ALL);
-            TaskRecord record = findTaskRecord(scope, taskId);
-            if (record == null) {
+        if (requestBytes.length == 0 && responseBytes.length == 0) {
+            if (!hasArg(args, "task_id")) {
+                throw new IllegalArgumentException("request and response, or task_id, is required");
+            }
+            int taskId = requireNonNegativeInt(args, "task_id", -1);
+            RequestScope scope = requireRequestScope(args, RequestScope.ALL);
+            List<TaskRecord> matches = getTaskRecords(scope).stream()
+                    .filter(record -> record.data().getId() == taskId)
+                    .collect(Collectors.toList());
+            if (matches.isEmpty()) {
                 throw new IllegalArgumentException("task not found: " + taskId);
             }
-            IHttpRequestResponse reqResp = getReqResp(record.data());
-            if (reqResp != null) {
-                requestBytes = reqResp.getRequest();
-                responseBytes = reqResp.getResponse();
+            if (matches.size() > 1 && scope == RequestScope.ALL) {
+                throw new IllegalArgumentException("task id is ambiguous; specify scope as burp or browser");
             }
+            IHttpRequestResponse reqResp = getReqResp(matches.get(0).data());
+            requestBytes = reqResp == null ? EMPTY_BYTES : emptyBytes(reqResp.getRequest());
+            responseBytes = reqResp == null ? EMPTY_BYTES : emptyBytes(reqResp.getResponse());
         }
         List<FpData> matches = FpManager.check(requestBytes, responseBytes);
         return mapOf("count", matches.size(), "items", matches.stream().map(this::fpDataToMap).collect(Collectors.toList()));
     }
 
     private Map<String, Object> mcpFingerprintRules(Map<String, Object> args) {
-        int offset = Math.max(0, intArg(args, "offset", 0));
-        int limit = clamp(intArg(args, "limit", 100), 1, 1000);
+        int offset = requireNonNegativeInt(args, "offset", 0);
+        int limit = clamp(requirePositiveInt(args, "limit", 100), 1, 1000);
         List<FpData> rules = FpManager.getList();
         int end = Math.min(rules.size(), offset + limit);
         ArrayList<Map<String, Object>> items = new ArrayList<>();
@@ -3603,15 +4137,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private Map<String, Object> mcpWordlistGet(Map<String, Object> args) {
-        String key = stringArg(args, "key");
-        if (!wordlistKeys().contains(key)) {
-            throw new IllegalArgumentException("unsupported wordlist key: " + key);
-        }
-        String name = stringArg(args, "name");
-        if (StringUtils.isEmpty(name)) {
-            name = WordlistManager.getItem(key);
-        }
-        int limit = clamp(intArg(args, "limit", 200), 1, 5000);
+        String key = requireWordlistKey(args);
+        String name = optionalWordlistName(args);
+        ensureWordlistExists(key, name);
+        int limit = clamp(requirePositiveInt(args, "limit", 200), 1, 5000);
         List<String> list = WordlistManager.getList(key, name);
         return mapOf(
                 "key", key,
@@ -3650,7 +4179,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         String name = optionalWordlistName(args);
         ensureWordlistExists(key, name);
         List<String> current = WordlistManager.getList(key, name);
-        List<String> incoming = normalizeWordlistItems(listArg(args, "items"));
+        List<String> incoming = normalizeWordlistItems(requireStringArray(args, "items"));
         int before = current.size();
         LinkedHashSet<String> merged = new LinkedHashSet<>(current);
         int added = 0;
@@ -3670,7 +4199,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         String key = requireWordlistKey(args);
         String name = optionalWordlistName(args);
         ensureWordlistExists(key, name);
-        List<String> items = normalizeWordlistItems(listArg(args, "items"));
+        List<String> items = normalizeWordlistItems(requireStringArray(args, "items"));
         int before = WordlistManager.getList(key, name).size();
         WordlistManager.putList(key, name, items);
         return mapOf(
@@ -3686,8 +4215,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private Map<String, Object> mcpWordlistImportFile(Map<String, Object> args) {
         String key = requireWordlistKey(args);
-        String path = stringArg(args, "path");
-        if (StringUtils.isEmpty(path) || !FileUtils.isFile(path)) {
+        String path = requireNamedValue(args, "path");
+        if (!FileUtils.isFile(path)) {
             throw new IllegalArgumentException("import file not found: " + path);
         }
         String name = stringArg(args, "name");
@@ -3697,12 +4226,18 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             name = dot > 0 ? fileName.substring(0, dot) : fileName;
         }
         name = normalizeWordlistName(name);
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("name is required");
+        }
         String mode = stringArg(args, "mode");
         if (StringUtils.isEmpty(mode)) {
             mode = "append";
         }
         if (!"append".equalsIgnoreCase(mode) && !"replace".equalsIgnoreCase(mode)) {
             throw new IllegalArgumentException("mode must be append or replace");
+        }
+        if ("replace".equalsIgnoreCase(mode)) {
+            requireConfirm(args, "replace a wordlist by import");
         }
         if (!WordlistManager.getItemList(key).contains(name)) {
             WordlistManager.createList(key, name);
@@ -3711,9 +4246,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         int before = WordlistManager.getList(key, name).size();
         int added;
         if ("replace".equalsIgnoreCase(mode)) {
-            if (!booleanArg(args, "confirm", false)) {
-                throw new IllegalArgumentException("confirm=true is required for replace import");
-            }
             WordlistManager.putList(key, name, imported);
             added = imported.size() - before;
         } else {
@@ -3785,30 +4317,116 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         );
     }
 
-    @SuppressWarnings("unchecked")
+    private Map<String, Object> mcpHistoryTasksList(Map<String, Object> args) throws Exception {
+        String label = requireNamedValue(args, "label");
+        int offset = requireNonNegativeInt(args, "offset", 0);
+        int limit = clamp(requirePositiveInt(args, "limit", 50), 1, 500);
+        boolean includeBody = booleanArg(args, "include_body", false);
+        List<TaskData> tasks = TaskPersistenceManager.loadTaskDataByLabel(label);
+        int total = tasks.size();
+        int start = Math.min(offset, total);
+        int end = Math.min(total, start + limit);
+        ArrayList<Map<String, Object>> items = new ArrayList<>();
+        for (int index = start; index < end; index++) {
+            TaskData data = tasks.get(index);
+            String scope = StringUtils.isEmpty(data.getRequestScope()) ? "history" : data.getRequestScope();
+            Map<String, Object> item = taskRecordToMap(new TaskRecord(scope, data), includeBody);
+            item.put("source", "history");
+            item.put("history_label", label);
+            items.add(item);
+        }
+        return mapOf("label", label, "total", total, "offset", offset, "limit", limit, "items", items);
+    }
+
+    private Map<String, Object> mcpHistoryDelete(Map<String, Object> args) {
+        requireConfirm(args, "delete persisted history");
+        LinkedHashSet<String> labels = new LinkedHashSet<>();
+        for (String rawLabel : requireStringArray(args, "labels")) {
+            String label = rawLabel.trim();
+            if (label.isEmpty()) {
+                throw new IllegalArgumentException("labels must contain non-empty history labels");
+            }
+            labels.add(label);
+        }
+        if (labels.isEmpty()) {
+            throw new IllegalArgumentException("labels is required");
+        }
+        int deleted = TaskPersistenceManager.deleteByLabels(new ArrayList<>(labels));
+        return mapOf("deleted", deleted, "labels", new ArrayList<>(labels));
+    }
+
     private Map<String, Object> mcpExportCsv(Map<String, Object> args) throws Exception {
-        String path = stringArg(args, "path");
-        if (StringUtils.isEmpty(path)) {
-            throw new IllegalArgumentException("path is required");
+        String path = requireNamedValue(args, "path");
+        File output = new File(path).getCanonicalFile();
+        if (output.isDirectory()) {
+            throw new IllegalArgumentException("path must be a CSV file, not a directory");
+        }
+        if (output.exists() && !booleanArg(args, "confirm", false)) {
+            throw new IllegalArgumentException("confirm=true is required to replace an existing export file");
         }
         List<String> fields;
-        List<?> rawFields = listArg(args, "fields");
-        if (rawFields.isEmpty()) {
+        if (!hasArg(args, "fields")) {
             fields = TaskPersistenceManager.getConfiguredFieldKeys();
         } else {
-            fields = rawFields.stream().filter(Objects::nonNull).map(String::valueOf).collect(Collectors.toList());
+            fields = normalizeExportFields(requireStringArray(args, "fields"));
+            if (fields.isEmpty()) {
+                throw new IllegalArgumentException("fields must contain at least one field key");
+            }
         }
         String label = stringArg(args, "label");
-        int count = TaskPersistenceManager.exportCsv(new File(path), fields, label);
-        return mapOf("path", path, "label", label == null ? "" : label, "fields", fields, "count", count);
+        int count = TaskPersistenceManager.exportCsv(output, fields, label);
+        return mapOf("path", output.getPath(), "label", label, "fields", fields, "count", count);
     }
 
     private OstMcpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
-        return new OstMcpTool(name, description, inputSchema);
+        return new OstMcpTool(name, description, inputSchema, mcpAnnotations(name));
     }
 
-    private Map<String, Object> capability(String name, String risk, String description) {
-        return mapOf("name", name, "risk", risk, "description", description);
+    private Map<String, Object> mcpAnnotations(String name) {
+        boolean readOnly = name.endsWith(".list") || name.endsWith(".get")
+                || name.endsWith(".check") || name.endsWith(".labels")
+                || "ost.capabilities.list".equals(name) || "ost.status.get".equals(name);
+        boolean destructive = name.endsWith(".delete") || name.endsWith(".put")
+                || "ost.wordlist.import_file".equals(name) || "ost.export.csv".equals(name);
+        boolean openWorld = name.startsWith("ost.scan.");
+        return mapOf(
+                "readOnlyHint", readOnly,
+                "destructiveHint", destructive,
+                "idempotentHint", readOnly,
+                "openWorldHint", openWorld
+        );
+    }
+
+    private Map<String, Object> profileInputSchema(boolean creating) {
+        ArrayList<Object> specs = new ArrayList<>();
+        specs.add(required("name"));
+        specs.add(property("name", stringSchema(), creating ? "New Profile name." : "Existing Profile name."));
+        if (!creating) {
+            specs.add(property("new_name", stringSchema(), "Optional replacement name."));
+        }
+        specs.add(property("enabled", booleanSchema(), "Whether the Profile is enabled."));
+        specs.add(property("replace_cookie", booleanSchema(), "Replace the request Cookie header."));
+        specs.add(property("cookie", stringSchema(), "Cookie value when replace_cookie is enabled."));
+        specs.add(property("headers", objectValueSchema(), "Header replacements."));
+        specs.add(property("query", objectValueSchema(), "Query parameter replacements."));
+        specs.add(property("body", objectValueSchema(), "Body parameter replacements."));
+        specs.add(property("variables", objectValueSchema(), "Profile-local variable values."));
+        return objectSchema(specs.toArray());
+    }
+
+
+    private Map<String, Object> capability(OstMcpTool tool) {
+        Map<String, Object> annotations = tool.getAnnotations();
+        boolean destructive = Boolean.TRUE.equals(annotations.get("destructiveHint"));
+        boolean openWorld = Boolean.TRUE.equals(annotations.get("openWorldHint"));
+        boolean readOnly = Boolean.TRUE.equals(annotations.get("readOnlyHint"));
+        String risk = destructive ? "destructive"
+                : openWorld ? "active"
+                : readOnly ? "passive"
+                : tool.getName().startsWith("ost.wordlist.") ? "filesystem-write"
+                : "configuration-write";
+        return mapOf("name", tool.getName(), "risk", risk,
+                "description", tool.getDescription(), "annotations", annotations);
     }
 
     private Map<String, Object> paginateTaskRecords(List<TaskRecord> records, int offset, int limit, boolean includeBody) {
@@ -4022,15 +4640,42 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private List<String> normalizeWordlistItems(List<?> rawItems) {
         LinkedHashSet<String> items = new LinkedHashSet<>();
         for (Object rawItem : rawItems) {
-            if (rawItem == null) {
-                continue;
-            }
-            String item = String.valueOf(rawItem).trim();
+            String item = ((String) rawItem).trim();
             if (StringUtils.isNotEmpty(item)) {
                 items.add(item);
             }
         }
         return new ArrayList<>(items);
+    }
+
+    private List<String> requireStringArray(Map<String, Object> args, String key) {
+        if (!hasArg(args, key)) {
+            throw new IllegalArgumentException(key + " is required");
+        }
+        Object raw = args.get(key);
+        if (!(raw instanceof List<?> values)) {
+            throw new IllegalArgumentException(key + " must be an array");
+        }
+        ArrayList<String> result = new ArrayList<>();
+        for (Object value : values) {
+            if (!(value instanceof String text)) {
+                throw new IllegalArgumentException(key + " must contain only strings");
+            }
+            result.add(text);
+        }
+        return result;
+    }
+
+    private List<String> normalizeExportFields(List<String> rawFields) {
+        LinkedHashSet<String> fields = new LinkedHashSet<>();
+        for (String rawField : rawFields) {
+            String field = rawField.trim();
+            if (field.isEmpty()) {
+                throw new IllegalArgumentException("fields must not contain blank field keys");
+            }
+            fields.add(field);
+        }
+        return new ArrayList<>(fields);
     }
 
     private Map<String, Object> wordlistMutationResult(String action, String key, String name,
@@ -4045,6 +4690,36 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 "changed_count", changedCount,
                 "items", WordlistManager.getItemList(key)
         );
+    }
+
+    private RequestMode requireRequestMode(Map<String, Object> args, RequestMode fallback) {
+        if (!hasArg(args, "mode")) {
+            return fallback;
+        }
+        RequestMode mode = parseRequestMode(stringArg(args, "mode"), null);
+        if (mode == null) {
+            throw new IllegalArgumentException("mode must be auto, burp, or browser");
+        }
+        return mode;
+    }
+
+    private RequestScope requireRequestScope(Map<String, Object> args, RequestScope fallback) {
+        if (!hasArg(args, "scope")) {
+            return fallback;
+        }
+        RequestScope scope = parseRequestScope(stringArg(args, "scope"), null);
+        if (scope == null) {
+            throw new IllegalArgumentException("scope must be all, burp, or browser");
+        }
+        return scope;
+    }
+
+    private int requirePort(Map<String, Object> args, int fallback) {
+        int port = requireInteger(args, "port", fallback);
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("port must be between 1 and 65535");
+        }
+        return port;
     }
 
     private RequestMode parseRequestMode(String value, RequestMode fallback) {
@@ -4081,7 +4756,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (!hasArg(args, key)) {
             return "";
         }
-        return String.valueOf(args.get(key));
+        Object value = args.get(key);
+        if (!(value instanceof String text)) {
+            throw new IllegalArgumentException(key + " must be a string");
+        }
+        return text;
     }
 
     private int intArg(Map<String, Object> args, String key, int fallback) {
@@ -4095,15 +4774,55 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return StringUtils.parseInt(String.valueOf(value), fallback);
     }
 
+    private int requireNonNegativeInt(Map<String, Object> args, String key, int fallback) {
+        int value = requireInteger(args, key, fallback);
+        if (value < 0) {
+            throw new IllegalArgumentException(key + " must be zero or greater");
+        }
+        return value;
+    }
+
+    private int requirePositiveInt(Map<String, Object> args, String key, int fallback) {
+        int value = requireInteger(args, key, fallback);
+        if (value < 1) {
+            throw new IllegalArgumentException(key + " must be greater than zero");
+        }
+        return value;
+    }
+
+    private int requireInteger(Map<String, Object> args, String key, int fallback) {
+        if (!hasArg(args, key)) {
+            return fallback;
+        }
+        Object value = args.get(key);
+        if (value instanceof Number number) {
+            double numberValue = number.doubleValue();
+            if (!Double.isFinite(numberValue) || Math.rint(numberValue) != numberValue
+                    || numberValue < Integer.MIN_VALUE || numberValue > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(key + " must be an integer");
+            }
+            return (int) numberValue;
+        }
+        String text = String.valueOf(value).trim();
+        if (!text.matches("[+-]?\\d+")) {
+            throw new IllegalArgumentException(key + " must be an integer");
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " must be an integer");
+        }
+    }
+
     private boolean booleanArg(Map<String, Object> args, String key, boolean fallback) {
         if (!hasArg(args, key)) {
             return fallback;
         }
         Object value = args.get(key);
-        if (value instanceof Boolean bool) {
-            return bool;
+        if (!(value instanceof Boolean bool)) {
+            throw new IllegalArgumentException(key + " must be a boolean");
         }
-        return Boolean.parseBoolean(String.valueOf(value));
+        return bool;
     }
 
     private List<?> listArg(Map<String, Object> args, String key) {
@@ -4181,6 +4900,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return mapOf("type", "number");
     }
 
+    private Map<String, Object> integerSchema() {
+        return mapOf("type", "integer");
+    }
+
     private Map<String, Object> booleanSchema() {
         return mapOf("type", "boolean");
     }
@@ -4188,6 +4911,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private Map<String, Object> enumSchema(String... values) {
         return mapOf("type", "string", "enum", Arrays.asList(values));
     }
+
+    private Map<String, Object> objectValueSchema() {
+        return mapOf(
+                "type", "object",
+                "additionalProperties", mapOf("type", "string")
+        );
+    }
+
 
     private Map<String, Object> arraySchema(Map<String, Object> itemSchema) {
         return mapOf("type", "array", "items", itemSchema);
@@ -4256,7 +4987,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         FpManager.clearsFpColumnModifyListeners();
         // 清除去重过滤集合
         count = sRepeatFilter.size();
-        sRepeatFilter.clear();
+        clearRepeatFilter();
         Logger.info("Clear: repeat filter list completed. Total %d records.", count);
         // 清除超时的请求主机集合
         count = sTimeoutReqHost.size();

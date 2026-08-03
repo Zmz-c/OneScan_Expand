@@ -105,37 +105,63 @@ OST 工作目录、SQLite 数据库、导出文件和截图。
 ## MCP / AI 集成
 
 MCP 默认关闭。在 `Config` -> `Other` 中启用 `MCP server` 后，界面会显示实际端点和健康
-检查地址。
-
-默认端点：
+检查地址。服务仅绑定到 `127.0.0.1`；默认端口为 `8765`，若被占用会依次尝试至 `8785`。
 
 ```text
 http://127.0.0.1:8765/mcp
-```
-
-健康检查：
-
-```text
 http://127.0.0.1:8765/health
 ```
 
-如果端口被占用，OST 会继续尝试至 `8785`。可先调用 `ost.capabilities.list` 查看可用能力。
-任务数据、原始请求/响应、Cookie 和 Profile 值可能包含敏感信息，应只在可信本地环境使用
-该接口。
+这是标准 HTTP JSON-RPC MCP 接口：客户端应先发送 `initialize`，再通知
+`notifications/initialized`，之后通过 `tools/list` 发现工具并用 `tools/call` 调用。服务协商并返回
+`MCP-Protocol-Version`，目前支持 `2024-11-05`、`2025-03-26`、`2025-06-18` 和
+`2025-11-25`。POST 请求必须使用 `Content-Type: application/json`；如发送 `Accept` 请求头，
+其中必须允许 `application/json`（标准 Streamable HTTP 客户端通常会同时声明 JSON 与 SSE）。
 
-JSON-RPC 请求示例：
+主要工具包括状态、扫描、任务、指纹、收集、字典、历史和导出，以及：
+
+- `ost.variables.list`、`ost.variable.get/create/update/delete`：管理命名变量。
+- `ost.profiles.list`、`ost.profile.get/create/update/delete`：管理身份 Profile。
+- `ost.scan.urls`、`ost.scan.request`：可传 `profiles: ["reader", "admin"]`，仅接受已启用的
+  Profile，并会按每个身份重放。
+- 使用 `ost.history.tasks.list` 读取已持久化记录；`ost.history.delete` 删除指定历史标签时必须传
+  `confirm: true`。
+- CSV 导出覆盖已有文件前必须传 `confirm: true`；字典整体替换及 replace 模式的文件导入同样需要确认。
+- 工具元数据包含只读、破坏性、幂等性和扫描网络提示。
+
+Profile 查询默认只返回摘要，不包含 Cookie、Header、参数或 Profile 局部变量的值。仅在可信的
+本地环境中，并明确传递 `include_sensitive: true` 时才返回这些值。任务的原始请求/响应也需要
+显式传递 `include_body: true`。
+
+初始化示例：
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": { "name": "local-client", "version": "1.0" }
+  }
+}
+```
+
+工具调用示例：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "ost.status.get",
+    "name": "ost.profiles.list",
     "arguments": {}
   }
 }
 ```
+
 
 ## 运行环境
 

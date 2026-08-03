@@ -16,6 +16,7 @@ import javax.swing.border.EmptyBorder;
 public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
 
     private OnTabEventListener mOnTabEventListener;
+    private VariablesTab mVariablesTab;
     private HostTab mHostTab;
     private OtherTab mOtherTab;
 
@@ -28,7 +29,8 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
     }
 
     private void initView() {
-        addConfigTab(new VariablesTab());
+        mVariablesTab = new VariablesTab();
+        addConfigTab(mVariablesTab);
         addConfigTab(new PayloadTab());
         addConfigTab(new RequestTab());
         mHostTab = new HostTab();
@@ -46,6 +48,19 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
             mHostTab.reInitView();
         }
     }
+
+    public void refreshVariablesTab() {
+        if (mVariablesTab == null) {
+            return;
+        }
+        Runnable refresh = mVariablesTab::reInitView;
+        if (SwingUtilities.isEventDispatchThread()) {
+            refresh.run();
+        } else {
+            SwingUtilities.invokeLater(refresh);
+        }
+    }
+
 
     public void refreshMcpServerInfo(boolean running, String endpoint) {
         if (mOtherTab != null) {

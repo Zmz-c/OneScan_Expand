@@ -317,6 +317,11 @@ public class VariablesTab extends BaseConfigTab {
         public String getColumnName(int column) { return columns[column]; }
         public Class<?> getColumnClass(int column) { return column == 0 ? Boolean.class : String.class; }
 
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return column == 0;
+        }
+
         public Object getValueAt(int row, int column) {
             IdentityProfile value = values.get(row);
             return switch (column) {
@@ -327,6 +332,16 @@ public class VariablesTab extends BaseConfigTab {
                 case 4 -> value.getQuery().size();
                 default -> value.getBody().size();
             };
+        }
+
+        @Override
+        public void setValueAt(Object value, int row, int column) {
+            if (column != 0 || !(value instanceof Boolean enabled)) {
+                return;
+            }
+            values.get(row).setEnabled(enabled);
+            Config.put(Config.KEY_IDENTITY_PROFILES, values);
+            fireTableCellUpdated(row, column);
         }
     }
 }
