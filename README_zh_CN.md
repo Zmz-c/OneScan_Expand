@@ -112,11 +112,16 @@ http://127.0.0.1:8765/mcp
 http://127.0.0.1:8765/health
 ```
 
+请将 MCP 端点视为本地特权接口。它没有独立的身份认证层，不要通过反向代理、端口转发或公网
+监听对外暴露。浏览器请求的 `Origin` Host 仅允许 loopback（`localhost`、`127.0.0.1` 或
+`::1`）；普通桌面 MCP 客户端通常不会发送 `Origin`。
+
 这是标准 HTTP JSON-RPC MCP 接口：客户端应先发送 `initialize`，再通知
 `notifications/initialized`，之后通过 `tools/list` 发现工具并用 `tools/call` 调用。服务协商并返回
 `MCP-Protocol-Version`，目前支持 `2024-11-05`、`2025-03-26`、`2025-06-18` 和
 `2025-11-25`。POST 请求必须使用 `Content-Type: application/json`；如发送 `Accept` 请求头，
 其中必须允许 `application/json`（标准 Streamable HTTP 客户端通常会同时声明 JSON 与 SSE）。
+初始化完成后，后续请求应通过 `MCP-Protocol-Version` 携带协商得到的协议版本。
 
 主要工具包括状态、扫描、任务、指纹、收集、字典、历史和导出，以及：
 

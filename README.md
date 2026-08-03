@@ -115,12 +115,19 @@ http://127.0.0.1:8765/mcp
 http://127.0.0.1:8765/health
 ```
 
+Treat the MCP endpoint as a privileged local API. It has no separate authentication layer, so do
+not expose it through a reverse proxy, port forward, or public listener. Browser requests are
+accepted only when their `Origin` host is loopback (`localhost`, `127.0.0.1`, or `::1`); ordinary
+desktop MCP clients normally omit `Origin`.
+
 This is a standard HTTP JSON-RPC MCP endpoint. Clients should send `initialize`, notify
 `notifications/initialized`, discover operations through `tools/list`, and invoke them through
 `tools/call`. The server negotiates and returns `MCP-Protocol-Version`; supported versions are
 `2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`. POST requests must use
 `Content-Type: application/json`; when an `Accept` header is sent, it must permit
 `application/json` (standard Streamable HTTP clients commonly advertise JSON and SSE together).
+After initialization, clients should send the negotiated version in `MCP-Protocol-Version` on
+subsequent requests.
 
 In addition to status, scanning, tasks, fingerprints, collection, wordlists, history, and export, MCP
 exposes:
