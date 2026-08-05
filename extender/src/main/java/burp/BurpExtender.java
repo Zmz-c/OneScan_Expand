@@ -766,10 +766,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 return;
             }
             String path = pathDict.get(i);
-            // 去除结尾的 '/' 符号
-            if (path.endsWith("/")) {
-                path = path.substring(0, path.length() - 1);
-            }
             // 拼接字典，发起请求
             for (String item : payloads) {
                 // 线程池关闭后，停止继续生成任务
@@ -786,11 +782,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(payload)) {
                     continue;
                 }
-                String urlPath = path + payload;
-                // 如果配置的字典不含 '/' 前缀，在根目录下扫描时，自动添加 '/' 符号
-                if (StringUtils.isEmpty(path) && !payload.startsWith("/") && !UrlUtils.isHTTP(payload)) {
-                    urlPath = "/" + payload;
-                }
+                String urlPath = joinPayloadPath(path, payload);
                 // 检测一下是否携带完整的 Host 地址（兼容一下携带了完整的 Host 地址的情况）
                 // 但有个前提：如果字典存在完整的 Host 地址，直接不做处理
                 if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(payload)) {
@@ -802,6 +794,21 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
     }
 
+    static String joinPayloadPath(String basePath, String payload) {
+        if (UrlUtils.isHTTP(payload)) {
+            return payload;
+        }
+        if (StringUtils.isEmpty(basePath)) {
+            return payload.startsWith("/") ? payload : "/" + payload;
+        }
+        if (basePath.endsWith("/") && payload.startsWith("/")) {
+            return basePath + payload.substring(1);
+        }
+        if (!basePath.endsWith("/") && !payload.startsWith("/")) {
+            return basePath + "/" + payload;
+        }
+        return basePath + payload;
+    }
     /**
      * 从 IRequestInfo 实例中读取请求行中的请求路径
      *

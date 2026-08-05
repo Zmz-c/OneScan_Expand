@@ -52,7 +52,7 @@ MCP 风格 JSON-RPC 服务。
 2. 在 Burp Suite 的 `Extensions` -> `Add` 中加载：
 
    ```text
-   extender/target/OST-v1.2.2.jar
+   extender/target/OST-v1.2.3.jar
    ```
 
 3. 打开 OST 标签页，在 `Config` 中配置字典、请求行为、浏览器重放、重定向、持久化和

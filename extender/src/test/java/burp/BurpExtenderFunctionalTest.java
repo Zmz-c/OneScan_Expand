@@ -136,6 +136,13 @@ public class BurpExtenderFunctionalTest {
         assertTrue(BurpExtender.isFirstManualReplayRequest(nextManualAction, "BURP https://example.test/api"));
     }
     @Test
+    public void payloadPathsPreserveTheBasePathSeparator() {
+        assertEquals("/base/users", BurpExtender.joinPayloadPath("/base/", "users"));
+        assertEquals("/base/users", BurpExtender.joinPayloadPath("/base/", "/users"));
+        assertEquals("/users", BurpExtender.joinPayloadPath("/", "users"));
+        assertEquals("/users", BurpExtender.joinPayloadPath("", "users"));
+    }
+    @Test
     public void payloadProcessingUsesOriginalRequestOnlyAsFallback() {
         byte[] original = "GET /orders HTTP/1.1\r\nHost: example.test\r\n\r\n"
                 .getBytes(StandardCharsets.ISO_8859_1);
