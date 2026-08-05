@@ -52,7 +52,7 @@ local MCP-style JSON-RPC service.
    .\mvnw.cmd clean package
    ```
 
-2. Load `extender/target/OST-v1.2.1.jar` in Burp Suite under `Extensions` -> `Add`.
+2. Load `extender/target/OST-v1.2.2.jar` in Burp Suite under `Extensions` -> `Add`.
 
 3. Open the OST tab and configure dictionaries, request behavior, browser replay, redirects,
    persistence, and optional MCP from `Config`.
@@ -189,7 +189,7 @@ Tool-call example:
 Run the Quick Start build command from the repository root. The packaged extension is:
 
 ```text
-extender/target/OST-v1.2.1.jar
+extender/target/OST-v1.2.2.jar
 ```
 
 ## License

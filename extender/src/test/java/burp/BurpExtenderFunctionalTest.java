@@ -136,6 +136,19 @@ public class BurpExtenderFunctionalTest {
         assertTrue(BurpExtender.isFirstManualReplayRequest(nextManualAction, "BURP https://example.test/api"));
     }
     @Test
+    public void payloadProcessingUsesOriginalRequestOnlyAsFallback() {
+        byte[] original = "GET /orders HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .getBytes(StandardCharsets.ISO_8859_1);
+        byte[] processed = "GET /orders?processed=true HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .getBytes(StandardCharsets.ISO_8859_1);
+
+        assertTrue(BurpExtender.isChangedPayloadRequest(original, processed));
+        assertFalse(BurpExtender.isChangedPayloadRequest(original, original.clone()));
+        assertFalse(BurpExtender.shouldDispatchUnprocessedRequest(true));
+        assertTrue(BurpExtender.shouldDispatchUnprocessedRequest(false));
+    }
+
+    @Test
     public void requestGroupTracksAllProfilesUntilTheGroupSettles() {
         BurpExtender.RequestGroup successfulGroup = new BurpExtender.RequestGroup("successful");
         assertTrue(successfulGroup.registerTask());

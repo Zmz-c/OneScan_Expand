@@ -1057,15 +1057,27 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         requestGroup);
                 return;
             }
-            // 运行已经启用并且需要合并的任务
-            runEnableAndMergeTask(service, reqId, request, from, requestMode, profiles, variantIdOverride,
-                    requestGroup);
-            // 运行已经启用并且不需要合并的任务
-            runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode, profiles, variantIdOverride,
-                    requestGroup);
+            List<ProcessingItem> processingRules = getPayloadProcess();
+            Set<String> processedVariants = ConcurrentHashMap.newKeySet();
+            boolean hasProcessedVariant = runEnableAndMergeTask(service, reqId, request, from, requestMode,
+                    profiles, variantIdOverride, requestGroup, processingRules, processedVariants);
+            hasProcessedVariant |= runEnabledWithoutMergeProcessingTask(service, reqId, request, requestMode,
+                    profiles, variantIdOverride, requestGroup, processingRules, processedVariants);
+            if (shouldDispatchUnprocessedRequest(hasProcessedVariant)) {
+                dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride,
+                        requestGroup);
+            }
         } finally {
             finishRequestGroupGeneration(requestGroup);
         }
+    }
+
+    static boolean shouldDispatchUnprocessedRequest(boolean hasProcessedVariant) {
+        return !hasProcessedVariant;
+    }
+
+    static boolean isChangedPayloadRequest(byte[] original, byte[] processed) {
+        return processed != null && !Arrays.equals(original, processed);
     }
 
     /**
@@ -1228,36 +1240,28 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param reqRawBytes 请求数据包
      * @param from        请求来源
      */
-    private void runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from,
-                                       RequestMode requestMode, List<IdentityProfile> profiles,
-                                       String variantIdOverride, RequestGroup requestGroup) {
-        // 获取已经启用并且需要合并的“请求包处理”规则
-        List<ProcessingItem> processList = getPayloadProcess()
-                .stream().filter(ProcessingItem::isEnabledAndMerge)
+    private boolean runEnableAndMergeTask(IHttpService service, String reqId, byte[] reqRawBytes, String from,
+                                          RequestMode requestMode, List<IdentityProfile> profiles,
+                                          String variantIdOverride, RequestGroup requestGroup,
+                                          List<ProcessingItem> processingRules, Set<String> processedVariants) {
+        List<ProcessingItem> processList = processingRules.stream()
+                .filter(ProcessingItem::isEnabledAndMerge)
                 .collect(Collectors.toList());
-        // 如果规则为空，直接发起请求
         if (processList.isEmpty()) {
-            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride,
-                    requestGroup);
-            return;
+            return false;
         }
         byte[] resultBytes = reqRawBytes;
         for (ProcessingItem item : processList) {
             ArrayList<PayloadItem> items = item.getItems();
             resultBytes = handlePayloadProcess(service, resultBytes, items);
         }
-        if (resultBytes != null) {
-            // 检测是否未进行任何处理
-            boolean equals = Arrays.equals(reqRawBytes, resultBytes);
-            // 未进行任何处理时，不变更 from 值
-            String newFrom = equals ? from : from + "（" + FROM_PROCESS + "）";
-            dispatchRequestProfiles(service, reqId, resultBytes, newFrom, requestMode, profiles, variantIdOverride,
-                    requestGroup);
-        } else {
-            // 如果规则处理异常导致数据返回为空，则发送原来的请求
-            dispatchRequestProfiles(service, reqId, reqRawBytes, from, requestMode, profiles, variantIdOverride,
-                    requestGroup);
+        if (!isChangedPayloadRequest(reqRawBytes, resultBytes)
+                || !processedVariants.add(buildVariantId(service, resultBytes))) {
+            return false;
         }
+        dispatchRequestProfiles(service, reqId, resultBytes, from + "（" + FROM_PROCESS + "）", requestMode,
+                profiles, variantIdOverride, requestGroup);
+        return true;
     }
 
     /**
@@ -1267,30 +1271,30 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @param reqId       请求 ID
      * @param reqRawBytes 请求数据包
      */
-    private void runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes,
-                                                      RequestMode requestMode, List<IdentityProfile> profiles,
-                                                      String variantIdOverride, RequestGroup requestGroup) {
+    private boolean runEnabledWithoutMergeProcessingTask(IHttpService service, String reqId, byte[] reqRawBytes,
+                                                         RequestMode requestMode, List<IdentityProfile> profiles,
+                                                         String variantIdOverride, RequestGroup requestGroup,
+                                                         List<ProcessingItem> processingRules,
+                                                         Set<String> processedVariants) {
         final long taskGeneration = resolveTaskGeneration();
-        // 遍历规则列表，进行 Payload Processing 处理后，再次请求数据包
-        getPayloadProcess().parallelStream().filter(ProcessingItem::isEnabledWithoutMerge)
+        AtomicInteger processedVariantCount = new AtomicInteger();
+        // Each independent rule produces one distinct processed request variant.
+        processingRules.parallelStream().filter(ProcessingItem::isEnabledWithoutMerge)
                 .forEach((item) -> runWithTaskGeneration(taskGeneration, () -> {
                     if (isTaskStopRequested()) {
                         return;
                     }
                     ArrayList<PayloadItem> items = item.getItems();
                     byte[] requestBytes = handlePayloadProcess(service, reqRawBytes, items);
-                    // 因为不需要合并的规则是将每条处理完成的数据包都发送请求，所以规则处理异常的请求包，不需要发送请求
-                    if (requestBytes == null) {
+                    if (!isChangedPayloadRequest(reqRawBytes, requestBytes)
+                            || !processedVariants.add(buildVariantId(service, requestBytes))) {
                         return;
                     }
-                    // 检测是否未进行任何处理（如上所述的原因，未进行任何处理的请求包，也不需要发送请求）
-                    boolean equals = Arrays.equals(reqRawBytes, requestBytes);
-                    if (equals) {
-                        return;
-                    }
+                    processedVariantCount.incrementAndGet();
                     dispatchRequestProfiles(service, reqId, requestBytes, FROM_PROCESS + "（" + item.getName() + "）",
                             requestMode, profiles, variantIdOverride, requestGroup);
                 }));
+        return processedVariantCount.get() > 0;
     }
 
     /**
@@ -1884,6 +1888,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         return matchesBrowserRequestTarget(service, info);
     }
+
 
     private IHttpRequestResponse tryBrowserFallbackForInterception(IHttpService service, byte[] reqRawBytes,
                                                                    IHttpRequestResponse burpResp,
