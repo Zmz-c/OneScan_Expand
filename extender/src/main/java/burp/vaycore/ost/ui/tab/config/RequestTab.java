@@ -11,9 +11,6 @@ import burp.vaycore.ost.ui.base.BaseConfigTab;
 
 import javax.swing.*;
 import java.awt.event.ItemEvent;
-import java.util.Vector;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * Request设置
@@ -48,21 +45,7 @@ public class RequestTab extends BaseConfigTab {
         // 重试间隔时间配置
         addTextConfigPanel(L.get("request_retry_interval"), L.get("request_retry_interval_sub_title"),
                 20, Config.KEY_RETRY_INTERVAL).addKeyListener(new NumberFilter(5));
-        // 过滤请求方法
-        addEnabledConfigPanel(L.get("browser_request"), L.get("browser_request_sub_title"),
-                Config.KEY_ENABLE_BROWSER_REQUEST);
-        addEnabledConfigPanel(L.get("browser_load_static_resources"),
-                L.get("browser_load_static_resources_sub_title"),
-                Config.KEY_BROWSER_LOAD_STATIC_RESOURCES);
-        addBrowserTypeConfigPanel();
-        addTextConfigPanel(L.get("browser_timeout"), L.get("browser_timeout_sub_title"),
-                20, Config.KEY_BROWSER_TIMEOUT).addKeyListener(new NumberFilter(6));
-        addFileConfigPanel(L.get("browser_binary_path"), L.get("browser_binary_path_sub_title"),
-                Config.KEY_BROWSER_BINARY_PATH);
-        addFileConfigPanel(L.get("browser_python_path"), L.get("browser_python_path_sub_title"),
-                Config.KEY_BROWSER_PYTHON_PATH, true);
-        addTextConfigPanel(L.get("browser_target_host_regex"),
-                L.get("browser_target_host_regex_sub_title"), 35, Config.KEY_BROWSER_TARGET_HOST_REGEX);
+        add(new IdentityProfilesTab());
         addTextConfigPanel(L.get("include_method"), L.get("include_method_sub_title"), 20, Config.KEY_INCLUDE_METHOD);
         // 根据后缀过滤请求包
         addTextConfigPanel(L.get("exclude_suffix"), L.get("exclude_suffix_sub_title"), 50, Config.KEY_EXCLUDE_SUFFIX);
@@ -73,37 +56,6 @@ public class RequestTab extends BaseConfigTab {
         // 移除请求头配置
         addWordListPanel(L.get("remove_header"), L.get("remove_header_sub_title"), WordlistManager.KEY_REMOVE_HEADERS);
 
-    }
-
-    private void addBrowserTypeConfigPanel() {
-        JPanel panel = new JPanel(new HLayout(3));
-        Vector<String> items = new Vector<>();
-        items.add(L.get("browser_type.edge"));
-        items.add(L.get("browser_type.chrome"));
-        JComboBox<String> comboBox = new JComboBox<>(items);
-        comboBox.setSelectedItem(getBrowserTypeLabel(Config.get(Config.KEY_BROWSER_TYPE)));
-        comboBox.addItemListener(e -> {
-            if (e.getStateChange() != ItemEvent.SELECTED) {
-                return;
-            }
-            Config.put(Config.KEY_BROWSER_TYPE, getBrowserTypeValue(String.valueOf(e.getItem())));
-        });
-        panel.add(comboBox);
-        addConfigItem(L.get("browser_type"), L.get("browser_type_sub_title"), panel);
-    }
-
-    private String getBrowserTypeLabel(String value) {
-        if (Config.BROWSER_TYPE_CHROME.equalsIgnoreCase(value)) {
-            return L.get("browser_type.chrome");
-        }
-        return L.get("browser_type.edge");
-    }
-
-    private String getBrowserTypeValue(String label) {
-        if (L.get("browser_type.chrome").equals(label)) {
-            return Config.BROWSER_TYPE_CHROME;
-        }
-        return Config.BROWSER_TYPE_EDGE;
     }
 
     protected void addScanLevelConfigPanel() {
@@ -184,22 +136,6 @@ public class RequestTab extends BaseConfigTab {
                 return false;
             }
             text = String.valueOf(value);
-        } else if (Config.KEY_BROWSER_TIMEOUT.equals(configKey)) {
-            if (value < 1000 || value > 300000) {
-                UIHelper.showTipsDialog(L.get("browser_timeout_value_invalid"));
-                return false;
-            }
-            text = String.valueOf(value);
-        } else if (Config.KEY_BROWSER_TARGET_HOST_REGEX.equals(configKey)) {
-            text = text == null ? "" : text.trim();
-            if (StringUtils.isNotEmpty(text)) {
-                try {
-                    Pattern.compile(text);
-                } catch (PatternSyntaxException e) {
-                    UIHelper.showTipsDialog(L.get("browser_target_host_regex_invalid"));
-                    return false;
-                }
-            }
         }
         return super.onTextConfigSave(configKey, text);
     }

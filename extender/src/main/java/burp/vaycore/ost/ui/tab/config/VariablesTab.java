@@ -14,18 +14,15 @@ import burp.vaycore.ost.ui.base.BaseConfigTab;
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.*;
 import java.util.List;
-import java.util.Map;
-import java.util.Vector;
 import java.util.regex.Pattern;
 
 public class VariablesTab extends BaseConfigTab {
 
     private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9_.-]{1,64}");
     private ArrayList<VariableDefinition> variables;
-    private ArrayList<IdentityProfile> profiles;
+    protected ArrayList<IdentityProfile> profiles;
     private VariableTableModel variableModel;
     private ProfileTableModel profileModel;
 
@@ -36,7 +33,6 @@ public class VariablesTab extends BaseConfigTab {
         addVariablePanel();
         addWordListPanel(L.get("variable_dictionary"), L.get("variable_dictionary_sub_title"),
                 WordlistManager.KEY_VARIABLES);
-        addProfilePanel();
     }
 
     @Override
@@ -121,7 +117,7 @@ public class VariablesTab extends BaseConfigTab {
         return variables.stream().anyMatch(item -> item != current && name.equalsIgnoreCase(item.getName()));
     }
 
-    private void addProfilePanel() {
+    protected void addProfilePanel() {
         profileModel = new ProfileTableModel(profiles);
         JTable table = new JTable(profileModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);

@@ -29,6 +29,7 @@ public class OtherTab extends BaseConfigTab {
     private JLabel mMcpStatusLabel;
 
     protected void initView() {
+        addLanguagePanel();
         // 请求响应最大长度
         addTextConfigPanel(L.get("maximum_display_length"), L.get("maximum_display_length_sub_title"),
                 20, Config.KEY_MAX_DISPLAY_LENGTH).addKeyListener(new NumberFilter(8));
@@ -36,6 +37,31 @@ public class OtherTab extends BaseConfigTab {
         addDataPersistencePanel();
         addDirectoryConfigPanel(L.get("collect_directory"), L.get("collect_directory_sub_title"), Config.KEY_COLLECT_PATH);
         addDirectoryConfigPanel(L.get("wordlist_directory"), L.get("wordlist_directory_sub_title"), Config.KEY_WORDLIST_PATH);
+    }
+
+    private void addLanguagePanel() {
+        LanguageOption[] options = {
+                new LanguageOption(L.LANGUAGE_AUTO, L.get("language_auto")),
+                new LanguageOption(L.LANGUAGE_CHINESE, L.get("language_chinese")),
+                new LanguageOption(L.LANGUAGE_ENGLISH, L.get("language_english"))
+        };
+        JComboBox<LanguageOption> languageBox = new JComboBox<>(options);
+        String currentLanguage = L.normalizeLanguageSetting(Config.get(Config.KEY_LANGUAGE));
+        for (LanguageOption option : options) {
+            if (option.value().equals(currentLanguage)) {
+                languageBox.setSelectedItem(option);
+                break;
+            }
+        }
+        languageBox.addActionListener(e -> {
+            LanguageOption selected = (LanguageOption) languageBox.getSelectedItem();
+            if (selected == null || selected.value().equals(Config.get(Config.KEY_LANGUAGE))) {
+                return;
+            }
+            Config.put(Config.KEY_LANGUAGE, selected.value());
+            UIHelper.showTipsDialog(L.get("language_reload_hint"));
+        });
+        addConfigItem(L.get("language"), L.get("language_sub_title"), languageBox);
     }
 
     private void addMcpServerPanel() {
@@ -205,5 +231,12 @@ public class OtherTab extends BaseConfigTab {
             return true;
         }
         return super.onTextConfigSave(configKey, text);
+    }
+
+    private record LanguageOption(String value, String label) {
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 }

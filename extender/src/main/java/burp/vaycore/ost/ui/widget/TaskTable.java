@@ -62,6 +62,7 @@ public class TaskTable extends JTable implements ActionListener {
     private TableRowSorter<TaskTableModel> mTableRowSorter;
     private ArrayList<TableFilter<AbstractTableModel>> mTableFilters = new ArrayList<>();
     private final ArrayList<TableFilter<AbstractTableModel>> mTempFilters = new ArrayList<>();
+    private volatile String mSearchText = "";
     private OnTaskTableEventListener mOnTaskTableEventListener;
     private int mLastSelectedRow;
 
@@ -87,6 +88,12 @@ public class TaskTable extends JTable implements ActionListener {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int rowIndex, int columnIndex) {
                 Component c = renderer.getTableCellRendererComponent(table, value, isSelected, hasFocus, rowIndex, columnIndex);
+                if (matchesSearch(rowIndex)) {
+                    Color searchColor = new Color(255, 244, 180);
+                    c.setBackground(isSelected ? darkerColor(searchColor) : searchColor);
+                    c.setForeground(Color.BLACK);
+                    return c;
+                }
                 TaskData data = getTaskData(rowIndex);
                 String highlight = "";
                 if (data != null) {
@@ -272,6 +279,15 @@ public class TaskTable extends JTable implements ActionListener {
     }
 
     /**
+     * Sets a case-insensitive search applied across all visible columns.
+     */
+    public void setSearchText(String text) {
+        mSearchText = text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+        updateRowFilter();
+        repaint();
+    }
+
+    /**
      * 更新过滤器
      */
     public void updateRowFilter() {
@@ -285,7 +301,7 @@ public class TaskTable extends JTable implements ActionListener {
             groupFilter.addAll(mTempFilters);
         }
         // 检测过滤字段是否有效
-        ArrayList<TableFilter<AbstractTableModel>> result = new ArrayList<>();
+        ArrayList<RowFilter<? super TaskTableModel, ? super Integer>> result = new ArrayList<>();
         for (TableFilter<AbstractTableModel> filter : groupFilter) {
             FilterRule rule = filter.getRule();
             // 规则为空检测
@@ -298,11 +314,40 @@ public class TaskTable extends JTable implements ActionListener {
                 continue;
             }
             // 保留有效的过滤规则
-            result.add(filter);
+            result.add((RowFilter) filter);
+        }
+        if (!mSearchText.isEmpty()) {
+            result.add(new RowFilter<>() {
+                @Override
+                public boolean include(Entry<? extends TaskTableModel, ? extends Integer> entry) {
+                    for (int column = 0; column < entry.getValueCount(); column++) {
+                        Object value = entry.getValue(column);
+                        if (value != null && String.valueOf(value).toLowerCase(Locale.ROOT).contains(mSearchText)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            });
         }
         synchronized (mTaskTableModel) {
             mTableRowSorter.setRowFilter(RowFilter.andFilter(result));
         }
+    }
+
+    private boolean matchesSearch(int viewRow) {
+        String search = mSearchText;
+        if (search.isEmpty() || viewRow < 0 || viewRow >= getRowCount()) {
+            return false;
+        }
+        int modelRow = convertRowIndexToModel(viewRow);
+        for (int column = 0; column < mTaskTableModel.getColumnCount(); column++) {
+            Object value = mTaskTableModel.getValueAt(modelRow, column);
+            if (value != null && String.valueOf(value).toLowerCase(Locale.ROOT).contains(search)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

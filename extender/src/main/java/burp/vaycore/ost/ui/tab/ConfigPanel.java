@@ -33,6 +33,7 @@ public class ConfigPanel extends JTabbedPane implements OnTabEventListener {
         addConfigTab(mVariablesTab);
         addConfigTab(new PayloadTab());
         addConfigTab(new RequestTab());
+        addConfigTab(new BrowserTab());
         mHostTab = new HostTab();
         addConfigTab(mHostTab);
         addConfigTab(new RedirectTab());

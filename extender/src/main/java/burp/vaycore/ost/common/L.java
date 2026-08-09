@@ -10,24 +10,14 @@ import java.util.ResourceBundle;
  */
 public class L {
 
-    private static final Locale sDefaultLocale = new Locale("en", "US");
-    private static final String sBaseName = "i18n/messages";
-    private static final ResourceBundle sLanguage;
+    public static final String LANGUAGE_AUTO = "auto";
+    public static final String LANGUAGE_CHINESE = "zh_CN";
+    public static final String LANGUAGE_ENGLISH = "en_US";
 
-    static {
-        // 初始化语言包
-        Locale locale = Locale.getDefault();
-        ResourceBundle language;
-        try {
-            language = ResourceBundle.getBundle(sBaseName, locale);
-            if (!language.containsKey("plugin_name")) {
-                throw new IllegalStateException("Unable to identify language resource package");
-            }
-        } catch (Exception e) {
-            language = ResourceBundle.getBundle(sBaseName, sDefaultLocale);
-        }
-        sLanguage = language;
-    }
+    private static final Locale CHINESE_LOCALE = Locale.SIMPLIFIED_CHINESE;
+    private static final Locale DEFAULT_LOCALE = Locale.US;
+    private static final String sBaseName = "i18n/messages";
+    private static volatile ResourceBundle sLanguage = loadLanguage(resolveLocale(LANGUAGE_AUTO));
 
     private L() {
         throw new IllegalAccessError("L class not support create instance.");
@@ -54,14 +44,60 @@ public class L {
      */
     public static String get(String key, Object... args) {
         // 如果当前语言资源包找不到对应的值，到默认语言资源包里找
-        if (!sLanguage.containsKey(key)) {
-            ResourceBundle defaultLanguage = ResourceBundle.getBundle(sBaseName, sDefaultLocale);
+        ResourceBundle language = sLanguage;
+        String value;
+        if (language.containsKey(key)) {
+            value = language.getString(key);
+        } else {
+            ResourceBundle defaultLanguage = loadLanguage(DEFAULT_LOCALE);
             if (!defaultLanguage.containsKey(key)) {
                 return "Null";
             }
-            return defaultLanguage.getString(key);
+            value = defaultLanguage.getString(key);
         }
-        String value = sLanguage.getString(key);
         return String.format(value, args);
+    }
+
+    /**
+     * Selects the resource bundle used by the extension. Burp does not expose its display
+     * language through the legacy extension API, so follow mode uses the JVM default locale,
+     * which Burp sets from its display-language preference when it starts.
+     */
+    public static synchronized void configure(String languageSetting) {
+        sLanguage = loadLanguage(resolveLocale(normalizeLanguageSetting(languageSetting)));
+    }
+
+    public static String normalizeLanguageSetting(String languageSetting) {
+        if (LANGUAGE_CHINESE.equalsIgnoreCase(languageSetting)) {
+            return LANGUAGE_CHINESE;
+        }
+        if (LANGUAGE_ENGLISH.equalsIgnoreCase(languageSetting)) {
+            return LANGUAGE_ENGLISH;
+        }
+        return LANGUAGE_AUTO;
+    }
+
+    static Locale resolveLocale(String languageSetting) {
+        if (LANGUAGE_CHINESE.equals(languageSetting)) {
+            return CHINESE_LOCALE;
+        }
+        if (LANGUAGE_ENGLISH.equals(languageSetting)) {
+            return DEFAULT_LOCALE;
+        }
+        Locale burpLocale = Locale.getDefault();
+        return Locale.CHINESE.getLanguage().equalsIgnoreCase(burpLocale.getLanguage())
+                ? CHINESE_LOCALE : DEFAULT_LOCALE;
+    }
+
+    private static ResourceBundle loadLanguage(Locale locale) {
+        try {
+            ResourceBundle language = ResourceBundle.getBundle(sBaseName, locale);
+            if (!language.containsKey("plugin_name")) {
+                throw new IllegalStateException("Unable to identify language resource package");
+            }
+            return language;
+        } catch (Exception e) {
+            return ResourceBundle.getBundle(sBaseName, DEFAULT_LOCALE);
+        }
     }
 }

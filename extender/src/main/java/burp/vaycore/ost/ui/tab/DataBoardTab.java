@@ -15,14 +15,12 @@ import burp.vaycore.ost.common.*;
 import burp.vaycore.ost.manager.FpManager;
 import burp.vaycore.ost.manager.TaskPersistenceManager;
 import burp.vaycore.ost.ui.base.BaseTab;
-import burp.vaycore.ost.ui.widget.DividerLine;
-import burp.vaycore.ost.ui.widget.HistoryManagerWindow;
-import burp.vaycore.ost.ui.widget.ImportUrlWindow;
-import burp.vaycore.ost.ui.widget.TaskFieldSelectionPanel;
-import burp.vaycore.ost.ui.widget.TaskTable;
+import burp.vaycore.ost.ui.widget.*;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -51,6 +49,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private JCheckBox mDirScan;
     private ArrayList<FilterRule> mLastFilters;
     private HintTextField mFilterRuleText;
+    private HintTextField mSearchText;
     private AbstractButton mPayloadProcessing;
     private JPopupMenu mRequestProcessingMenu;
     private ImportUrlWindow mImportUrlWindow;
@@ -198,6 +197,31 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         panel.add(dataProcessingBtn);
 
         panel.add(new JPanel(), "1w");
+
+        mSearchText = new HintTextField();
+        mSearchText.setHintText(L.get("task_search_hint"));
+        mSearchText.setToolTipText(L.get("task_search_highlight"));
+        mSearchText.getDocument().addDocumentListener(new DocumentListener() {
+            private void update() {
+                setSearchTextForAll(mSearchText.getText());
+            }
+
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                update();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                update();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                update();
+            }
+        });
+        panel.add(mSearchText, "1w");
 
         mFilterRuleText = new HintTextField();
         mFilterRuleText.setEditable(false);
@@ -674,6 +698,12 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private void setRowFilterForAll(ArrayList<TableFilter<AbstractTableModel>> filters) {
         for (TaskTable table : getTaskTables()) {
             table.setRowFilter(filters);
+        }
+    }
+
+    private void setSearchTextForAll(String text) {
+        for (TaskTable table : getTaskTables()) {
+            table.setSearchText(text);
         }
     }
 

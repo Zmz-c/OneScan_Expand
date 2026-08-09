@@ -48,6 +48,7 @@ public class Config {
     public static final String KEY_DATA_PERSISTENCE_AUTO_SAVE_INTERVAL = "data-persistence-auto-save-interval";
     public static final String KEY_DATA_PERSISTENCE_FIELDS = "data-persistence-fields";
     public static final String KEY_ENABLE_MCP = "enable-mcp";
+    public static final String KEY_LANGUAGE = "language";
     public static final String KEY_FOLLOW_REDIRECT = "follow-redirect";
     public static final String KEY_REDIRECT_COOKIES_FOLLOW = "redirect-cookies-follow";
     public static final String KEY_REDIRECT_TARGET_HOST_LIMIT = "redirect-target-host-limit";
@@ -85,6 +86,12 @@ public class Config {
         sConfigPath = getWorkDir() + "config.json";
         sConfigManager = new ConfigManager(sConfigPath);
         initDefaultConfig(Config.KEY_VERSION, Constants.PLUGIN_VERSION);
+        initDefaultConfig(Config.KEY_LANGUAGE, L.LANGUAGE_AUTO);
+        String language = L.normalizeLanguageSetting(get(Config.KEY_LANGUAGE));
+        if (!language.equals(get(Config.KEY_LANGUAGE))) {
+            put(Config.KEY_LANGUAGE, language);
+        }
+        L.configure(language);
         initDefaultConfig(Config.KEY_QPS_LIMIT, "1024");
         initDefaultConfig(Config.KEY_REQUEST_DELAY, "0");
         initDefaultConfig(Config.KEY_SCAN_LEVEL_DIRECT, "left");
