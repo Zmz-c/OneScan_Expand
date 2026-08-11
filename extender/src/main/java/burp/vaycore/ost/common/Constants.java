@@ -11,7 +11,7 @@ public interface Constants {
 
     // 插件信息
     String PLUGIN_NAME = "OST";
-    String PLUGIN_VERSION = "1.2.3";
+    String PLUGIN_VERSION = "1.2.4";
     boolean DEBUG = false;
 
     // 插件启动显示的信息
@@ -23,7 +23,7 @@ public interface Constants {
             "  Developer: Rural.Dog\n" +
             "  Developer:人间小福星\n"+
             "  Project:    OST\n" +
-            "  Note:调整UI，优化性能速度，解决大数据下的性能问题\n" +
+            "  Note:UI小调整，归类调整，增加语言选择功能，可以更好的玩耍了！\n" +
             "#############################################\n";
 
     // 插件卸载显示的信息
