@@ -12,7 +12,9 @@
 - Profile 浏览器重放隔离 Cookie，避免多身份或普通浏览器会话串用。
 - Profile 重放及其重定向不再触发路径/目录字典扩展。
 - Profile 中的 Cookie、Token 和其他认证值按原始值保存、显示和重放；请自行保护本地配置、历史库与导出文件。
-- 默认提供 `ip`、`local-ip`、`ua` 三个可编辑的随机命名变量，分别关联独立变量字典。
+- 默认提供 `ip`、`local-ip`、`ua`、`AuthFuzz` 四个可编辑的随机命名变量，分别关联独立变量字典；其中 `AuthFuzz` 默认关闭，需手动启用。
+- `AuthFuzz` 不会自动加入默认请求头。启用该变量后，可在 `Config -> Request -> Request Header` 手动添加 `{{random.AuthFuzz}}`，从字典随机加入一条 Authorization、API Key、Cookie 或 Token 认证头。
+- 首次初始化会创建但不会启用 GET 转 POST、`;index.jgp`、路径分隔符/规范化和查询分隔符等请求包处理绕过规则；可在 `Config -> Payload` 中按需逐条启用、关闭或删除。
 - 目录扫描字典在路径拼接前展开系统变量与命名变量，完整 URL 也在展开后识别。
 - “使用其他字典扫描”中的 Burp/浏览器重放均可选择身份 Profile，并按所选字典生成目录变体。
 - User-Agent 默认值迁移为变量字典中的 `user-agent` 列表；Profile 仅替换非空 Cookie/请求头，删除请求头仍由“请求配置”管理。
@@ -56,6 +58,7 @@ Profile 仅通过 Burp 右键菜单中的“使用 Burp 请求重放选中 Profi
 | `{{random.ip}}` | 命名变量 `ip` 从字典 `random-ip` 随机取一行 | `X-Forwarded-For`、`X-Real-IP` |
 | `{{random.local-ip}}` | 命名变量 `local-ip` 从字典 `random-local-ip` 随机取一行 | 模拟内网来源请求头 |
 | `{{random.ua}}` | 命名变量 `ua` 从字典 `user-agent` 随机取一行 | `User-Agent` |
+| `{{random.AuthFuzz}}` | 命名变量 `AuthFuzz` 从字典 `AuthFuzz` 随机取一行完整请求头 | Authorization、API Key、Cookie、Token |
 | `{{protocol}}` | 目标协议 | 请求路径或请求头 |
 | `{{host}}` | 目标 Host，非默认端口会保留 | 请求头或请求体 |
 | `{{ip}}` | 目标 Host 解析得到的 IP | 请求头或请求体 |
@@ -68,7 +71,7 @@ Profile 仅通过 Burp 右键菜单中的“使用 Burp 请求重放选中 Profi
 
 没有 `{{random.refer}}`、`{{random.cookie}}`，也不支持任意 JavaScript、Python 或表达式函数。
 
-`ip`、`local-ip` 和 `ua` 是默认的普通命名变量，会显示在“命名变量”表格中。三者均可编辑、删除或替换：随机策略分别读取 `random-ip`、`random-local-ip` 和 `user-agent` 字典，不存在内置的 IP 或 User-Agent 生成算法。
+`ip`、`local-ip`、`ua` 和 `AuthFuzz` 是默认的普通命名变量，会显示在“命名变量”表格中。它们均可编辑、删除或替换：随机策略分别读取 `random-ip`、`random-local-ip`、`user-agent` 和 `AuthFuzz` 字典；其中 AuthFuzz 默认禁用。
 
 ### 随机 IP 与 User-Agent
 
@@ -100,12 +103,13 @@ X-Real-IP: {{random.local-ip}}
 
 例如可创建 `tenant`，用字典 `tenant-a`、`tenant-b`，并在请求中放入 `X-Tenant-ID: {{value.tenant}}`。普通变量会在 Profile 执行之前填充一次，不会导致额外的身份请求倍增。
 
-默认会创建以下三个命名变量及其变量字典：
+默认会创建以下四个命名变量及其变量字典：
 
 ```text
 ip -> {{random.ip}} -> random-ip
 local-ip -> {{random.local-ip}} -> random-local-ip
 ua -> {{random.ua}} -> user-agent
+AuthFuzz -> {{random.AuthFuzz}} -> AuthFuzz
 ```
 
 这些是普通可编辑项：可调整取值策略、关联字典或删除。升级时只会补充一次缺失的默认命名变量；之后用户主动删除的变量不会在每次启动时恢复。
@@ -155,6 +159,8 @@ session={{profile.session}}
 ## 请求包处理
 
 在 `Config -> Payload` 配置“请求包处理”。子规则可以作用于请求路径、请求头、请求体或完整请求；已有添加前缀、添加后缀、条件检查和正则匹配/替换。存在有效处理结果时，OST 只发送处理后的请求变体，不会额外发送未处理的原始 GET 请求；勾选“合并到请求”的规则按顺序生成一个变体，未勾选的规则各自生成一个变体。若所有规则均未命中或处理失败，才回退发送原始请求。规则全局生效，建议缩小目标范围并减少字典数量，避免作用到无关扫描请求。
+
+新工作目录首次启动时会自动创建以下独立规则，但默认全部禁用：将 `GET` 改为 `POST`，以及在 URL 末尾追加 `;index.jgp`、`/.`、`/..;/`、`/%2e/`、`//`、`;`、`?`、`%3f` 和 `.json`。这些规则只在首次初始化时写入；已有配置会保留，之后删除的规则不会自动恢复。
 
 示例：
 

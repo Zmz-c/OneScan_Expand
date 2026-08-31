@@ -22,6 +22,7 @@ public final class VariableManager {
     public static final String DEFAULT_VARIABLE_IP = "ip";
     public static final String DEFAULT_VARIABLE_LOCAL_IP = "local-ip";
     public static final String DEFAULT_VARIABLE_UA = "ua";
+    public static final String DEFAULT_VARIABLE_AUTHFUZZ = "AuthFuzz";
 
     private static final ConcurrentHashMap<String, AtomicInteger> ROUND_ROBIN_INDEX = new ConcurrentHashMap<>();
     private static final Pattern NAMED_VARIABLE_PATTERN = Pattern.compile("\\{\\{(?:random|value)\\.[^}]+}}");
@@ -34,10 +35,16 @@ public final class VariableManager {
      * They are ordinary named variables and can be edited or removed after migration.
      */
     public static List<VariableDefinition> getBundledVariableDefinitions() {
+        VariableDefinition authFuzz = randomDefinition(
+                DEFAULT_VARIABLE_AUTHFUZZ, WordlistManager.VARIABLE_DICTIONARY_AUTHFUZZ);
+        // AuthFuzz is a bundled dictionary and variable definition, but must be
+        // explicitly enabled before it can alter request headers.
+        authFuzz.setEnabled(false);
         return List.of(
                 randomDefinition(DEFAULT_VARIABLE_IP, WordlistManager.VARIABLE_DICTIONARY_RANDOM_IP),
                 randomDefinition(DEFAULT_VARIABLE_LOCAL_IP, WordlistManager.VARIABLE_DICTIONARY_RANDOM_LOCAL_IP),
-                randomDefinition(DEFAULT_VARIABLE_UA, WordlistManager.VARIABLE_DICTIONARY_USER_AGENT)
+                randomDefinition(DEFAULT_VARIABLE_UA, WordlistManager.VARIABLE_DICTIONARY_USER_AGENT),
+                authFuzz
         );
     }
 

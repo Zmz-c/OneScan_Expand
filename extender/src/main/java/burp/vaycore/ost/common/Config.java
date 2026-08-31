@@ -14,6 +14,8 @@ import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
 import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
 import burp.vaycore.ost.ui.widget.payloadlist.SimplePayloadList;
+import burp.vaycore.ost.ui.widget.payloadlist.rule.AddSuffix;
+import burp.vaycore.ost.ui.widget.payloadlist.rule.MatchReplace;
 
 import java.io.File;
 import java.io.InputStream;
@@ -57,6 +59,10 @@ public class Config {
     public static final String KEY_IDENTITY_PROFILES = "identity-profiles";
     public static final String KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED =
             "named-variable-defaults-initialized";
+    public static final String KEY_AUTHFUZZ_VARIABLE_DEFAULT_INITIALIZED =
+            "authfuzz-variable-default-initialized";
+    public static final String KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED =
+            "payload-process-defaults-initialized";
     // 首页开关配置项
     public static final String KEY_ENABLE_LISTEN_PROXY = "enable-listen-proxy";
     public static final String KEY_ENABLE_BROWSER_REQUEST = "enable-browser-request";
@@ -335,6 +341,7 @@ public class Config {
 
     private static void onPreloadConfig() {
         preparePayloadProcessList();
+        ensureDefaultPayloadProcessRules();
         prepareDataboardFilterRules();
         prepareVariableDefinitions();
         ensureBundledNamedVariableDefinitions();
@@ -484,6 +491,66 @@ public class Config {
         }
     }
 
+    /**
+     * Installs the built-in request-processing bypass rules once. Existing rule
+     * configurations are preserved, and a user who later removes the rules will
+     * not have them recreated on every restart.
+     */
+    private static void ensureDefaultPayloadProcessRules() {
+        if (getBoolean(KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED)) {
+            return;
+        }
+        ArrayList<ProcessingItem> rules = getPayloadProcessList();
+        if (rules == null) {
+            rules = new ArrayList<>();
+        }
+        if (rules.isEmpty()) {
+            rules.add(defaultProcessingRule("GET to POST",
+                    payloadRule(PayloadRule.SCOPE_REQUEST, new MatchReplace(), "^GET ", "POST ")));
+            rules.add(defaultProcessingRule("Append ;index.jgp",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";index.jgp")));
+            rules.add(defaultProcessingRule("Append /.",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/.")));
+            rules.add(defaultProcessingRule("Append /..;/",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/..;/")));
+            rules.add(defaultProcessingRule("Append /%2e/",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/%2e/")));
+            rules.add(defaultProcessingRule("Append //",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "//")));
+            rules.add(defaultProcessingRule("Append ;",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";")));
+            rules.add(defaultProcessingRule("Append ?",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "?")));
+            rules.add(defaultProcessingRule("Append %3f",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "%3f")));
+            rules.add(defaultProcessingRule("Append .json",
+                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ".json")));
+            put(KEY_PAYLOAD_PROCESS_LIST, rules);
+        }
+        put(KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED, "true");
+    }
+
+    private static ProcessingItem defaultProcessingRule(String name, PayloadItem payloadItem) {
+        ProcessingItem item = new ProcessingItem();
+        // Built-in rules are provided as opt-in templates. Enabling them during
+        // startup would unexpectedly alter requests for existing and new users.
+        item.setEnabled(false);
+        item.setMerge(false);
+        item.setName(name);
+        item.setItems(new ArrayList<>(List.of(payloadItem)));
+        return item;
+    }
+
+    private static PayloadItem payloadRule(int scope, PayloadRule rule, String... values) {
+        for (int i = 0; i < values.length && i < rule.paramCount(); i++) {
+            rule.setParamValue(i, values[i]);
+        }
+        PayloadItem item = new PayloadItem();
+        item.setScope(scope);
+        item.setRule(rule);
+        return item;
+    }
+
     private static ArrayList<Map<String, Object>> asPayloadMaps(List<?> items) {
         ArrayList<Map<String, Object>> result = new ArrayList<>();
         if (items == null) {
@@ -582,12 +649,20 @@ public class Config {
      * A later user deletion remains intentional and is not recreated on every startup.
      */
     private static void ensureBundledNamedVariableDefinitions() {
-        if (getBoolean(KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED)) {
+        boolean defaultsInitialized = getBoolean(KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED);
+        // Older installations already have the original three defaults marked as
+        // initialized. Install the newly introduced AuthFuzz definition once for
+        // those installations without recreating variables users deleted later.
+        if (defaultsInitialized && getBoolean(KEY_AUTHFUZZ_VARIABLE_DEFAULT_INITIALIZED)) {
             return;
         }
         ArrayList<VariableDefinition> definitions = getVariableDefinitions();
         boolean changed = false;
         for (VariableDefinition defaultDefinition : VariableManager.getBundledVariableDefinitions()) {
+            if (defaultsInitialized
+                    && !VariableManager.DEFAULT_VARIABLE_AUTHFUZZ.equals(defaultDefinition.getName())) {
+                continue;
+            }
             boolean exists = definitions.stream().anyMatch(item -> item != null
                     && defaultDefinition.getName().equalsIgnoreCase(item.getName()));
             if (!exists) {
@@ -599,6 +674,7 @@ public class Config {
             put(KEY_VARIABLE_DEFINITIONS, definitions);
         }
         put(KEY_NAMED_VARIABLE_DEFAULTS_INITIALIZED, "true");
+        put(KEY_AUTHFUZZ_VARIABLE_DEFAULT_INITIALIZED, "true");
     }
 
     private static void prepareIdentityProfiles() {

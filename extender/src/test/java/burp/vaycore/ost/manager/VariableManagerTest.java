@@ -27,25 +27,40 @@ public class VariableManagerTest {
         Config.init(workDir.getAbsolutePath() + File.separator);
 
         List<VariableDefinition> definitions = Config.getVariableDefinitions();
-        assertEquals(List.of("ip", "local-ip", "ua"), definitions.stream()
+        assertEquals(List.of("ip", "local-ip", "ua", "AuthFuzz"), definitions.stream()
                 .map(VariableDefinition::getName).toList());
-        assertTrue(definitions.stream().allMatch(item -> item.isEnabled()
-                && VariableDefinition.STRATEGY_RANDOM.equals(item.getStrategy())));
+        assertTrue(definitions.stream()
+                .filter(item -> !"AuthFuzz".equals(item.getName()))
+                .allMatch(item -> item.isEnabled()
+                        && VariableDefinition.STRATEGY_RANDOM.equals(item.getStrategy())));
+        assertTrue(definitions.stream()
+                .filter(item -> "AuthFuzz".equals(item.getName()))
+                .allMatch(item -> !item.isEnabled()
+                        && VariableDefinition.STRATEGY_RANDOM.equals(item.getStrategy())));
         assertEquals(List.of(
                         WordlistManager.VARIABLE_DICTIONARY_RANDOM_IP,
                         WordlistManager.VARIABLE_DICTIONARY_RANDOM_LOCAL_IP,
-                        WordlistManager.VARIABLE_DICTIONARY_USER_AGENT),
+                        WordlistManager.VARIABLE_DICTIONARY_USER_AGENT,
+                        WordlistManager.VARIABLE_DICTIONARY_AUTHFUZZ),
                 definitions.stream().map(VariableDefinition::getDictionary).toList());
 
         String ip = VariableManager.resolveVariables("{{random.ip}}");
         String localIp = VariableManager.resolveVariables("{{random.local-ip}}");
         String userAgent = VariableManager.resolveVariables("{{random.ua}}");
+        // AuthFuzz is opt-in; enabling it explicitly makes its dictionary usable.
+        assertNull(VariableManager.resolveVariables("{{random.AuthFuzz}}"));
+        definitions.stream().filter(item -> "AuthFuzz".equals(item.getName()))
+                .findFirst().orElseThrow().setEnabled(true);
+        Config.put(Config.KEY_VARIABLE_DEFINITIONS, definitions);
+        String authFuzz = VariableManager.resolveVariables("{{random.AuthFuzz}}");
         assertTrue(WordlistManager.getList(WordlistManager.KEY_VARIABLES,
                 WordlistManager.VARIABLE_DICTIONARY_RANDOM_IP).contains(ip));
         assertTrue(WordlistManager.getList(WordlistManager.KEY_VARIABLES,
                 WordlistManager.VARIABLE_DICTIONARY_RANDOM_LOCAL_IP).contains(localIp));
         assertTrue(WordlistManager.getList(WordlistManager.KEY_VARIABLES,
                 WordlistManager.VARIABLE_DICTIONARY_USER_AGENT).contains(userAgent));
+        assertTrue(WordlistManager.getList(WordlistManager.KEY_VARIABLES,
+                WordlistManager.VARIABLE_DICTIONARY_AUTHFUZZ).contains(authFuzz));
     }
 
     @Test
@@ -64,7 +79,7 @@ public class VariableManagerTest {
         List<VariableDefinition> definitions = Config.getVariableDefinitions();
         assertEquals("custom-ip", definitions.stream()
                 .filter(item -> "ip".equals(item.getName())).findFirst().orElseThrow().getFixedValue());
-        assertEquals(3, definitions.size());
+        assertEquals(4, definitions.size());
     }
 
     @Test

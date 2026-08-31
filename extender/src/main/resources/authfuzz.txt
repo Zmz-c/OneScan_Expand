@@ -1,0 +1,46 @@
+Authorization:
+Authorization: Bearer
+Authorization: Bearer 1
+Authorization: Bearer admin
+Authorization: Bearer password
+Authorization: Bearer token
+Authorization: Bearer 123456
+Authorization: Bearer test
+Authorization: Bearer guest
+Authorization: Bearer abc123
+Authorization: Basic
+Authorization: Basic YWRtaW46YWRtaW4=
+Authorization: Basic YWRtaW46MTIzNDU2
+Authorization: Basic YWRtaW46cGFzc3dvcmQ=
+Authorization: Basic dXNlcjpwYXNz
+Authorization: Basic Z3Vlc3Q6Z3Vlc3Q=
+Authorization: Basic MTIzOjQ1Ng==
+X-API-Key:
+X-API-Key: 1
+X-API-Key: admin
+X-API-Key: password
+X-API-Key: token
+X-API-Key: 123456
+X-API-Key: test
+X-API-Key: guest
+X-API-Key: abc123
+X-API-Key: key
+X-API-Key: secret
+Cookie:
+Cookie: sessionid=1
+Cookie: sessionid=admin
+Cookie: sessionid=123456
+Cookie: sessionid=test
+Cookie: sessionid=guest
+Cookie: PHPSESSID=1
+Cookie: PHPSESSID=admin
+Token: 1
+Token: admin
+Token: 123456
+Token: test
+X-Auth-Token: 1
+X-Auth-Token: admin
+X-Auth-Token: 123456
+X-Auth-Token: test
+Access-Token: 1
+Access-Token: admin

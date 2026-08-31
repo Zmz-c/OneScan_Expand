@@ -52,7 +52,7 @@ local MCP-style JSON-RPC service.
    .\mvnw.cmd clean package
    ```
 
-2. Load `extender/target/OST-v1.2.4.jar` in Burp Suite under `Extensions` -> `Add`.
+2. Load `extender/target/OST-v1.2.5.jar` in Burp Suite under `Extensions` -> `Add`.
 
 3. Open the OST tab and configure dictionaries, request behavior, browser replay, redirects,
    persistence, and optional MCP from `Config`.
@@ -83,9 +83,12 @@ variables. The default entries are ordinary editable named variables:
 | `ip`       | `{{random.ip}}`       | `random-ip`        |
 | `local-ip` | `{{random.local-ip}}` | `random-local-ip`  |
 | `ua`       | `{{random.ua}}`       | `user-agent`       |
+| `AuthFuzz` | `{{random.AuthFuzz}}` | `AuthFuzz`         |
 
-They can be edited, replaced, or removed like any other named variable. The random value comes
-from the associated dictionary; there is no separate built-in IP or User-Agent generator.
+They can be edited, replaced, or removed like any other named variable. The `ip`, `local-ip`, and
+`ua` entries remain enabled by default; `AuthFuzz` is provided as an opt-in definition and is
+disabled until you enable it. AuthFuzz contains common Authorization, API key, Cookie, and Token
+request headers; random values come from the associated dictionary.
 
 For the complete variable, Profile, request-processing, and response-comparison behavior, see
 the [detailed guide (Chinese)](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md).
@@ -189,7 +192,7 @@ Tool-call example:
 Run the Quick Start build command from the repository root. The packaged extension is:
 
 ```text
-extender/target/OST-v1.2.4.jar
+extender/target/OST-v1.2.5.jar
 ```
 
 ## License

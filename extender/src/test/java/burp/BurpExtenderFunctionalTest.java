@@ -203,6 +203,16 @@ public class BurpExtenderFunctionalTest {
     }
 
     @Test
+    public void standaloneVariableMayResolveToACompleteHeader() {
+        assertEquals("X-Tenant: tenant-a",
+                BurpExtender.acceptConfiguredHeaderEntry("X-Tenant: tenant-a"));
+        assertEquals("{{random.complete-header}}",
+                BurpExtender.acceptConfiguredHeaderEntry("{{random.complete-header}}"));
+        assertNull(BurpExtender.acceptConfiguredHeaderEntry("tenant-a"));
+        assertNull(BurpExtender.acceptConfiguredHeaderEntry("X-Tenant: tenant-a\r\nInjected: true"));
+    }
+
+    @Test
     public void fragmentsAreClientSideAndExplicitNonDefaultPortsArePreserved() throws Exception {
         assertTrue(BurpExtender.isFragmentOnlyRedirect("#section"));
         assertFalse(BurpExtender.isFragmentOnlyRedirect("/next#section"));

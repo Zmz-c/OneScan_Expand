@@ -32,6 +32,7 @@ public class WordlistManager {
     public static final String VARIABLE_DICTIONARY_RANDOM_IP = "random-ip";
     public static final String VARIABLE_DICTIONARY_RANDOM_LOCAL_IP = "random-local-ip";
     public static final String VARIABLE_DICTIONARY_USER_AGENT = "user-agent";
+    public static final String VARIABLE_DICTIONARY_AUTHFUZZ = "AuthFuzz";
     static final String CONFIG_VARIABLE_USER_AGENT_MIGRATED = "variables-user-agent-migrated";
     private static String sWordlistDir;
 
@@ -72,6 +73,7 @@ public class WordlistManager {
     private static void initRandomIpVariableDictionaries() {
         initDefaultVariableDictionary(VARIABLE_DICTIONARY_RANDOM_IP, "random_ip.txt");
         initDefaultVariableDictionary(VARIABLE_DICTIONARY_RANDOM_LOCAL_IP, "random_local_ip.txt");
+        initDefaultVariableDictionary(VARIABLE_DICTIONARY_AUTHFUZZ, "authfuzz.txt");
     }
 
     private static void initDefaultVariableDictionary(String name, String resourceName) {

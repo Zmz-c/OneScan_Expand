@@ -739,6 +739,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
         // 准备生成任务
         URL url = getUrlByRequestInfo(info);
+        if (url == null) {
+            Logger.debug("doScan: request URL is unavailable, skip scan");
+            return;
+        }
         if (pathBlocklistFilter(url.getPath())) {
             return;
         }
@@ -772,24 +776,31 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 if (isTaskStopRequested()) {
                     return;
                 }
-                // Expand named variables before deciding whether this dictionary entry is an absolute URL.
-                String payload = setupVariable(httpReqResp.getHttpService(), url, item);
-                if (StringUtils.isEmpty(payload) || VariableManager.hasUnresolvedVariables(payload)) {
-                    Logger.debug("doScan skip unresolved payload variables: %s", item);
-                    continue;
+                try {
+                    // Expand named variables before deciding whether this dictionary entry is an absolute URL.
+                    String payload = setupVariable(httpReqResp.getHttpService(), url, item);
+                    if (StringUtils.isEmpty(payload) || VariableManager.hasUnresolvedVariables(payload)) {
+                        Logger.debug("doScan skip unresolved payload variables: %s", item);
+                        continue;
+                    }
+                    // 对完整 Host 地址的字典取消递归扫描（直接替换请求路径扫描）
+                    if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(payload)) {
+                        continue;
+                    }
+                    String urlPath = joinPayloadPath(path, payload);
+                    // 检测一下是否携带完整的 Host 地址（兼容一下携带了完整的 Host 地址的情况）
+                    // 但有个前提：如果字典存在完整的 Host 地址，直接不做处理
+                    if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(payload)) {
+                        urlPath = reqHost + urlPath;
+                    }
+                    // A selected identity must be applied to every generated Payload variant.
+                    runScanTask(httpReqResp, info, urlPath, FROM_SCAN, requestMode, profiles,
+                            applyPayloadProcessing, variantIdOverride);
+                } catch (Exception e) {
+                    // A malformed variable or dictionary entry must not stop the remaining
+                    // directory payloads from being generated.
+                    Logger.debug("doScan payload generation failed: %s", e.getMessage());
                 }
-                // 对完整 Host 地址的字典取消递归扫描（直接替换请求路径扫描）
-                if (StringUtils.isNotEmpty(path) && UrlUtils.isHTTP(payload)) {
-                    continue;
-                }
-                String urlPath = joinPayloadPath(path, payload);
-                // 检测一下是否携带完整的 Host 地址（兼容一下携带了完整的 Host 地址的情况）
-                // 但有个前提：如果字典存在完整的 Host 地址，直接不做处理
-                if (UrlUtils.isHTTP(reqPath) && !UrlUtils.isHTTP(payload)) {
-                    urlPath = reqHost + urlPath;
-                }
-                // A selected identity must be applied to every generated Payload variant.
-                runScanTask(httpReqResp, info, urlPath, FROM_SCAN, requestMode, profiles, applyPayloadProcessing, variantIdOverride);
             }
         }
     }
@@ -1033,31 +1044,33 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private void runScanTask(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from,
                              RequestMode requestMode, List<IdentityProfile> profiles,
                              boolean applyPayloadProcessing, String variantIdOverride) {
-        if (isTaskStopRequested()) {
-            Logger.debug("runScanTask: task stop requested, intercept source: %s", from);
-            return;
-        }
-        IHttpService service = httpReqResp.getHttpService();
-        // 处理请求头
-        byte[] request = handleHeader(httpReqResp, info, pathWithQuery, from);
-        // 处理请求头失败时，丢弃该任务
-        if (request == null) {
-            return;
-        }
-        IRequestInfo newInfo = mHelpers.analyzeRequest(service, request);
-        if (pathBlocklistFilter(getUrlByRequestInfo(newInfo).getPath())) {
-            return;
-        }
-        String reqId = scopeRedirectRequestId(generateReqId(newInfo, from, requestMode), from, profiles,
-                variantIdOverride);
-        // A manual action can claim a known request once, while duplicate paths in the
-        // same action still share the same request group.
-        RequestGroup requestGroup = claimRequestGroup(reqId,
-                isFirstManualReplayRequest(mManualReplayRequestIds.get(), reqId));
-        if (requestGroup == null) {
-            return;
-        }
+        RequestGroup requestGroup = null;
         try {
+            if (isTaskStopRequested()) {
+                Logger.debug("runScanTask: task stop requested, intercept source: %s", from);
+                return;
+            }
+            IHttpService service = httpReqResp.getHttpService();
+            // 处理请求头
+            byte[] request = handleHeader(httpReqResp, info, pathWithQuery, from);
+            // 处理请求头失败时，丢弃该任务
+            if (request == null) {
+                return;
+            }
+            IRequestInfo newInfo = mHelpers.analyzeRequest(service, request);
+            URL newUrl = getUrlByRequestInfo(newInfo);
+            if (newUrl != null && pathBlocklistFilter(newUrl.getPath())) {
+                return;
+            }
+            String reqId = scopeRedirectRequestId(generateReqId(newInfo, from, requestMode), from, profiles,
+                    variantIdOverride);
+            // A manual action can claim a known request once, while duplicate paths in the
+            // same action still share the same request group.
+            requestGroup = claimRequestGroup(reqId,
+                    isFirstManualReplayRequest(mManualReplayRequestIds.get(), reqId));
+            if (requestGroup == null) {
+                return;
+            }
             // 如果未启用“请求包处理”功能，直接对扫描的任务发起请求
             if (!applyPayloadProcessing || !mDataBoardTab.hasPayloadProcessing()) {
                 dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride,
@@ -1074,8 +1087,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 dispatchRequestProfiles(service, reqId, request, from, requestMode, profiles, variantIdOverride,
                         requestGroup);
             }
+        } catch (Exception e) {
+            // A malformed variable/header must only discard this request variant.  In
+            // particular, do not let it abort the directory dictionary loop in doScan.
+            Logger.debug("runScanTask request preparation failed: %s", e.getMessage());
         } finally {
-            finishRequestGroupGeneration(requestGroup);
+            if (requestGroup != null) {
+                finishRequestGroupGeneration(requestGroup);
+            }
         }
     }
 
@@ -2060,6 +2079,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private byte[] handleHeader(IHttpRequestResponse httpReqResp, IRequestInfo info, String pathWithQuery, String from) {
         // 配置的请求头
         List<String> configHeader = getHeader();
+        IHttpService service = httpReqResp.getHttpService();
+        URL url = getUrlByRequestInfo(info);
+        configHeader = resolveStandaloneHeaderEntries(configHeader, service, url);
         // 要移除的请求头KEY列表
         List<String> removeHeaders = getRemoveHeaders();
         // 数据包自带的请求头
@@ -2131,14 +2153,61 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             }
         }
         // 请求头构建完成后，对里面包含的动态变量进行赋值
-        IHttpService service = httpReqResp.getHttpService();
-        URL url = getUrlByRequestInfo(info);
-        String newRequestRaw = setupVariable(service, url, requestRaw.toString());
+        // A missing/invalid replacement-header variable must not invalidate the
+        // complete request. Resolve those optional headers independently while
+        // keeping URL/body variables strict.
+        String newRequestRaw = setupVariable(service, url, requestRaw.toString(),
+                mDataBoardTab.hasReplaceHeader());
         if (newRequestRaw == null) {
             return null;
         }
         // 更新 Content-Length
         return updateContentLength(mHelpers.stringToBytes(newRequestRaw));
+    }
+
+    /**
+     * A dictionary entry may itself expand to a complete header (for example
+     * {@code X-Tenant: tenant-a}), so it has no header name before variable
+     * expansion. Resolve those standalone entries before matching/replacing the
+     * original request headers. Entries that still do not contain a separator are
+     * ignored as malformed header definitions; unresolved placeholders are retained
+     * for the normal optional-header fallback in {@link #setupVariable}.
+     */
+    private List<String> resolveStandaloneHeaderEntries(List<String> headers, IHttpService service, URL url) {
+        if (headers == null || headers.isEmpty()) {
+            return new ArrayList<>();
+        }
+        ArrayList<String> resolved = new ArrayList<>(headers.size());
+        for (String header : headers) {
+            if (StringUtils.isEmpty(header)) {
+                continue;
+            }
+            String candidate = header;
+            if (!hasHeaderSeparator(candidate)) {
+                String expanded = setupVariable(service, url, candidate);
+                if (expanded != null) {
+                    candidate = expanded;
+                }
+            }
+            String accepted = acceptConfiguredHeaderEntry(candidate);
+            if (accepted != null) {
+                resolved.add(accepted);
+            } else {
+                Logger.debug("handleHeader skip malformed configured header: %s", header);
+            }
+        }
+        return resolved;
+    }
+
+    static String acceptConfiguredHeaderEntry(String header) {
+        return hasHeaderSeparator(header) || VariableManager.hasUnresolvedVariables(header) ? header : null;
+    }
+
+    private static boolean hasHeaderSeparator(String header) {
+        if (StringUtils.isEmpty(header) || header.indexOf('\r') >= 0 || header.indexOf('\n') >= 0) {
+            return false;
+        }
+        return header.indexOf(':') > 0;
     }
 
     private boolean handleBrowserProxyResponse(IHttpRequestResponse httpReqResp) {
@@ -2272,12 +2341,12 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return true;
         }
         String secFetchDest = getHeaderValue(headers, "Sec-Fetch-Dest");
-        if ((relatedReferer || sameHost) && isStaticBrowserFetchDest(secFetchDest)) {
+        if (sameHost && isStaticBrowserFetchDest(secFetchDest)) {
             scope.extend(BROWSER_TRAFFIC_SUPPRESS_TTL);
             return true;
         }
         String accept = getHeaderValue(headers, "Accept");
-        if ((relatedReferer || sameHost) && isStaticBrowserAccept(accept)) {
+        if (sameHost && isStaticBrowserAccept(accept)) {
             scope.extend(BROWSER_TRAFFIC_SUPPRESS_TTL);
             return true;
         }
@@ -2522,6 +2591,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @return 处理失败返回null
      */
     private String setupVariable(IHttpService service, URL url, String requestRaw) {
+        return setupVariable(service, url, requestRaw, false);
+    }
+
+    private String setupVariable(IHttpService service, URL url, String requestRaw,
+                                 boolean skipUnresolvedHeaders) {
         String protocol = service.getProtocol();
         String host = service.getHost() + ":" + service.getPort();
         if (UrlUtils.isDefaultPort(protocol, service.getPort())) {
@@ -2587,6 +2661,12 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 requestRaw = fillVariable(requestRaw, "time.s", rightDateTime[5]);
             }
             String customVariables = VariableManager.resolveVariables(requestRaw);
+            if (customVariables == null && skipUnresolvedHeaders) {
+                String requestWithoutUnresolvedHeaders = removeUnresolvedHeaderLines(requestRaw);
+                if (!requestWithoutUnresolvedHeaders.equals(requestRaw)) {
+                    customVariables = VariableManager.resolveVariables(requestWithoutUnresolvedHeaders);
+                }
+            }
             if (customVariables == null) {
                 return null;
             }
@@ -2594,10 +2674,51 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 return null;
             }
             return customVariables;
-        } catch (IllegalArgumentException e) {
+        } catch (RuntimeException e) {
             Logger.debug(e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Removes only header lines containing unresolved named variables. The request
+     * line and body are intentionally retained so unresolved payload/body variables
+     * continue to reject that request variant.
+     */
+    private String removeUnresolvedHeaderLines(String requestRaw) {
+        if (StringUtils.isEmpty(requestRaw)) {
+            return requestRaw;
+        }
+        int headerEnd = requestRaw.indexOf("\r\n\r\n");
+        int separatorLength = 4;
+        if (headerEnd < 0) {
+            headerEnd = requestRaw.indexOf("\n\n");
+            separatorLength = 2;
+        }
+        if (headerEnd < 0) {
+            return requestRaw;
+        }
+        String header = requestRaw.substring(0, headerEnd);
+        String[] lines = header.split("\\r?\\n", -1);
+        if (lines.length <= 1) {
+            return requestRaw;
+        }
+        StringBuilder retained = new StringBuilder(header.length());
+        retained.append(lines[0]);
+        boolean removed = false;
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i];
+            if (VariableManager.hasUnresolvedVariables(line)) {
+                removed = true;
+                continue;
+            }
+            retained.append("\r\n").append(line);
+        }
+        if (!removed) {
+            return requestRaw;
+        }
+        return retained.append(requestRaw, headerEnd, headerEnd + separatorLength)
+                .append(requestRaw.substring(headerEnd + separatorLength)).toString();
     }
 
     /**

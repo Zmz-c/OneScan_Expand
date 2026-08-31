@@ -20,8 +20,8 @@ MCP 风格 JSON-RPC 服务。
 ### 字典、变量与身份 Profile
 
 - 支持固定值、随机和轮询三种命名变量策略，变量取值由可编辑字典提供。
-- 默认随机变量为 `ip`、`local-ip`、`ua`，对应 `{{random.ip}}`、
-  `{{random.local-ip}}`、`{{random.ua}}`。
+- 内置随机变量为 `ip`、`local-ip`、`ua`、`AuthFuzz`，其中 AuthFuzz 默认关闭；对应
+  `{{random.ip}}`、`{{random.local-ip}}`、`{{random.ua}}`、`{{random.AuthFuzz}}`。
 - 可通过明确的 Profile 重放菜单，对同一请求变体应用 Cookie、Header、Query、Body
   参数及 Profile 局部变量覆盖。
 - 可比较同一请求变体下不同 Profile 的响应差异；比较结果不自动判定权限漏洞。
@@ -52,7 +52,7 @@ MCP 风格 JSON-RPC 服务。
 2. 在 Burp Suite 的 `Extensions` -> `Add` 中加载：
 
    ```text
-   extender/target/OST-v1.2.4.jar
+   extender/target/OST-v1.2.5.jar
    ```
 
 3. 打开 OST 标签页，在 `Config` 中配置字典、请求行为、浏览器重放、重定向、持久化和
@@ -84,9 +84,11 @@ MCP 风格 JSON-RPC 服务。
 | `ip`       | `{{random.ip}}`       | `random-ip`       |
 | `local-ip` | `{{random.local-ip}}` | `random-local-ip` |
 | `ua`       | `{{random.ua}}`       | `user-agent`      |
+| `AuthFuzz` | `{{random.AuthFuzz}}` | `AuthFuzz`        |
 
-这三项和其他命名变量一样，可以编辑、替换或删除。随机值由关联字典决定，不存在单独的
-内置 IP 或 User-Agent 生成算法。
+这四项和其他命名变量一样，可以编辑、替换或删除。`ip`、`local-ip` 和 `ua` 默认启用；
+`AuthFuzz` 仅作为可选定义提供，默认关闭，需手动启用后才会参与请求。AuthFuzz 字典包含
+常见 Authorization、API Key、Cookie 和 Token 请求头；随机值由关联字典决定。
 
 关于变量、Profile、请求包处理和响应比较的完整行为，请参阅[详细说明](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)。
 

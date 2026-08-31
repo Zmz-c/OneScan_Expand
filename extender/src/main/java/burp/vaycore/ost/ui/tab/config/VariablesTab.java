@@ -298,6 +298,22 @@ public class VariablesTab extends BaseConfigTab {
                 default -> value.placeholder();
             };
         }
+
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return column == 0;
+        }
+
+        @Override
+        public void setValueAt(Object value, int row, int column) {
+            if (column != 0 || !(value instanceof Boolean enabled)
+                    || row < 0 || row >= values.size()) {
+                return;
+            }
+            values.get(row).setEnabled(enabled);
+            Config.put(Config.KEY_VARIABLE_DEFINITIONS, values);
+            fireTableCellUpdated(row, column);
+        }
     }
     private static class ProfileTableModel extends AbstractTableModel {
         private final List<IdentityProfile> values;
