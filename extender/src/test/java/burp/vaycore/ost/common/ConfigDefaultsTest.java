@@ -4,13 +4,16 @@ import burp.vaycore.ost.manager.WordlistManager;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
 import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
+import burp.vaycore.ost.ui.widget.payloadlist.rule.AddSuffix;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -72,5 +75,36 @@ public class ConfigDefaultsTest {
         assertTrue(Config.getVariableDefinitions().stream()
                 .anyMatch(item -> "AuthFuzz".equals(item.getName()) && !item.isEnabled()));
         assertTrue(Config.getBoolean(Config.KEY_AUTHFUZZ_VARIABLE_DEFAULT_INITIALIZED));
+    }
+
+    @Test
+    public void appendsMissingPayloadDefaultsWhenExistingRulesArePresent() throws Exception {
+        File workDir = temporaryFolder.newFolder("payload-default-migration");
+        Config.init(workDir.getAbsolutePath() + File.separator);
+
+        ProcessingItem custom = new ProcessingItem();
+        custom.setName("Custom rule");
+        custom.setEnabled(true);
+        custom.setMerge(false);
+        AddSuffix customRule = new AddSuffix();
+        customRule.setParamValue(0, "/custom");
+        PayloadItem customPayload = new PayloadItem();
+        customPayload.setScope(PayloadRule.SCOPE_URL);
+        customPayload.setRule(customRule);
+        custom.setItems(new ArrayList<>(List.of(customPayload)));
+        Config.put(Config.KEY_PAYLOAD_PROCESS_LIST, new ArrayList<>(List.of(custom)));
+        // Simulate a 1.2.5 installation: it has the old boolean marker but no
+        // revision marker, which means missing defaults must be filled once.
+        Config.put(Config.KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED, "true");
+        Config.removeKey(Config.KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION);
+
+        Config.init(workDir.getAbsolutePath() + File.separator);
+        List<ProcessingItem> rules = Config.getPayloadProcessList();
+        assertEquals(11, rules.size());
+        assertEquals("Custom rule", rules.get(0).getName());
+        assertFalse(rules.stream().skip(1).anyMatch(ProcessingItem::isEnabled));
+
+        Config.init(workDir.getAbsolutePath() + File.separator);
+        assertEquals(11, Config.getPayloadProcessList().size());
     }
 }

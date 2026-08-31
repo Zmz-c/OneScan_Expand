@@ -63,6 +63,14 @@ public class Config {
             "authfuzz-variable-default-initialized";
     public static final String KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED =
             "payload-process-defaults-initialized";
+    /**
+     * Revision of the bundled payload rules. Kept separate from the boolean
+     * marker so installations created by 1.2.5 can receive missing defaults
+     * exactly once without recreating them on every startup.
+     */
+    public static final String KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION =
+            "payload-process-defaults-version";
+    private static final String PAYLOAD_PROCESS_DEFAULTS_VERSION = "2";
     // 首页开关配置项
     public static final String KEY_ENABLE_LISTEN_PROXY = "enable-listen-proxy";
     public static final String KEY_ENABLE_BROWSER_REQUEST = "enable-browser-request";
@@ -497,37 +505,49 @@ public class Config {
      * not have them recreated on every restart.
      */
     private static void ensureDefaultPayloadProcessRules() {
-        if (getBoolean(KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED)) {
+        if (PAYLOAD_PROCESS_DEFAULTS_VERSION.equals(get(KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION))) {
             return;
         }
         ArrayList<ProcessingItem> rules = getPayloadProcessList();
         if (rules == null) {
             rules = new ArrayList<>();
         }
-        if (rules.isEmpty()) {
-            rules.add(defaultProcessingRule("GET to POST",
-                    payloadRule(PayloadRule.SCOPE_REQUEST, new MatchReplace(), "^GET ", "POST ")));
-            rules.add(defaultProcessingRule("Append ;index.jgp",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";index.jgp")));
-            rules.add(defaultProcessingRule("Append /.",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/.")));
-            rules.add(defaultProcessingRule("Append /..;/",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/..;/")));
-            rules.add(defaultProcessingRule("Append /%2e/",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/%2e/")));
-            rules.add(defaultProcessingRule("Append //",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "//")));
-            rules.add(defaultProcessingRule("Append ;",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";")));
-            rules.add(defaultProcessingRule("Append ?",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "?")));
-            rules.add(defaultProcessingRule("Append %3f",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "%3f")));
-            rules.add(defaultProcessingRule("Append .json",
-                    payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ".json")));
+        for (ProcessingItem defaultRule : defaultProcessingRules()) {
+            if (rules.stream().noneMatch(existing -> existing != null
+                    && defaultRule.getName().equalsIgnoreCase(existing.getName()))) {
+                rules.add(defaultRule);
+            }
+        }
+        if (!rules.isEmpty()) {
             put(KEY_PAYLOAD_PROCESS_LIST, rules);
         }
         put(KEY_PAYLOAD_PROCESS_DEFAULTS_INITIALIZED, "true");
+        put(KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION, PAYLOAD_PROCESS_DEFAULTS_VERSION);
+    }
+
+    private static List<ProcessingItem> defaultProcessingRules() {
+        return List.of(
+                defaultProcessingRule("GET to POST",
+                        payloadRule(PayloadRule.SCOPE_REQUEST, new MatchReplace(), "^GET ", "POST ")),
+                defaultProcessingRule("Append ;index.jgp",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";index.jgp")),
+                defaultProcessingRule("Append /.",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/.")),
+                defaultProcessingRule("Append /..;/",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/..;/")),
+                defaultProcessingRule("Append /%2e/",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "/%2e/")),
+                defaultProcessingRule("Append //",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "//")),
+                defaultProcessingRule("Append ;",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ";")),
+                defaultProcessingRule("Append ?",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "?")),
+                defaultProcessingRule("Append %3f",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), "%3f")),
+                defaultProcessingRule("Append .json",
+                        payloadRule(PayloadRule.SCOPE_URL, new AddSuffix(), ".json"))
+        );
     }
 
     private static ProcessingItem defaultProcessingRule(String name, PayloadItem payloadItem) {
