@@ -110,7 +110,7 @@ matched by this list.
 ## MCP / AI Integration
 
 The protocol layer is extracted into the standalone Maven module `mcp-core`
-(`burp.vaycore:mcp-core:1.1.2`). Its public Java package is `burp.zm.mcp`. It only depends on Gson and exposes `McpServer`,
+(`burp.zm:mcp-core:1.1.2`). Its public Java package is `burp.zm.mcp`. It only depends on Gson and exposes `McpServer`,
 `McpTool`, and `McpToolProvider`, so other Burp extensions can reuse the same local
 MCP contract by implementing a provider. The `burp.vaycore.ost.mcp` classes remain
 as compatibility facades; OST-specific tools stay in the extension adapter layer.

@@ -10,6 +10,7 @@
         <version>parent</version>
     </parent>
 
+    <groupId>burp.zm</groupId>
     <artifactId>mcp-core</artifactId>
     <version>1.1.2</version>
     <name>Burp MCP Core</name>

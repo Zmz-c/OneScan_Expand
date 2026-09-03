@@ -106,7 +106,7 @@ OST 工作目录、SQLite 数据库、导出文件和截图。
 
 ## MCP / AI 集成
 
-MCP 协议层已抽取为独立的 `mcp-core` Maven 模块（坐标：`burp.vaycore:mcp-core:1.1.2`）。公开 Java 包名为
+MCP 协议层已抽取为独立的 `mcp-core` Maven 模块（坐标：`burp.zm:mcp-core:1.1.2`）。公开 Java 包名为
 `burp.zm.mcp`，旧的 `burp.vaycore.mcp` 包不再使用。
 它只依赖 Gson，提供 `McpServer`、`McpTool` 和 `McpToolProvider`，可被其他 Burp 插件直接复用；
 插件作者只需实现 Provider 并注册自己的工具即可。OST 中的 `burp.vaycore.ost.mcp` 类型仅作为
