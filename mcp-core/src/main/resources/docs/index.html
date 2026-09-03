@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MCP Core API</title>
+    <link rel="icon" type="image/png" href="vendor/favicon-32x32.png">
+    <link rel="stylesheet" href="vendor/swagger-ui.css">
+    <style>
+        html { box-sizing: border-box; overflow-y: scroll; }
+        *, *:before, *:after { box-sizing: inherit; }
+        body { margin: 0; background: #fafafa; }
+        .offline-banner {
+            padding: 8px 20px;
+            color: #174a2c;
+            background: #e8f5e9;
+            border-bottom: 1px solid #b7dfbd;
+            font: 14px/1.4 sans-serif;
+        }
+    </style>
+</head>
+<body>
+<div class="offline-banner">Offline documentation — all Swagger UI assets are bundled with mcp-core.</div>
+<div id="swagger-ui"></div>
+<script src="vendor/swagger-ui-bundle.js"></script>
+<script src="vendor/swagger-ui-standalone-preset.js"></script>
+<script>
+    window.ui = SwaggerUIBundle({
+        url: "openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        displayRequestDuration: true,
+        persistAuthorization: false,
+        presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset
+        ],
+        layout: "StandaloneLayout",
+        tryItOutEnabled: true
+    });
+</script>
+</body>
+</html>

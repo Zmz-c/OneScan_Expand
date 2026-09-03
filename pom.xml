@@ -12,6 +12,7 @@
     <modules>
         <module>montoya-api</module>
         <module>burp-extender-api</module>
+        <module>mcp-core</module>
         <module>extender</module>
     </modules>
 

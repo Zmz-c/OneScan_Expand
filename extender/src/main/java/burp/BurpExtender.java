@@ -20,9 +20,9 @@ import burp.vaycore.ost.manager.FpManager;
 import burp.vaycore.ost.manager.TaskPersistenceManager;
 import burp.vaycore.ost.manager.VariableManager;
 import burp.vaycore.ost.manager.WordlistManager;
-import burp.vaycore.ost.mcp.OstMcpServer;
-import burp.vaycore.ost.mcp.OstMcpTool;
-import burp.vaycore.ost.mcp.OstMcpToolProvider;
+import burp.zm.mcp.McpServer;
+import burp.zm.mcp.McpTool;
+import burp.zm.mcp.McpToolProvider;
 import burp.vaycore.ost.ui.tab.DataBoardTab;
 import burp.vaycore.ost.ui.tab.FingerprintTab;
 import burp.vaycore.ost.ui.tab.config.OtherTab;
@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
  */
 public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEditorController,
         TaskTable.OnTaskTableEventListener, ITab, OnTabEventListener, IMessageEditorTabFactory,
-        IExtensionStateListener, IContextMenuFactory, OstMcpToolProvider {
+        IExtensionStateListener, IContextMenuFactory, McpToolProvider {
 
     private static final Pattern PROFILE_VARIABLE_PATTERN = Pattern.compile("\\{\\{profile\\.([^}]+)}}");
     private static final String REDIRECT_VARIANT_PREFIX = "redirect:";
@@ -182,7 +182,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private QpsLimiter mQpsLimit;
     private volatile BrowserTrafficScope mBrowserTrafficScope;
     private Timer mStatusRefresh;
-    private OstMcpServer mMcpServer;
+    private McpServer mMcpServer;
 
     /**
      * 检测 Host 是否匹配规则
@@ -411,7 +411,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return;
         }
         try {
-            mMcpServer = new OstMcpServer(this, Constants.PLUGIN_VERSION);
+            mMcpServer = new McpServer(this, "ost-burp-mcp", Constants.PLUGIN_VERSION);
             mMcpServer.start();
             Logger.info("OST MCP server listening on %s", mMcpServer.getEndpoint());
             refreshMcpServerInfoPanel();
@@ -3449,7 +3449,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     @Override
-    public List<OstMcpTool> listTools() {
+    public List<McpTool> listTools() {
         return List.of(
                 mcpTool("ost.capabilities.list", "List OST MCP capabilities.", objectSchema()),
                 mcpTool("ost.status.get", "Get OST runtime status and key configuration.", objectSchema()),
@@ -4511,8 +4511,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         return mapOf("path", output.getPath(), "label", label, "fields", fields, "count", count);
     }
 
-    private OstMcpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
-        return new OstMcpTool(name, description, inputSchema, mcpAnnotations(name));
+    private McpTool mcpTool(String name, String description, Map<String, Object> inputSchema) {
+        return new McpTool(name, description, inputSchema, mcpAnnotations(name));
     }
 
     private Map<String, Object> mcpAnnotations(String name) {
@@ -4548,7 +4548,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
 
-    private Map<String, Object> capability(OstMcpTool tool) {
+    private Map<String, Object> capability(McpTool tool) {
         Map<String, Object> annotations = tool.getAnnotations();
         boolean destructive = Boolean.TRUE.equals(annotations.get("destructiveHint"));
         boolean openWorld = Boolean.TRUE.equals(annotations.get("openWorldHint"));

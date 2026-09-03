@@ -18,6 +18,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>burp.vaycore</groupId>
+            <artifactId>mcp-core</artifactId>
+            <version>1.1.2</version>
+        </dependency>
+        <dependency>
             <groupId>net.portswigger.burp.extender</groupId>
             <artifactId>burp-extender-api</artifactId>
             <version>${burp-extender-api.version}</version>

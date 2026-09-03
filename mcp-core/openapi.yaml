@@ -1,0 +1,403 @@
+openapi: 3.1.0
+info:
+  title: MCP Core HTTP JSON-RPC API
+  version: 1.1.2
+  description: |
+    Local MCP-style HTTP transport exposed by mcp-core. Exactly one instance
+    owns 127.0.0.1:8765 as the MCP host; other plugin instances register their
+    providers with that host and keep a heartbeat-backed provider channel.
+    Start with initialize, echo the returned Mcp-Session-Id and
+    MCP-Protocol-Version on later requests, then send notifications/initialized
+    before using tools. The default standalone provider exposes
+    standalone.status and standalone.echo.
+servers:
+  - url: http://127.0.0.1:8765
+    description: Shared local endpoint. A fixed port avoids per-plugin client configuration.
+tags:
+  - name: Health
+  - name: MCP
+  - name: Host
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Check server health
+      operationId: getHealth
+      responses:
+        '200':
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                endpoint: http://127.0.0.1:8765/mcp
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /mcp:
+    post:
+      tags: [MCP]
+      summary: Send one JSON-RPC request or batch
+      description: |
+        Supports initialize, notifications/initialized, ping, tools/list and
+        tools/call. Notifications receive HTTP 202 with an empty body. A
+        successful initialize response includes the Mcp-Session-Id response
+        header. Stateless POST requests without that header remain supported.
+      operationId: postMcp
+      parameters:
+        - $ref: '#/components/parameters/ProtocolVersion'
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/JsonRpcRequest'
+                - type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/JsonRpcRequest'
+            examples:
+              initialize:
+                summary: Negotiate protocol and create a session
+                value:
+                  jsonrpc: '2.0'
+                  id: 1
+                  method: initialize
+                  params:
+                    protocolVersion: '2025-11-25'
+                    capabilities: {}
+                    clientInfo:
+                      name: swagger-ui
+                      version: 1.1.2
+              initialized:
+                summary: Acknowledge initialization
+                value:
+                  jsonrpc: '2.0'
+                  method: notifications/initialized
+              listTools:
+                summary: Discover tools
+                value:
+                  jsonrpc: '2.0'
+                  id: 2
+                  method: tools/list
+                  params: {}
+              callTool:
+                summary: Invoke a tool
+                value:
+                  jsonrpc: '2.0'
+                  id: 3
+                  method: tools/call
+                  params:
+                    name: standalone.echo
+                    arguments:
+                      message: hello
+      responses:
+        '200':
+          description: JSON-RPC result, error, or batch response
+          headers:
+            MCP-Protocol-Version:
+              $ref: '#/components/headers/ProtocolVersion'
+            Mcp-Session-Id:
+              $ref: '#/components/headers/SessionId'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/JsonRpcResponse'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/JsonRpcResponse'
+        '202':
+          description: Notification accepted; response body is empty
+          headers:
+            MCP-Protocol-Version:
+              $ref: '#/components/headers/ProtocolVersion'
+            Mcp-Session-Id:
+              $ref: '#/components/headers/SessionId'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/SessionNotFound'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+    delete:
+      tags: [MCP]
+      summary: Close an MCP session
+      operationId: deleteMcpSession
+      parameters:
+        - $ref: '#/components/parameters/SessionIdRequired'
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204':
+          description: Session closed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/SessionNotFound'
+    options:
+      tags: [MCP]
+      summary: CORS preflight
+      operationId: optionsMcp
+      responses:
+        '204':
+          description: Preflight accepted
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /__mcp/providers/register:
+    post:
+      tags: [Host]
+      summary: Register a plugin provider with the shared host
+      description: |
+        Internal loopback-only endpoint used when another plugin already owns
+        port 8765. The response contains a short-lived channel token. The
+        registering plugin must then open a TCP connection to port 8765 and
+        send `MCP-PROVIDER/1 <providerId> <channelToken>` followed by newline-
+        delimited JSON frames. The channel carries tool calls and heartbeats.
+      operationId: registerProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderRegistration'
+      responses:
+        '200':
+          description: Provider registered; connect the provider channel immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderRegistrationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: A tool name is already registered by another provider.
+        '503':
+          description: This instance is not currently the host.
+  /__mcp/providers/unregister:
+    post:
+      tags: [Host]
+      summary: Unregister a plugin provider
+      operationId: unregisterProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providerId]
+              properties:
+                providerId:
+                  type: string
+                  pattern: '^[A-Za-z0-9._~-]{1,128}$'
+      responses:
+        '200':
+          description: Provider removed or was already absent.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: This instance is not currently the host.
+components:
+  parameters:
+    ProtocolVersion:
+      name: MCP-Protocol-Version
+      in: header
+      required: false
+      description: Negotiated protocol version for an established session.
+      schema:
+        type: string
+        enum: ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']
+    SessionId:
+      name: Mcp-Session-Id
+      in: header
+      required: false
+      description: Session ID returned by initialize.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._~-]+$'
+        maxLength: 128
+    SessionIdRequired:
+      name: Mcp-Session-Id
+      in: header
+      required: true
+      description: Session ID returned by initialize.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._~-]+$'
+        maxLength: 128
+    Origin:
+      name: Origin
+      in: header
+      required: false
+      description: Browser Origin; only loopback origins are accepted.
+      schema:
+        type: string
+  headers:
+    ProtocolVersion:
+      description: Protocol version selected during initialize.
+      schema:
+        type: string
+    SessionId:
+      description: Session identifier created by initialize.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid HTTP or JSON-RPC request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JsonRpcResponse'
+    Forbidden:
+      description: Origin is not allowed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JsonRpcResponse'
+    MethodNotAllowed:
+      description: HTTP method is not supported
+      headers:
+        Allow:
+          schema:
+            type: string
+    NotAcceptable:
+      description: Accept does not permit application/json
+    PayloadTooLarge:
+      description: Request headers or body exceeds the configured limit
+    UnsupportedMediaType:
+      description: Content-Type must be application/json
+    SessionNotFound:
+      description: MCP session does not exist or has expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JsonRpcResponse'
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, endpoint, role, providerId, providers]
+      properties:
+        status:
+          type: string
+          const: ok
+        endpoint:
+          type: string
+          format: uri
+        role:
+          type: string
+          enum: [host, client, stopped]
+        providerId:
+          type: string
+        providers:
+          type: integer
+          minimum: 0
+    ProviderRegistration:
+      type: object
+      required: [providerId, name, version, tools]
+      properties:
+        providerId:
+          type: string
+          pattern: '^[A-Za-z0-9._~-]{1,128}$'
+        name:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+    ProviderRegistrationResponse:
+      type: object
+      required: [status, providerId, channelToken, leaseSeconds, protocol]
+      properties:
+        status:
+          type: string
+          const: registered
+        providerId:
+          type: string
+        channelToken:
+          type: string
+        leaseSeconds:
+          type: integer
+          minimum: 1
+        protocol:
+          type: string
+          const: mcp-provider/1
+    Tool:
+      type: object
+      required: [name, inputSchema]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          additionalProperties: true
+        annotations:
+          type: object
+          additionalProperties: true
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc:
+          type: string
+          const: '2.0'
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        method:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc]
+      properties:
+        jsonrpc:
+          type: string
+          const: '2.0'
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/JsonRpcError'
+      additionalProperties: true
+    JsonRpcError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data: {}

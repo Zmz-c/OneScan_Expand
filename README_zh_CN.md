@@ -106,12 +106,26 @@ OST 工作目录、SQLite 数据库、导出文件和截图。
 
 ## MCP / AI 集成
 
+MCP 协议层已抽取为独立的 `mcp-core` Maven 模块（坐标：`burp.vaycore:mcp-core:1.1.2`）。公开 Java 包名为
+`burp.zm.mcp`，旧的 `burp.vaycore.mcp` 包不再使用。
+它只依赖 Gson，提供 `McpServer`、`McpTool` 和 `McpToolProvider`，可被其他 Burp 插件直接复用；
+插件作者只需实现 Provider 并注册自己的工具即可。OST 中的 `burp.vaycore.ost.mcp` 类型仅作为
+兼容门面保留，业务工具实现仍在 OST 适配层中。
+
+如需单独运行 MCP 核心模块，可执行 `.\mvnw.cmd -pl mcp-core package`，然后运行
+`mcp-core/target/mcp-core-1.1.2-standalone.jar`。独立包默认提供诊断工具；接入业务功能时，
+通过 `--provider-class` 加载实现 `McpToolProvider` 的 Provider。OpenAPI 3.1 文档位于
+`mcp-core/openapi.yaml`，可直接导入 Swagger Editor 或 Swagger UI。
+
 MCP 默认关闭。在 `Config` -> `Other` 中启用 `MCP server` 后，界面会显示实际端点和健康
-检查地址。服务仅绑定到 `127.0.0.1`；默认端口为 `8765`，若被占用会依次尝试至 `8785`。
+检查地址。共享 Host 仅绑定到 `127.0.0.1:8765`。第一个成功占用端口的插件成为 Host，后续插件
+通过本地注册接口加入并复用同一个端点，不再监听新的端口；Provider 使用带心跳的长连接，Host
+退出后其他插件可重新抢占该端口。工具名必须唯一，建议使用插件名前缀作为命名空间。
 
 ```text
 http://127.0.0.1:8765/mcp
 http://127.0.0.1:8765/health
+http://127.0.0.1:8765/docs/
 ```
 
 请将 MCP 端点视为本地特权接口。它没有独立的身份认证层，不要通过反向代理、端口转发或公网
@@ -124,6 +138,9 @@ http://127.0.0.1:8765/health
 `2025-11-25`。POST 请求必须使用 `Content-Type: application/json`；如发送 `Accept` 请求头，
 其中必须允许 `application/json`（标准 Streamable HTTP 客户端通常会同时声明 JSON 与 SSE）。
 初始化完成后，后续请求应通过 `MCP-Protocol-Version` 携带协商得到的协议版本。
+`initialize` 响应会返回 `Mcp-Session-Id`；支持会话的客户端应在后续请求中回传该请求头，
+并可通过 `DELETE /mcp` 主动关闭会话。会话空闲 30 分钟后自动失效。为兼容旧版本地客户端，
+不携带会话头的 POST 仍支持无状态调用。
 
 主要工具包括状态、扫描、任务、指纹、收集、字典、历史和导出，以及：
 
@@ -135,6 +152,8 @@ http://127.0.0.1:8765/health
   `confirm: true`。
 - CSV 导出覆盖已有文件前必须传 `confirm: true`；字典整体替换及 replace 模式的文件导入同样需要确认。
 - 工具元数据包含只读、破坏性、幂等性和扫描网络提示。
+- `tools/call` 会根据工具声明的 `inputSchema` 校验必填字段、基础类型、枚举值及数组元素，
+  失败时返回 `isError: true`，并保留 OST 业务层的二次校验。
 
 Profile 查询默认只返回摘要，不包含 Cookie、Header、参数或 Profile 局部变量的值。仅在可信的
 本地环境中，并明确传递 `include_sensitive: true` 时才返回这些值。任务的原始请求/响应也需要

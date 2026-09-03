@@ -109,13 +109,27 @@ matched by this list.
 
 ## MCP / AI Integration
 
+The protocol layer is extracted into the standalone Maven module `mcp-core`
+(`burp.vaycore:mcp-core:1.1.2`). Its public Java package is `burp.zm.mcp`. It only depends on Gson and exposes `McpServer`,
+`McpTool`, and `McpToolProvider`, so other Burp extensions can reuse the same local
+MCP contract by implementing a provider. The `burp.vaycore.ost.mcp` classes remain
+as compatibility facades; OST-specific tools stay in the extension adapter layer.
+
+To run the MCP core independently, execute `./mvnw -pl mcp-core package` and then run
+`mcp-core/target/mcp-core-1.1.2-standalone.jar`. The standalone package exposes diagnostic tools by
+default; load application tools with `--provider-class` and a `McpToolProvider` implementation.
+OpenAPI 3.1 documentation is available at `mcp-core/openapi.yaml` for Swagger Editor or Swagger UI.
+
 MCP is disabled by default. Enable `MCP server` under `Config` -> `Other`; the panel then shows the
-actual endpoint and health check. The server binds only to `127.0.0.1`, using port `8765` by default
-and trying through `8785` if necessary.
+actual endpoint and health check. The shared host binds only to `127.0.0.1:8765`. The first plugin
+that acquires the port becomes the host; later plugins register their providers and share the same
+endpoint instead of opening additional ports. Providers use a heartbeat-backed channel and can take
+over the port when the host exits. Tool names must be unique, so extensions should use a namespace.
 
 ```text
 http://127.0.0.1:8765/mcp
 http://127.0.0.1:8765/health
+http://127.0.0.1:8765/docs/
 ```
 
 Treat the MCP endpoint as a privileged local API. It has no separate authentication layer, so do
@@ -130,7 +144,10 @@ This is a standard HTTP JSON-RPC MCP endpoint. Clients should send `initialize`,
 `Content-Type: application/json`; when an `Accept` header is sent, it must permit
 `application/json` (standard Streamable HTTP clients commonly advertise JSON and SSE together).
 After initialization, clients should send the negotiated version in `MCP-Protocol-Version` on
-subsequent requests.
+subsequent requests. The `initialize` response also returns `Mcp-Session-Id`; session-aware clients
+should echo it on subsequent requests and may close the session with `DELETE /mcp`. Sessions expire
+after 30 minutes of inactivity. For backwards compatibility, POST requests without a session header
+remain supported in stateless mode.
 
 In addition to status, scanning, tasks, fingerprints, collection, wordlists, history, and export, MCP
 exposes:
@@ -144,6 +161,9 @@ exposes:
 - CSV export requires `confirm: true` before replacing an existing file. Wordlist replacement and
   replace-mode file import also require confirmation.
 - Tool annotations identify read-only, destructive, idempotent, and network-scanning behavior.
+- `tools/call` validates required fields, basic types, enum values, and array items from each tool's
+  `inputSchema` before invoking the provider; OST business-level validation remains in place as a
+  second layer.
 
 Profile queries return summaries by default and do not disclose Cookie, headers, parameters, or
 Profile-local values. Use `include_sensitive: true` only in a trusted local environment. Likewise, raw
