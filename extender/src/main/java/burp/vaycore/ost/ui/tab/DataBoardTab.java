@@ -23,6 +23,8 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.File;
@@ -39,10 +41,13 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     public static final String EVENT_STOP_TASK = "event-stop-task";
     public static final String EVENT_CONTINUE_TASK = "event-continue-task";
     public static final String EVENT_CLEAR_ALL_TASK = "event-clear-all-task";
+    public static final String EVENT_PARAMETER_FUZZ_SCAN = "event-parameter-fuzz-scan";
 
     private TaskTable mBurpTaskTable;
     private TaskTable mBrowserTaskTable;
     private JTabbedPane mTaskTabbedPane;
+    private ParameterFuzzPanel mParameterFuzzPanel;
+    private Runnable mOpenParameterFuzzPanel;
     private JCheckBox mListenProxyMessage;
     private AbstractButton mRemoveHeader;
     private AbstractButton mReplaceHeader;
@@ -118,11 +123,12 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
 
         mBurpTaskTable = new TaskTable();
         mBrowserTaskTable = new TaskTable();
+        mBurpTaskTable.setParameterFuzzRequestedHandler(targets -> openParameterFuzz(targets, false));
+        mBrowserTaskTable.setParameterFuzzRequestedHandler(targets -> openParameterFuzz(targets, true));
         mTaskTabbedPane = new JTabbedPane();
         mTaskTabbedPane.addTab(L.get("request_scope_burp"), new JScrollPane(mBurpTaskTable));
         mTaskTabbedPane.addTab(L.get("request_scope_browser"), new JScrollPane(mBrowserTaskTable));
         mTaskTabbedPane.addChangeListener(e -> refreshTaskHistoryStatus());
-        mTaskTabbedPane.setPreferredSize(new Dimension(mTaskTabbedPane.getWidth(), 0));
 
         JSplitPane dataSplitPanel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         dataSplitPanel.setResizeWeight(0.5D);
@@ -130,12 +136,47 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         dataSplitPanel.add(requestTextEditor, JSplitPane.LEFT);
         dataSplitPanel.add(responseTextEditor, JSplitPane.RIGHT);
 
+        if (mParameterFuzzPanel == null) {
+            // Standalone DataBoardTab usage (for tests/embedding) keeps a local
+            // panel reference. The normal OST UI injects a dedicated top-level tab.
+            mParameterFuzzPanel = new ParameterFuzzPanel();
+        }
+        mParameterFuzzPanel.setScanHandler(options -> sendTabEvent(EVENT_PARAMETER_FUZZ_SCAN, options));
+
         mainSplitPanel.add(mTaskTabbedPane, JSplitPane.LEFT);
         mainSplitPanel.add(dataSplitPanel, JSplitPane.RIGHT);
+        // Establish a visible initial task-table area. The previous zero-height
+        // preferred size could collapse this pane when the detail tabs are added.
+        mainSplitPanel.addComponentListener(new ComponentAdapter() {
+            private boolean initialDividerSet;
+
+            @Override
+            public void componentResized(ComponentEvent event) {
+                if (!initialDividerSet && mainSplitPanel.getHeight() > mainSplitPanel.getDividerSize()) {
+                    initialDividerSet = true;
+                    mainSplitPanel.setDividerLocation(0.55D);
+                }
+            }
+        });
         add(mainSplitPanel, "1w");
 
         initStatusPanel();
         loadFilterRules();
+    }
+
+    private void openParameterFuzz(List<TaskData> targets, boolean browserSource) {
+        if (mParameterFuzzPanel == null) {
+            return;
+        }
+        mParameterFuzzPanel.updateTargets(targets, browserSource);
+        if (mOpenParameterFuzzPanel != null) {
+            mOpenParameterFuzzPanel.run();
+        }
+    }
+
+    public void setParameterFuzzPanel(ParameterFuzzPanel panel, Runnable openPanelHandler) {
+        mParameterFuzzPanel = panel;
+        mOpenParameterFuzzPanel = openPanelHandler;
     }
 
     private void initControlPanel() {
@@ -399,7 +440,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
 
     @Override
     public void onFpColumnModify() {
-        for (TaskTable table : getTaskTables()) {
+        for (TaskTable table : getAllTaskTables()) {
             table.refreshColumns();
         }
     }
@@ -574,7 +615,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private void loadStoredTaskData(List<TaskData> items, TaskTable legacyTarget) {
         boolean hasScope = items.stream().anyMatch(item -> item != null
                 && !item.getRequestScope().isEmpty());
-        if (!hasScope) {
+        if (!hasScope && items.stream().noneMatch(item -> item != null && item.isParameterFuzz())) {
             legacyTarget.loadTaskData(items);
             return;
         }
@@ -583,6 +624,9 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         ArrayList<TaskData> browserItems = new ArrayList<>();
         for (TaskData item : items) {
             if (item == null) {
+                continue;
+            }
+            if (item.isParameterFuzz() && mParameterFuzzPanel != null) {
                 continue;
             }
             if (TaskPersistenceManager.SCOPE_BROWSER.equalsIgnoreCase(item.getRequestScope())) {
@@ -596,6 +640,14 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
             }
         }
 
+        List<TaskData> parameterItems = items.stream().filter(item -> item != null && item.isParameterFuzz()).toList();
+        if (!parameterItems.isEmpty() && mParameterFuzzPanel != null) {
+            mParameterFuzzPanel.getTrafficTable().loadTaskData(parameterItems);
+            if (burpItems.isEmpty() && browserItems.isEmpty()) {
+                if (mOpenParameterFuzzPanel != null) mOpenParameterFuzzPanel.run();
+                mParameterFuzzPanel.showTraffic();
+            }
+        }
         TaskTable current = getTaskTable();
         if (mBurpTaskTable != current && !burpItems.isEmpty()) {
             mBurpTaskTable.loadTaskData(burpItems);
@@ -632,6 +684,10 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         if (data != null) {
             data.setRequestScope(requestMode == RequestMode.BROWSER
                     ? TaskPersistenceManager.SCOPE_BROWSER : TaskPersistenceManager.SCOPE_BURP);
+            if (data.isParameterFuzz() && mParameterFuzzPanel != null) {
+                mParameterFuzzPanel.getTrafficTable().addTaskData(data);
+                return;
+            }
         }
         if (table != null) {
             table.addTaskData(data);
@@ -656,7 +712,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         }
         ArrayList<TaskData> items = new ArrayList<>();
         long version = 0L;
-        for (TaskTable table : getTaskTables()) {
+        for (TaskTable table : getAllTaskTables()) {
             TaskTable.TaskSnapshot snapshot = table.getTaskSnapshot();
             items.addAll(snapshot.items());
             version = 31L * version + snapshot.version();
@@ -672,6 +728,10 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         return mBrowserTaskTable;
     }
 
+    public ParameterFuzzPanel getParameterFuzzPanel() {
+        return mParameterFuzzPanel;
+    }
+
     public List<TaskTable> getTaskTables() {
         ArrayList<TaskTable> tables = new ArrayList<>();
         if (mBurpTaskTable != null) {
@@ -680,6 +740,13 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         if (mBrowserTaskTable != null) {
             tables.add(mBrowserTaskTable);
         }
+        return tables;
+    }
+
+    /** Includes isolated parameter traffic for automatic persistence and unloading only. */
+    public List<TaskTable> getAllTaskTables() {
+        List<TaskTable> tables = new ArrayList<>(getTaskTables());
+        if (mParameterFuzzPanel != null) tables.add(mParameterFuzzPanel.getTrafficTable());
         return tables;
     }
 

@@ -1,6 +1,7 @@
 import argparse
 import base64
 import json
+from html import unescape
 import os
 import re
 import socket
@@ -164,8 +165,8 @@ def candidate_existing_ports(args):
     saved_port = state.get("PORT")
     if saved_port and saved_port.isdigit() and is_port_open(saved_port):
         result.append(int(saved_port))
-    if is_port_open(args.port) and args.port not in result:
-        result.append(args.port)
+    # Only reconnect through the port recorded by this browser ID's private state file.
+    # The base port may belong to another OST browser session or an unrelated local browser.
     return result
 
 
@@ -258,7 +259,9 @@ def build_options(args, port, existing_only=False):
     options = ChromiumOptions()
     options.set_local_port(port)
     options.set_user_data_path(args.user_data_path)
-    options.set_load_mode("eager")
+    # DrissionPage eager calls Page.stopLoading at DOMContentLoaded, cancelling
+    # challenge XHR/fetch requests. Let them complete; our request deadline still bounds work.
+    options.set_load_mode("normal")
     options.ignore_certificate_errors()
     options.set_argument("--allow-insecure-localhost")
     options.set_argument("--disable-web-security")
@@ -403,9 +406,11 @@ def restore_page_hooks(tab):
             window.removeEventListener('pagehide', window.__passrsUnloadHandler, true);
         }
         if (typeof window.name === 'string' && window.name.startsWith('__PASSRS__:')) {
-            const separator = window.name.indexOf('\n');
+            const separator = window.name.indexOf('\\n');
             window.name = separator >= 0 ? window.name.slice(separator + 1) : '';
         }
+        if (window.__passrsCleanupTimer) clearTimeout(window.__passrsCleanupTimer);
+        delete window.__passrsCleanupTimer;
         delete window.__passrsOriginalFetch;
         delete window.__passrsOriginalXhrOpen;
         delete window.__passrsOriginalXhrSend;
@@ -1645,27 +1650,7 @@ def looks_like_hidden_intermediate_html(body_text):
 
 
 def is_post_challenge_result(result):
-    if not result:
-        return False
-    if result.get("challenge_like"):
-        return True
-    status = int(result.get("status", 0) or 0)
-    if status in (401, 403, 409, 412, 425, 428, 429, 503):
-        return True
-    content_type = (result.get("content_type", "") or "").lower()
-    if "text/html" not in content_type:
-        return False
-    body_text = decode_body_text(result.get("body", b"")).lower()
-    if not body_text:
-        return False
-    if len(body_text) > POST_CHALLENGE_BODY_LIMIT:
-        return False
-    if looks_like_hidden_intermediate_html(body_text):
-        return True
-    if looks_like_challenge_document(body_text):
-        return True
-    score = challenge_body_score(body_text)
-    return score >= 3 and status >= 300 and ("location.reload" in body_text or "form.submit(" in body_text)
+    return is_challenge_response(result)
 
 
 def build_current_html_result(tab, request, body_text, allow_challenge=False, relaxed=False, min_body_len=128):
@@ -1771,319 +1756,14 @@ def load_challenge_page(tab, request, result, timeout_seconds):
     if not html:
         return
     restore_page_hooks(current_tab)
-    cleanup_timeout_ms = max(5000, int(max(timeout_seconds, 5.0) * 1000))
-    script = """
-(() => {
-    const url = __URL__;
-    const html = __HTML__;
-    const cleanupTimeoutMs = __CLEANUP_TIMEOUT_MS__;
-    const resultPrefix = "__PASSRS__:";
-    const challengeStatuses = new Set([401, 403, 409, 412, 425, 428, 429, 503]);
-    const encode = (bytes) => {
-        let binary = "";
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-        }
-        return btoa(binary);
-    };
-    const toHeaderText = (headers) => {
-        const lines = [];
-        if (!headers) {
-            return "";
-        }
-        if (typeof headers.forEach === "function") {
-            headers.forEach((value, name) => lines.push(`${name}: ${value}`));
-            return lines.join("\\n");
-        }
-        return String(headers || "");
-    };
-    const persistSerialized = (serialized) => {
-        try {
-            const currentName = typeof window.name === "string" ? window.name : "";
-            const preservedName = currentName.startsWith(resultPrefix)
-                ? ((currentName.indexOf("\\n") >= 0) ? currentName.slice(currentName.indexOf("\\n") + 1) : "")
-                : currentName;
-            window.name = `${resultPrefix}${serialized}\\n${preservedName}`;
-        } catch (e) {
-        }
-    };
-    const currentSavedPayload = () => {
-        try {
-            if (!window.__passrsLastResponse) {
-                return null;
-            }
-            return JSON.parse(window.__passrsLastResponse);
-        } catch (e) {
-            return null;
-        }
-    };
-    const hasStableResult = () => {
-        const payload = currentSavedPayload();
-        if (!payload) {
-            return false;
-        }
-        return !payload.navigation_pending && !payload.challenge_like;
-    };
-    const saveResult = (payload) => {
-        try {
-            const serialized = JSON.stringify(payload || {});
-            window.__passrsLastResponse = serialized;
-            window.__passrsLastResponseAt = Date.now();
-            persistSerialized(serialized);
-        } catch (e) {
-        }
-    };
-    const markNavigationPending = (targetUrl, kind) => {
-        if (hasStableResult()) {
-            return;
-        }
-        saveResult({
-            status: 0,
-            reason: "",
-            headers: "",
-            body_base64: "",
-            final_url: targetUrl || url,
-            navigation_pending: true,
-            navigation_kind: kind || "",
-            challenge_like: false
-        });
-    };
-    const decodeBytes = (bytes) => {
-        try {
-            return new TextDecoder('utf-8').decode(bytes || new Uint8Array(0));
-        } catch (e) {
-            try {
-                return new TextDecoder('gb18030').decode(bytes || new Uint8Array(0));
-            } catch (e2) {
-                let binary = '';
-                const data = bytes || new Uint8Array(0);
-                for (let i = 0; i < data.length; i++) {
-                    binary += String.fromCharCode(data[i]);
-                }
-                return binary;
-            }
-        }
-    };
-    const looksLikeChallengeBody = (text) => {
-        const lowered = String(text || '').toLowerCase();
-        if (!lowered || lowered.length > 220000) {
-            return false;
-        }
-        if (lowered.includes('<form') && (lowered.includes('visibility:hidden') || lowered.includes('visibility: hidden') || lowered.includes('display:none') || lowered.includes('display: none'))) {
-            return true;
-        }
-        const hardMarkers = [
-            'acw_sc__v2',
-            'arg1=',
-            'anti-bot',
-            'captcha',
-            'cf-browser-verification',
-            'cf_chl_',
-            'challenge-platform',
-            'geetest',
-            'slider captcha',
-            'verify you are human',
-            'waf',
-        ];
-        for (const marker of hardMarkers) {
-            if (lowered.includes(marker)) {
-                return true;
-            }
-        }
-        const navigationMarkers = [
-            'document.cookie',
-            'window.location',
-            'location.href',
-            'location.replace',
-            'location.reload',
-            'form.submit(',
-            '<meta http-equiv=\"refresh\"',
-            "<meta http-equiv='refresh'",
-        ];
-        const timerMarkers = ['settimeout(', 'setinterval('];
-        const softMarkers = ['challenge', 'verify', 'token'];
-        let navigationHits = 0;
-        let timerHits = 0;
-        let softHits = 0;
-        for (const marker of navigationMarkers) {
-            if (lowered.includes(marker)) {
-                navigationHits += 1;
-            }
-        }
-        for (const marker of timerMarkers) {
-            if (lowered.includes(marker)) {
-                timerHits += 1;
-            }
-        }
-        for (const marker of softMarkers) {
-            if (lowered.includes(marker)) {
-                softHits += 1;
-            }
-        }
-        const hasScript = lowered.includes('<script');
-        const hasForm = lowered.includes('<form');
-        if (navigationHits >= 3 && (hasScript || hasForm)) {
-            return true;
-        }
-        if (navigationHits >= 2 && timerHits >= 1 && hasScript) {
-            return true;
-        }
-        return softHits >= 2 && navigationHits >= 1 && hasScript;
-    };
-    const isChallengeLike = (status, headersText, bodyBytes) => {
-        if (challengeStatuses.has(Number(status || 0))) {
-            return true;
-        }
-        const loweredHeaders = String(headersText || '').toLowerCase();
-        if (!loweredHeaders.includes('content-type: text/html')) {
-            return false;
-        }
-        return looksLikeChallengeBody(decodeBytes(bodyBytes));
-    };
-    const restoreHooks = () => {
-        try {
-            if (window.__passrsOriginalFetch) {
-                window.fetch = window.__passrsOriginalFetch;
-            }
-            if (window.__passrsOriginalXhrOpen) {
-                XMLHttpRequest.prototype.open = window.__passrsOriginalXhrOpen;
-            }
-            if (window.__passrsOriginalXhrSend) {
-                XMLHttpRequest.prototype.send = window.__passrsOriginalXhrSend;
-            }
-            if (window.__passrsOriginalFormSubmit) {
-                HTMLFormElement.prototype.submit = window.__passrsOriginalFormSubmit;
-            }
-            if (window.__passrsUnloadHandler) {
-                window.removeEventListener("beforeunload", window.__passrsUnloadHandler, true);
-                window.removeEventListener("pagehide", window.__passrsUnloadHandler, true);
-            }
-            if (window.__passrsCleanupTimer) {
-                clearTimeout(window.__passrsCleanupTimer);
-            }
-            delete window.__passrsCleanupTimer;
-            delete window.__passrsOriginalFetch;
-            delete window.__passrsOriginalXhrOpen;
-            delete window.__passrsOriginalXhrSend;
-            delete window.__passrsOriginalFormSubmit;
-            delete window.__passrsUnloadHandler;
-            delete window.__passrsHooked;
-        } catch (e) {
-        }
-    };
-    if (!window.__passrsHooked) {
-        window.__passrsHooked = true;
-        const originalFetch = window.fetch ? window.fetch.bind(window) : null;
-        if (originalFetch && !window.__passrsOriginalFetch) {
-            window.__passrsOriginalFetch = originalFetch;
-        }
-        window.__passrsCleanupTimer = setTimeout(restoreHooks, cleanupTimeoutMs);
-        if (originalFetch) {
-            window.fetch = async (...args) => {
-                const response = await originalFetch(...args);
-                try {
-                    const clone = response.clone();
-                    const bodyBytes = new Uint8Array(await clone.arrayBuffer());
-                    const headersText = toHeaderText(response.headers);
-                    const challengeLike = isChallengeLike(response.status, headersText, bodyBytes);
-                    saveResult({
-                        status: response.status || 0,
-                        reason: response.statusText || "",
-                        headers: headersText,
-                        body_base64: encode(bodyBytes),
-                        final_url: response.url || (args[0] && String(args[0])) || url,
-                        challenge_like: challengeLike
-                    });
-                    if (!challengeLike) {
-                        restoreHooks();
-                    }
-                } catch (e) {
-                }
-                return response;
-            };
-        }
-        const originalOpen = XMLHttpRequest.prototype.open;
-        const originalSend = XMLHttpRequest.prototype.send;
-        if (!window.__passrsOriginalXhrOpen) {
-            window.__passrsOriginalXhrOpen = originalOpen;
-        }
-        if (!window.__passrsOriginalXhrSend) {
-            window.__passrsOriginalXhrSend = originalSend;
-        }
-        const originalFormSubmit = HTMLFormElement.prototype.submit;
-        if (!window.__passrsOriginalFormSubmit) {
-            window.__passrsOriginalFormSubmit = originalFormSubmit;
-        }
-        const unloadHandler = () => {
-            markNavigationPending(location.href || url, "unload");
-        };
-        window.__passrsUnloadHandler = unloadHandler;
-        try {
-            window.addEventListener("beforeunload", unloadHandler, true);
-            window.addEventListener("pagehide", unloadHandler, true);
-        } catch (e) {
-        }
-        XMLHttpRequest.prototype.open = function(method, targetUrl) {
-            this.__passrsMethod = method;
-            this.__passrsUrl = targetUrl;
-            return originalOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function(body) {
-            const xhr = this;
-            const finalize = () => {
-                try {
-                    let bodyBytes = new Uint8Array(0);
-                    if (xhr.response instanceof ArrayBuffer) {
-                        bodyBytes = new Uint8Array(xhr.response);
-                    } else if (typeof xhr.responseText === "string") {
-                        bodyBytes = new TextEncoder().encode(xhr.responseText);
-                    }
-                    const headersText = xhr.getAllResponseHeaders() || "";
-                    const challengeLike = isChallengeLike(xhr.status, headersText, bodyBytes);
-                    saveResult({
-                        status: xhr.status || 0,
-                        reason: xhr.statusText || "",
-                        headers: headersText,
-                        body_base64: encode(bodyBytes),
-                        final_url: xhr.responseURL || xhr.__passrsUrl || url,
-                        challenge_like: challengeLike
-                    });
-                    if (!challengeLike) {
-                        restoreHooks();
-                    }
-                } catch (e) {
-                }
-            };
-            try {
-                xhr.addEventListener("loadend", finalize, {once: true});
-            } catch (e) {
-                xhr.addEventListener("loadend", finalize);
-            }
-            return originalSend.apply(this, arguments);
-        };
-        HTMLFormElement.prototype.submit = function() {
-            try {
-                markNavigationPending(this.action || location.href || url, "form-submit");
-            } catch (e) {
-            }
-            return originalFormSubmit.apply(this, arguments);
-        };
-    }
-    try {
-        history.replaceState({}, "", url);
-    } catch (e) {
-    }
-    document.open();
-    document.write(html);
-    document.close();
-    return true;
-})();
-"""
-    script = script.replace("__URL__", json.dumps(result.get("final_url") or request["url"]))
-    script = script.replace("__HTML__", json.dumps(html))
-    script = script.replace("__CLEANUP_TIMEOUT_MS__", json.dumps(cleanup_timeout_ms))
-    current_tab.run_js(script)
+    url = result.get("final_url") or request["url"]
+    # Retain the same-origin location for relative challenge scripts and cookies.
+    # CDP owns response capture now: no fetch/XHR hooks or window.name body copies.
+    current_tab.run_js("try { history.replaceState({}, '', " + json.dumps(url) + "); } catch (_) {}")
+    frame = current_tab.run_cdp("Page.getFrameTree")["frameTree"]["frame"]["id"]
+    # Load the challenge with the browser's native document API. Network observation
+    # is independent of page JavaScript and does not wrap fetch/XHR or copy their bodies.
+    current_tab.run_cdp("Page.setDocumentContent", frameId=frame, html=html)
 
 
 def captured_browser_result(tab, request):
@@ -2670,69 +2350,323 @@ def execute_navigation_post_request(tab, request, timeout_seconds):
                        + summarize_tab_state(tab, request, page_html(tab)))
 
 
-def execute_post_request(tab, request, timeout_seconds, allow_static_resources):
-    if is_navigation_post(request) and can_submit_as_navigation_post(request):
-        configure_tab_network(tab, allow_static_resources)
-        return execute_navigation_post_request(tab, request, timeout_seconds)
-    if is_navigation_non_form_post(request):
-        return execute_navigation_non_form_post_request(tab, request, timeout_seconds, allow_static_resources)
+CHALLENGE_STATUSES = {401, 403, 409, 412, 413, 425, 428, 429, 503}
+MAX_CHALLENGE_REPLAYS = 1
+MAX_CHALLENGE_RESPONSES = 3
+COOKIE_SETTLE_SECONDS = 0.3
 
-    configure_tab_network(tab, allow_static_resources)
-    ensure_post_context(tab, request, timeout_seconds)
-    set_request_cookies(tab, request)
-    result = execute_fetch_post_request(tab, request, timeout_seconds)
-    if not is_post_challenge_result(result):
+
+# Ignore local security-product injection for *observation*, not for browser execution.
+# Match the host boundary, never arbitrary "kaspersky" text in a site's own scripts.
+AUXILIARY_HOST = "scr.kaspersky-labs.com"
+OBSERVED_HTTP_URL_PATTERN = r"(?i)^https?://(?!(?:[^/@]+@)?(?:[^./:@]+\.)*scr\.kaspersky-labs\.com\.?(?::\d+)?(?:[/?#]|$))"
+
+
+def is_auxiliary_browser_url(url):
+    try:
+        host = (urlparse(url or "").hostname or "").lower().rstrip(".")
+        return host == AUXILIARY_HOST or host.endswith("." + AUXILIARY_HOST)
+    except ValueError:
+        return False
+
+
+def challenge_analysis_html(body):
+    def without_auxiliary_script(match):
+        src = re.search(r"\bsrc\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", match.group(1), re.I)
+        if src:
+            value = unescape(next(group for group in src.groups() if group is not None))
+            if is_auxiliary_browser_url(value):
+                return ""
+        return match.group(0)
+    return re.sub(r"<script\b([^>]*)>[\s\S]*?</script\s*>", without_auxiliary_script, body or "", flags=re.I)
+
+
+def result_content_type(result):
+    value = result.get("content_type", "")
+    if value:
+        return value.lower()
+    headers = result.get("headers") or {}
+    items = headers.items() if isinstance(headers, dict) else parse_headers(headers)
+    return next((str(value).lower() for name, value in items if name.lower() == "content-type"), "")
+
+
+def is_challenge_response(result):
+    """A status is a hint, not permission to replay a potentially non-idempotent request."""
+    if not result or result.get("navigation_pending"):
+        return False
+    body = challenge_analysis_html(decode_body_text(result.get("body", b"")))
+    if not body or len(body) > POST_CHALLENGE_BODY_LIMIT:
+        return False
+    lowered = body.lower()
+    content_type = result_content_type(result)
+    if "html" not in content_type:
+        if content_type or not re.match(r"\s*(?:<!doctype\s+html|<html\b)", lowered):
+            return False
+    if looks_like_challenge_document(body):
+        return True
+    # Small cookie-computing challenge pages need not contain vendor-specific names.
+    if int(result.get("status", 0) or 0) in CHALLENGE_STATUSES:
+        opaque_bootstrap = ("<script" in lowered and "$_ts" in lowered
+                            and ("<meta" in lowered or "src=" in lowered))
+        return (("<script" in lowered and "document.cookie" in lowered)
+                or opaque_bootstrap or looks_like_hidden_intermediate_html(body))
+    return False
+
+
+def network_packet_result(packet):
+    """Return one CDP response, never a DOM snapshot or a JSON re-serialization."""
+    response = packet_response(packet)
+    status = packet_status(packet)
+    if response is None or status <= 0:
+        return None
+    headers = response_headers(response)
+    raw = response.raw_body
+    # DrissionPage's .body parses JSON, so use raw_body and its CDP base64 flag instead.
+    if getattr(response, "_is_base64_body", False):
+        body = base64.b64decode(raw or "", validate=True)
+    elif isinstance(raw, bytes):
+        body = raw
+    else:
+        # CDP supplies decoded Unicode for textual bodies, not wire-encoded bytes.
+        body = (raw or "").encode("utf-8")
+        for key, value in list(headers.items()):
+            if key.lower() == "content-type" and body:
+                headers[key] = re.sub(r";\s*charset\s*=\s*[^;]+", "", str(value), flags=re.I) + "; charset=UTF-8"
+    declared_length = next((str(v) for k, v in headers.items() if k.lower() == "content-length"), "0")
+    if status not in (204, 304) and (raw is None or (not body and declared_length.isdigit() and int(declared_length) > 0)):
+        # E.g. an HTTP-auth navigation aborted by Chromium. Preserve the HTTP status;
+        # explicitly distinguish an unavailable body from a browser-generated error page.
+        headers["X-OST-Body-Unavailable"] = "true"
+    return {
+        "status": status,
+        "reason": getattr(response, "statusText", "") or "",
+        "headers": headers,
+        "body": body,
+        "final_url": packet.url,
+        "title": "",
+        "source": "network",
+        "method": packet.method,
+    }
+
+
+class RequestNetworkCapture:
+    """A fresh listener per request; no previous tab response, iframe or asset can win."""
+    def __init__(self, tab, request):
+        self.tab = resolve_live_tab(tab)
+        self.request = request
+        self.frame_id = self.tab.run_cdp("Page.getFrameTree")["frameTree"]["frame"]["id"]
+        self.started = False
+        self.failed_request = False
+        self.buffered_result = None
+
+    def start(self):
+        if not self.started:
+            self.tab.listen.start(targets=OBSERVED_HTTP_URL_PATTERN, is_regex=True,
+                                  method=True, res_type=("Document", "XHR", "Fetch"))
+            self.failed_request = False
+            self.started = True
+
+    def accepts(self, packet):
+        if (packet.frameId != self.frame_id or not is_http_url(packet.url)
+                or is_auxiliary_browser_url(packet.url)):
+            return False
+        resource_type = str(packet.resourceType or "").lower()
+        same_target = normalized_document_url(packet.url) == normalized_document_url(self.request["url"])
+        if resource_type == "document":
+            # A POST challenge can navigate to a GET context. That is not a successful
+            # replay of the POST unless it is an actual HTTP redirect response chain.
+            redirected = bool((getattr(packet, "_raw_request", None) or {}).get("redirectResponse"))
+            return self.request["method"] == "GET" or packet.method == "POST" or redirected
+        return resource_type in ("xhr", "fetch") and same_target and packet.method == self.request["method"]
+
+    def wait(self, timeout_seconds):
+        if self.buffered_result is not None:
+            result, self.buffered_result = self.buffered_result, None
+            return result
+        if not self.started:
+            return None
+        deadline = time.monotonic() + max(0.001, timeout_seconds)
+        while time.monotonic() < deadline:
+            packet = self.tab.listen.wait(timeout=max(0.001, deadline - time.monotonic()), raise_err=False)
+            if not packet:
+                return None
+            if self.accepts(packet):
+                self.failed_request = bool(getattr(packet, "is_failed", False))
+                result = network_packet_result(packet)
+                if result is not None:
+                    return result
+        return None
+
+    def has_pending_request(self):
+        # Wait for script-triggered fetch/form navigation already in flight rather than
+        # sending a second POST while its response is still downloading.
+        if not self.started:
+            return False
+        if self.buffered_result is not None or self.failed_request:
+            return True
+        if not self.tab.listen.wait_silent(timeout=0.01, targets_only=True):
+            return True
+        # A response can finish between wait() timing out and wait_silent().
+        # DrissionPage queues the completed packet before marking the network idle.
+        # Preserve it for the next iteration instead of stopping the listener and
+        # issuing a duplicate POST just because no requests are *currently* running.
+        self.buffered_result = self.wait(0.04)
+        return (self.buffered_result is not None or self.failed_request
+                or not self.tab.listen.wait_silent(timeout=0.01, targets_only=True))
+
+    def stop(self):
+        if self.started:
+            self.tab.listen.stop()
+            self.started = False
+
+
+def challenge_cookie_state(tab, request):
+    # Network.getCookies includes HttpOnly cookies. Ignore expiry-only churn and
+    # unrelated origins; it is not evidence that replaying the original request helps.
+    try:
+        cookies = (resolve_live_tab(tab).run_cdp("Network.getCookies", urls=[request["url"]]) or {}).get("cookies", [])
+        return tuple(sorted((cookie.get("domain", ""), cookie.get("path", ""),
+                             cookie.get("name", ""), cookie.get("value", ""),
+                             json.dumps(cookie.get("partitionKey", {}), sort_keys=True)) for cookie in cookies))
+    except Exception:
+        return None
+
+
+def request_uses_navigation(request):
+    return ((request["method"] == "GET" and is_navigation_get(request) and not request_has_body(request))
+            or (request["method"] == "POST" and is_navigation_post(request) and can_submit_as_navigation_post(request)))
+
+
+def send_browser_attempt(tab, request, capture, timeout_seconds, navigation):
+    if not navigation:
+        # A fetch response already consists of network bytes, even when its body is HTML.
+        result = (execute_fetch_get_request(tab, request, timeout_seconds) if request["method"] == "GET"
+                  else execute_fetch_post_request(tab, request, timeout_seconds))
+        if int(result.get("status", 0) or 0) <= 0:
+            raise RuntimeError("browser request did not produce an HTTP response")
+        result["source"] = "network"
         return result
+    capture.start()
+    error = None
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        if request["method"] == "GET":
+            resolve_live_tab(tab).get(request["url"], retry=0, interval=0, timeout=timeout_seconds)
+        elif is_empty_body_post(request):
+            submit_empty_post_request(tab, request)
+        elif is_form_urlencoded_post(request):
+            submit_form_post_request(tab, request)
+        else:
+            submit_multipart_post_request(tab, request)
+    except Exception as exc:
+        # A failed navigation can still have a genuine HTTP response (e.g. 401).
+        error = exc
+    result = capture.wait(max(0.05, deadline - time.monotonic()))
+    if result is not None:
+        # An immediate script-driven navigation can invalidate getResponseBody for the
+        # first response. Drain the follow-up response already in flight; never resend.
+        if result["headers"].get("X-OST-Body-Unavailable") == "true":
+            follow_up = capture.wait(min(0.6, max(0.05, deadline - time.monotonic())))
+            if follow_up is not None:
+                result = follow_up
+        return result
+    raise RuntimeError("browser navigation produced no captured HTTP response; DOM fallback is disabled") from error
 
-    last_result = result
-    for _ in range(POST_RETRY_ATTEMPTS):
-        load_challenge_page(tab, request, last_result, timeout_seconds)
-        if is_navigation_post(request):
-            navigation_result = complete_navigation_post_challenge(tab, request, timeout_seconds)
-            if navigation_result is not None:
-                return navigation_result
+
+def finish_browser_challenge(tab, request, initial_result, capture, cookies_before, timeout_seconds, navigation):
+    last_result = initial_result
+    if not is_challenge_response(last_result) or timeout_seconds <= 0:
+        return last_result
+    deadline = time.monotonic() + timeout_seconds
+    capture.start()
+    if not navigation:
+        # Execute the response in the browser to compute cookies, but never publish its DOM.
+        try:
+            load_challenge_page(tab, request, last_result, timeout_seconds)
+        except Exception:
+            # JS may immediately navigate and destroy its execution context. Observe
+            # that navigation; don't replace an existing HTTP response with DOM/599.
+            pass
+    previous_cookies = cookies_before
+    last_change = time.monotonic()
+    replays = 0
+    responses = 1
+    page_replayed = False
+    submitted_form = False
+    while time.monotonic() < deadline:
+        result = capture.wait(min(GET_POLL_INTERVAL_SECONDS, max(0.001, deadline - time.monotonic())))
+        if result is not None:
+            last_result = result
+            page_replayed = True
+            responses += 1
+            if not is_challenge_response(result) or responses >= MAX_CHALLENGE_RESPONSES:
+                return last_result
+        if capture.failed_request:
+            # The browser already sent a request and lost/cancelled its response.
+            # Replaying it again could duplicate a POST side effect.
+            last_result = dict(last_result)
+            headers = last_result.get("headers") or {}
+            headers = dict(headers) if isinstance(headers, dict) else dict(parse_headers(headers))
+            headers["X-OST-Challenge-Replay"] = "response-unavailable; not-retried"
+            last_result["headers"] = headers
             return last_result
-        wait_for_post_challenge(tab, timeout_seconds)
-        captured_result = wait_for_captured_browser_result(tab, request, timeout_seconds)
-        if captured_result is not None and not is_post_challenge_result(captured_result):
-            return captured_result
-        page_result = current_page_result(tab, request)
-        if page_result is not None:
-            return page_result
-        ensure_post_context(tab, request, timeout_seconds)
-        retry_result = execute_fetch_post_request(tab, request, timeout_seconds)
-        if not is_post_challenge_result(retry_result):
-            return retry_result
-        last_result = retry_result
+        cookies = challenge_cookie_state(tab, request)
+        if cookies != previous_cookies:
+            previous_cookies = cookies
+            last_change = time.monotonic()
+        changed = cookies_before is not None and cookies is not None and cookies != cookies_before
+        if (changed and not page_replayed and not submitted_form and replays < MAX_CHALLENGE_REPLAYS
+                and time.monotonic() - last_change >= COOKIE_SETTLE_SECONDS
+                and not capture.has_pending_request()):
+            # Clear observation of challenge resources before replaying the original.
+            # Do NOT set_request_cookies again: it would overwrite the newly computed cookie.
+            capture.stop()
+            replays += 1
+            remaining = max(0.05, deadline - time.monotonic())
+            # Fetch preserves the original POST body/headers, including non-form payloads.
+            last_result = send_browser_attempt(tab, request, capture, remaining,
+                                               navigation and request["method"] == "GET")
+            # No recursive rendering/replay of the second challenge; return that one response.
+            return last_result
+        if (not submitted_form and not page_replayed and request["method"] == "POST"
+                and time.monotonic() - last_change >= COOKIE_SETTLE_SECONDS
+                and not capture.has_pending_request()):
+            # Retain the existing hidden-form challenge workflow without a submission loop.
+            submitted_form = submit_hidden_form_intermediate(tab, request)
     return last_result
 
 
-def execute_get_request(tab, request, timeout_seconds, allow_static_resources):
-    configure_tab_network(tab, allow_static_resources)
-    set_request_cookies(tab, request)
-    if not is_navigation_get(request):
-        ensure_fetch_context(tab, request, timeout_seconds)
-        return execute_fetch_get_request(tab, request, timeout_seconds)
+def execute_network_request(tab, request, timeout_seconds, allow_static_resources):
     current_tab = resolve_live_tab(tab)
-    current_tab.get(request["url"], retry=0, interval=0, timeout=timeout_seconds)
-    wait_for_initial_load(current_tab, timeout_seconds)
-    # Some anti-bot pages only render the final document after one real reload.
-    reload_page(current_tab, timeout_seconds)
-    wait_for_page_rendered(current_tab, timeout_seconds)
-    body_text = capture_page_html(current_tab, timeout_seconds)
-    stop_page_loading(current_tab)
-    body_bytes = body_text.encode("utf-8", errors="replace")
-    return {
-        "status": 200,
-        "reason": "OK",
-        "headers": {
-            "Content-Type": "text/html; charset=UTF-8",
-            "Cache-Control": "no-store",
-        },
-        "body": body_bytes,
-        "final_url": safe_tab_url(current_tab) or request["url"],
-        "title": getattr(current_tab, "title", ""),
-    }
+    deadline = time.monotonic() + timeout_seconds
+    configure_tab_network(current_tab, allow_static_resources)
+    restore_page_hooks(current_tab)
+    set_request_cookies(current_tab, request)
+    navigation = request_uses_navigation(request)
+    if request["method"] == "POST":
+        ensure_post_context(current_tab, request, timeout_seconds)
+    elif not navigation:
+        ensure_fetch_context(current_tab, request, timeout_seconds)
+    # Context establishment is not the requested response and is never captured as one.
+    capture = RequestNetworkCapture(current_tab, request)
+    cookies_before = challenge_cookie_state(current_tab, request)
+    try:
+        initial_result = send_browser_attempt(current_tab, request, capture,
+                                              max(0.05, deadline - time.monotonic()), navigation)
+        return finish_browser_challenge(current_tab, request, initial_result, capture, cookies_before,
+                                        max(0.0, deadline - time.monotonic()), navigation)
+    finally:
+        stop_page_loading(current_tab)
+        capture.stop()
+        restore_page_hooks(current_tab)
+
+
+def execute_post_request(tab, request, timeout_seconds, allow_static_resources):
+    return execute_network_request(tab, request, timeout_seconds, allow_static_resources)
+
+
+def execute_get_request(tab, request, timeout_seconds, allow_static_resources):
+    return execute_network_request(tab, request, timeout_seconds, allow_static_resources)
 
 
 def close_browser(args):

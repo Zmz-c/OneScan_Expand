@@ -2,6 +2,7 @@ package burp.vaycore.ost.bean;
 
 import burp.vaycore.common.utils.StringUtils;
 import burp.vaycore.ost.manager.FpManager;
+import burp.vaycore.ost.common.Constants;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -75,6 +76,11 @@ public class TaskData {
 
     public String getFrom() {
         return from;
+    }
+
+    public boolean isParameterFuzz() {
+        return Constants.PARAMETER_FUZZ_SOURCE.equals(from)
+                || (Constants.PARAMETER_FUZZ_SOURCE + " (Browser)").equals(from);
     }
 
     public void setFrom(String from) {

@@ -459,8 +459,9 @@ public class TaskPersistenceManager {
                 ps.setString(3, getFieldValue(data, field));
                 ps.addBatch();
             }
-            // 始终持久化任务范围及原始请求/响应字节（不受字段配置影响）
-            for (String internalKey : new String[]{FIELD_REQUEST_SCOPE, FIELD_REQ_BYTES, FIELD_RESP_BYTES}) {
+            // Source is routing metadata too: omitting the optional export column must
+            // not send restored parameter-fuzz traffic back to the general data board.
+            for (String internalKey : new String[]{FIELD_FROM, FIELD_REQUEST_SCOPE, FIELD_REQ_BYTES, FIELD_RESP_BYTES}) {
                 if (!fields.contains(internalKey)) {
                     String value = getFieldValue(data, internalKey);
                     if (!value.isEmpty()) {

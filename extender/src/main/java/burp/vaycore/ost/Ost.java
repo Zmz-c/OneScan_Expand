@@ -3,10 +3,12 @@ package burp.vaycore.ost;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.ost.common.Config;
 import burp.vaycore.ost.common.Constants;
+import burp.vaycore.ost.common.L;
 import burp.vaycore.ost.ui.tab.CollectPanel;
 import burp.vaycore.ost.ui.tab.ConfigPanel;
 import burp.vaycore.ost.ui.tab.DataBoardTab;
 import burp.vaycore.ost.ui.tab.FingerprintTab;
+import burp.vaycore.ost.ui.tab.ParameterFuzzPanel;
 
 import javax.swing.*;
 
@@ -20,6 +22,7 @@ public class Ost extends JTabbedPane {
     private DataBoardTab mDataBoardTab;
     private ConfigPanel mConfigPanel;
     private FingerprintTab mFingerprintTab;
+    private ParameterFuzzPanel mParameterFuzzPanel;
 
     public Ost() {
         loadModule();
@@ -34,6 +37,12 @@ public class Ost extends JTabbedPane {
         // 任务面板
         mDataBoardTab = new DataBoardTab();
         addTab(mDataBoardTab.getTitleName(), mDataBoardTab);
+        // Dedicated parameter scan panel keeps scan controls separate from the
+        // endpoint board and HTTP message detail view.
+        mParameterFuzzPanel = new ParameterFuzzPanel();
+        mDataBoardTab.setParameterFuzzPanel(mParameterFuzzPanel,
+                () -> setSelectedComponent(mParameterFuzzPanel));
+        addTab(L.get("parameter_fuzz.tab"), mParameterFuzzPanel);
         // 配置面板
         mConfigPanel = new ConfigPanel();
         addTab(mConfigPanel.getTitleName(), mConfigPanel);
@@ -55,6 +64,10 @@ public class Ost extends JTabbedPane {
 
     public FingerprintTab getFingerprintTab() {
         return mFingerprintTab;
+    }
+
+    public ParameterFuzzPanel getParameterFuzzPanel() {
+        return mParameterFuzzPanel;
     }
 
     public static void main(String[] args) {

@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class ResponseComparisonTest {
@@ -38,6 +40,20 @@ public class ResponseComparisonTest {
 
         assertTrue(!defaultRequest.isolateCookies());
         assertTrue(isolatedRequest.isolateCookies());
+        assertEquals(BrowserRequest.DEFAULT_BROWSER_ID, defaultRequest.getBrowserId());
+    }
+
+    @Test
+    public void browserRequestIdsCanIsolateParameterFuzzSessions() {
+        String firstId = BrowserRequest.newParameterFuzzBrowserId();
+        String secondId = BrowserRequest.newParameterFuzzBrowserId();
+        BrowserRequest request = BrowserRequest.of("GET", "https://example.test", List.of(), new byte[0],
+                false, firstId);
+
+        assertTrue(firstId.startsWith(BrowserRequest.PARAMETER_FUZZ_BROWSER_ID + "-"));
+        assertTrue(firstId.matches("parameter-fuzz-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+        assertNotEquals(firstId, secondId);
+        assertEquals(firstId, request.getBrowserId());
     }
     @Test
     public void detectsUnresolvedNamedVariablePlaceholders() {

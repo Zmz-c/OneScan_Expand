@@ -3,6 +3,7 @@ package burp.vaycore.ost.manager;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.ost.bean.TaskData;
 import burp.vaycore.ost.common.Config;
+import burp.vaycore.ost.common.Constants;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -22,6 +23,21 @@ public class TaskPersistenceManagerTest {
 
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Test
+    public void parameterTrafficKeepsItsSourceWhenUserDoesNotSelectTheFromColumn() throws Exception {
+        File workDir = temporaryFolder.newFolder("parameter-history");
+        Config.init(workDir.getAbsolutePath() + File.separator);
+        Config.put(Config.KEY_DATA_PERSISTENCE_DB_PATH, new File(workDir, "history.sqlite").getAbsolutePath());
+        TaskData source = new TaskData();
+        source.setHost("https://example.test");
+        source.setFrom(Constants.PARAMETER_FUZZ_SOURCE + " (Browser)");
+        source.setRequestScope(TaskPersistenceManager.SCOPE_BROWSER);
+        TaskPersistenceManager.persistSnapshot(List.of(source), List.of(TaskPersistenceManager.FIELD_HOST), "parameter");
+        TaskData restored = TaskPersistenceManager.loadTaskDataByLabel("parameter").get(0);
+        assertTrue(restored.isParameterFuzz());
+        assertEquals(TaskPersistenceManager.SCOPE_BROWSER, restored.getRequestScope());
+    }
 
     @Test
     public void profileAndVariantAreAlwaysPersistedWithConfiguredFields() {

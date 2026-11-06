@@ -25,9 +25,12 @@ import burp.zm.mcp.McpTool;
 import burp.zm.mcp.McpToolProvider;
 import burp.vaycore.ost.ui.tab.DataBoardTab;
 import burp.vaycore.ost.ui.tab.FingerprintTab;
+import burp.vaycore.ost.ui.tab.ParameterFuzzScanOptions;
+import burp.vaycore.ost.ui.tab.ParameterFuzzScanOptions.TargetOptions;
 import burp.vaycore.ost.ui.tab.config.OtherTab;
 import burp.vaycore.ost.ui.tab.config.RequestTab;
 import burp.vaycore.ost.ui.widget.TaskTable;
+import burp.vaycore.ost.ui.widget.HttpMessageView;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
 import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
@@ -47,6 +50,7 @@ import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -135,6 +139,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * 请求来源：重定向
      */
     private static final String FROM_REDIRECT = "Redirect";
+    private static final String FROM_PARAMETER_FUZZ = Constants.PARAMETER_FUZZ_SOURCE;
+    private static final int MAX_PARAMETER_FUZZ_REQUESTS = ParameterFuzzRequestBuilder.MAX_REQUESTS;
 
     /**
      * 去重过滤集合
@@ -153,7 +159,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final ConcurrentHashMap<String, BrowserRequestTask> mBrowserRequestTasks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> mBrowserExpectedRequests = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BrowserResponseCacheEntry> mBrowserResponseCache = new ConcurrentHashMap<>();
-    private final Object mBrowserRequestLock = new Object();
     private final Object mRequestPauseLock = new Object();
     private final EnumSet<RequestMode> mPausedRequestModes = EnumSet.noneOf(RequestMode.class);
     private final BrowserRequestManager mBrowserRequestManager = new BrowserRequestManager();
@@ -164,23 +169,38 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final AtomicInteger mLFTaskOverCounter = new AtomicInteger(0);
     private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
     private final AtomicLong mTaskGeneration = new AtomicLong(0);
+    private final AtomicLong mParameterFuzzGeneration = new AtomicLong(0);
+    private final AtomicBoolean mParameterFuzzRunning = new AtomicBoolean(false);
     private final ThreadLocal<Long> mTaskGenerationContext = new ThreadLocal<Long>();
+    private final ThreadLocal<String> mBrowserRequestIdContext = new ThreadLocal<String>();
+    private final ThreadLocal<ParameterFuzzProgress> mParameterFuzzProgressContext = new ThreadLocal<>();
     // A manual action can rescan a known request once without expanding duplicate paths.
     private final ThreadLocal<Set<String>> mManualReplayRequestIds = new ThreadLocal<>();
     private IBurpExtenderCallbacks mCallbacks;
     private IExtensionHelpers mHelpers;
     private Ost mOst;
     private DataBoardTab mDataBoardTab;
-    private IMessageEditor mRequestTextEditor;
-    private IMessageEditor mResponseTextEditor;
+    private HttpMessageView mMainMessageView;
+    // Probe preparation must not wait behind paused or slow HTTP request workers.
+    // Actual probes still use the existing HTTP/browser queues and rate limits.
+    private final ExecutorService mParameterFuzzPreparationExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "OST-parameter-fuzz-prepare");
+        thread.setDaemon(true);
+        return thread;
+    });
     private ExecutorService mTaskThreadPool;
     private ExecutorService mLFTaskThreadPool;
     private ExecutorService mBrowserTaskThreadPool;
+    // Ordinary navigation and parameter probes have separate profiles AND workers.
+    // Keep each lane serial; adding workers to the shared queue alone still starves
+    // probes behind navigation tasks waiting for the same browser session lock.
+    private ExecutorService mParameterFuzzBrowserTaskThreadPool = newParameterFuzzBrowserExecutor();
+
     private ExecutorService mFpThreadPool;
     private ExecutorService mRefreshMsgTask;
-    private IHttpRequestResponse mCurrentReqResp;
     private QpsLimiter mQpsLimit;
     private volatile BrowserTrafficScope mBrowserTrafficScope;
+    private volatile ParameterFuzzProgress mActiveParameterFuzzProgress;
     private Timer mStatusRefresh;
     private McpServer mMcpServer;
 
@@ -279,6 +299,20 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         Logger.debug("register Extender ok! Log: %b", Constants.DEBUG);
     }
 
+    private static ExecutorService newParameterFuzzBrowserExecutor() {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "OST-parameter-fuzz-browser");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    private List<Runnable> shutdownBrowserTaskQueues() {
+        List<Runnable> tasks = new ArrayList<>(mBrowserTaskThreadPool.shutdownNow());
+        tasks.addAll(mParameterFuzzBrowserTaskThreadPool.shutdownNow());
+        return tasks;
+    }
+
     private void initData(IBurpExtenderCallbacks callbacks) {
         this.mCallbacks = callbacks;
         this.mHelpers = callbacks.getHelpers();
@@ -292,6 +326,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         Logger.init(Constants.DEBUG, mCallbacks.getStdout(), mCallbacks.getStderr());
         // 初始化默认配置
         Config.init(getWorkDir());
+        // Register the Burp context menu before building Swing UI. If a tab
+        // initialization error occurs, Burp can still expose the send-to-OST
+        // actions rather than silently losing the entire context-menu factory.
+        this.mCallbacks.registerContextMenuFactory(this);
         // 初始化域名辅助类
         DomainHelper.init("public_suffix_list.json");
         // 初始化QPS限制器
@@ -376,9 +414,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 将页面添加到 BurpSuite
         mCallbacks.addSuiteTab(this);
         // 创建请求和响应控件
-        mRequestTextEditor = mCallbacks.createMessageEditor(this, false);
-        mResponseTextEditor = mCallbacks.createMessageEditor(this, false);
-        mDataBoardTab.init(mRequestTextEditor.getComponent(), mResponseTextEditor.getComponent());
+        mMainMessageView = new HttpMessageView(mCallbacks, mRefreshMsgTask);
+        mDataBoardTab.init(mMainMessageView.requestComponent(), mMainMessageView.responseComponent());
+        mDataBoardTab.getParameterFuzzPanel().initTrafficView(mCallbacks, mRefreshMsgTask, this::getReqResp, this);
         if (mDataBoardTab.getBurpTaskTable() != null) {
             mDataBoardTab.getBurpTaskTable().setOnTaskTableEventListener(this);
         }
@@ -390,8 +428,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private void initEvent() {
         // 监听代理的包
         mCallbacks.registerProxyListener(this);
-        // 注册菜单
-        mCallbacks.registerContextMenuFactory(this);
         // 状态栏刷新定时器
         mStatusRefresh = new Timer(1000, e -> {
             if (mDataBoardTab == null) {
@@ -581,7 +617,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private IHttpRequestResponse[] snapshotSelectedMessages(IContextMenuInvocation invocation) {
         IHttpRequestResponse[] selected = invocation == null ? null : invocation.getSelectedMessages();
         if ((selected == null || selected.length == 0) && isOstMessageEditor(invocation)) {
-            selected = mCurrentReqResp == null ? null : new IHttpRequestResponse[]{mCurrentReqResp};
+            IHttpRequestResponse current = mOst != null && mOst.getSelectedComponent() == mOst.getParameterFuzzPanel()
+                    ? mOst.getParameterFuzzPanel().currentMessage()
+                    : mMainMessageView == null ? null : mMainMessageView.currentMessage();
+            selected = current == null ? null : new IHttpRequestResponse[]{current};
         }
         if (selected == null || selected.length == 0) {
             return new IHttpRequestResponse[0];
@@ -1052,7 +1091,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             }
             IHttpService service = httpReqResp.getHttpService();
             // 处理请求头
-            byte[] request = handleHeader(httpReqResp, info, pathWithQuery, from);
+            // Parameter probes are already fully prepared; never rewrite their literal
+            // dictionary bytes or explicit header positions with global request rules.
+            byte[] request = FROM_PARAMETER_FUZZ.equals(from)
+                    ? updateContentLength(httpReqResp.getRequest())
+                    : handleHeader(httpReqResp, info, pathWithQuery, from);
             // 处理请求头失败时，丢弃该任务
             if (request == null) {
                 return;
@@ -1062,12 +1105,16 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             if (newUrl != null && pathBlocklistFilter(newUrl.getPath())) {
                 return;
             }
-            String reqId = scopeRedirectRequestId(generateReqId(newInfo, from, requestMode), from, profiles,
-                    variantIdOverride);
+            String generatedReqId = generateReqId(newInfo, from, requestMode);
+            if (FROM_PARAMETER_FUZZ.equals(from)) {
+                generatedReqId += "\nprobe=" + (StringUtils.isNotEmpty(variantIdOverride)
+                        ? variantIdOverride : buildVariantId(service, request));
+            }
+            String reqId = scopeRedirectRequestId(generatedReqId, from, profiles, variantIdOverride);
             // A manual action can claim a known request once, while duplicate paths in the
             // same action still share the same request group.
-            requestGroup = claimRequestGroup(reqId,
-                    isFirstManualReplayRequest(mManualReplayRequestIds.get(), reqId));
+            requestGroup = claimRequestGroup(reqId, FROM_PARAMETER_FUZZ.equals(from)
+                    || isFirstManualReplayRequest(mManualReplayRequestIds.get(), reqId));
             if (requestGroup == null) {
                 return;
             }
@@ -1134,11 +1181,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (from.startsWith(FROM_REDIRECT)) {
             return reqHost + reqPath;
         }
+        // Explicit URL imports may intentionally differ only in query values.
+        // Keep passive/directory path de-duplication unchanged.
+        String requestTarget = FROM_IMPORT.equals(from) ? UrlUtils.toPQ(url) : url.getPath();
         if (requestMode != null && requestMode != RequestMode.AUTO) {
-            return requestMode.name() + " " + reqHost + url.getPath();
+            return requestMode.name() + " " + reqHost + requestTarget;
         }
         // 默认使用 http://x.x.x.x/path/to/index.html 格式作为请求 ID 值
-        return reqHost + url.getPath();
+        return reqHost + requestTarget;
     }
 
     static String scopeRedirectRequestId(String reqId, String from, List<IdentityProfile> profiles) {
@@ -1335,25 +1385,31 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private void dispatchRequestProfiles(IHttpService service, String reqId, byte[] request, String from,
                                          RequestMode requestMode, List<IdentityProfile> profiles,
                                          String variantIdOverride, RequestGroup requestGroup) {
-        String variableRequest = VariableManager.resolveVariables(mHelpers.bytesToString(request));
-        if (variableRequest == null) {
-            return;
+        byte[] baseRequest;
+        if (FROM_PARAMETER_FUZZ.equals(from)) {
+            baseRequest = updateContentLength(request);
+        } else {
+            String variableRequest = VariableManager.resolveVariables(mHelpers.bytesToString(request));
+            if (variableRequest == null) {
+                return;
+            }
+            baseRequest = updateContentLength(mHelpers.stringToBytes(variableRequest));
         }
-        byte[] baseRequest = updateContentLength(mHelpers.stringToBytes(variableRequest));
         if (baseRequest == null || requestPathBlocklistFilter(service, baseRequest)) {
             return;
         }
         String variantId = StringUtils.isNotEmpty(variantIdOverride)
                 ? variantIdOverride : buildVariantId(service, baseRequest);
+        String browserId = mBrowserRequestIdContext.get();
         if (profiles == null || profiles.isEmpty()) {
-            doBurpRequest(service, reqId, baseRequest, from, requestMode, "", variantId, requestGroup);
+            doBurpRequest(service, reqId, baseRequest, from, requestMode, "", variantId, requestGroup, browserId);
             return;
         }
         for (IdentityProfile profile : profiles) {
             byte[] profiledRequest = applyIdentityProfile(service, baseRequest, profile);
             if (profiledRequest != null && !requestPathBlocklistFilter(service, profiledRequest)) {
                 doBurpRequest(service, reqId, profiledRequest, from, requestMode, profile.getName(), variantId,
-                        requestGroup);
+                        requestGroup, browserId);
             }
         }
     }
@@ -1533,7 +1589,16 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from,
                                RequestMode requestMode, String profileName, String variantId,
                                RequestGroup requestGroup) {
+        doBurpRequest(service, reqId, reqRawBytes, from, requestMode, profileName, variantId,
+                requestGroup, null);
+    }
+
+    private void doBurpRequest(IHttpService service, String reqId, byte[] reqRawBytes, String from,
+                               RequestMode requestMode, String profileName, String variantId,
+                               RequestGroup requestGroup, String browserId) {
         final long taskGeneration = resolveTaskGeneration();
+        final ParameterFuzzProgress parameterFuzzProgress = FROM_PARAMETER_FUZZ.equals(from)
+                ? mParameterFuzzProgressContext.get() : null;
         if (isTaskStopRequested(taskGeneration)) {
             Logger.debug("doBurpRequest: task stop requested, intercept req id: %s", reqId);
             return;
@@ -1541,7 +1606,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (!registerRequestGroupTask(requestGroup)) {
             return;
         }
-        TaskRunnable task = new TaskRunnable(reqId, from) {
+        if (parameterFuzzProgress != null) {
+            parameterFuzzProgress.requestQueued();
+        }
+        TaskRunnable task = new TaskRunnable(reqId, from, requestMode) {
             @Override
             public void run() {
                 runWithTaskGeneration(taskGeneration, () -> {
@@ -1566,7 +1634,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         }
                         int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
                         IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount,
-                                requestMode, !StringUtils.isEmpty(profileName));
+                                requestMode, !StringUtils.isEmpty(profileName), browserId);
                         if (newReqResp == null || isTaskStopRequested()) {
                             return;
                         }
@@ -1581,17 +1649,24 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         data.setVariantId(variantId);
                         mDataBoardTab.addTaskData(data, browserResult ? RequestMode.BROWSER : RequestMode.BURP);
                         CollectManager.collect(false, service.getHost(), newReqResp.getResponse());
-                        handleFollowRedirect(data);
+                        if (!FROM_PARAMETER_FUZZ.equals(from)) {
+                            handleFollowRedirect(data);
+                        }
                     } finally {
                         completeRequestGroupTask(requestGroup, requestSucceeded);
-                        incrementTaskOverCounter(from);
+                        incrementTaskOverCounter(from, requestMode);
+                        if (parameterFuzzProgress != null) {
+                            parameterFuzzProgress.requestCompleted();
+                        }
                     }
                 });
             }
         };
         try {
             if (requestMode == RequestMode.BROWSER) {
-                mBrowserTaskThreadPool.execute(task);
+                ExecutorService browserQueue = FROM_PARAMETER_FUZZ.equals(from)
+                        ? mParameterFuzzBrowserTaskThreadPool : mBrowserTaskThreadPool;
+                browserQueue.execute(task);
                 mTaskCommitCounter.incrementAndGet();
             } else if (isLowFrequencyTask(from)) {
                 mLFTaskThreadPool.execute(task);
@@ -1603,6 +1678,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         } catch (Exception e) {
             Logger.error("doBurpRequest thread execute error: %s", e.getMessage());
             completeRequestGroupTask(requestGroup, false);
+            if (parameterFuzzProgress != null) {
+                parameterFuzzProgress.requestRejected();
+            }
         }
     }
 
@@ -1612,7 +1690,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * @return true=是；false=否
      */
     private boolean isTaskThreadPoolShutdown() {
-        return mTaskThreadPool.isShutdown() || mLFTaskThreadPool.isShutdown() || mBrowserTaskThreadPool.isShutdown();
+        return mTaskThreadPool.isShutdown() || mLFTaskThreadPool.isShutdown()
+                || mBrowserTaskThreadPool.isShutdown() || mParameterFuzzBrowserTaskThreadPool.isShutdown();
     }
 
     /**
@@ -1633,8 +1712,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      *
      * @param from 请求来源
      */
-    private void incrementTaskOverCounter(String from) {
-        if (isLowFrequencyTask(from)) {
+    private void incrementTaskOverCounter(String from, RequestMode requestMode) {
+        // Explicit browser tasks always enter the regular/browser queue, even
+        // when their source is Send, Proxy or Redirect.
+        if (requestMode != RequestMode.BROWSER && isLowFrequencyTask(from)) {
             // 低频任务完成计数
             mLFTaskOverCounter.incrementAndGet();
         } else {
@@ -1791,6 +1872,12 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount,
                                                    RequestMode requestMode, boolean isolateCookies) {
+        return doMakeHttpRequest(service, reqRawBytes, retryCount, requestMode, isolateCookies, null);
+    }
+
+    private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount,
+                                                   RequestMode requestMode, boolean isolateCookies,
+                                                   String browserId) {
         if (isTaskStopRequested()) {
             Logger.debug("doMakeHttpRequest: task stop requested, intercept task");
             return HttpReqRespAdapter.from(service, reqRawBytes);
@@ -1802,7 +1889,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return HttpReqRespAdapter.from(service, reqRawBytes);
         }
         if (requestMode == RequestMode.BROWSER) {
-            return doBrowserRequest(service, reqRawBytes, true, isolateCookies);
+            return StringUtils.isEmpty(browserId)
+                    ? doBrowserRequest(service, reqRawBytes, true, isolateCookies)
+                    : doBrowserRequest(service, reqRawBytes, true, isolateCookies, browserId);
         }
         try {
             reqResp = mCallbacks.makeHttpRequest(service, reqRawBytes);
@@ -1841,7 +1930,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 return reqResp;
             }
         }
-        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode, isolateCookies);
+        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode, isolateCookies, browserId);
     }
 
     /**
@@ -1852,54 +1941,69 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      */
     private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, boolean forceBrowser,
                                                    boolean isolateCookies) {
+        return doBrowserRequest(service, reqRawBytes, forceBrowser, isolateCookies,
+                BrowserRequest.DEFAULT_BROWSER_ID);
+    }
+
+    private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, boolean forceBrowser,
+                                                   boolean isolateCookies, String browserId) {
         if (isTaskStopRequested()) {
             Logger.debug("doBrowserRequest: task stop requested, intercept browser request");
             return null;
         }
         if (!canUseBrowserRequest(service, reqRawBytes, forceBrowser)) {
+            if (forceBrowser) {
+                // Explicit browser tasks must not disappear from the dashboard when
+                // the configured host filter or HTTP method disallows replay.
+                IHttpRequestResponse rejected = HttpReqRespAdapter.from(service, reqRawBytes);
+                rejected.setResponse(buildBrowserErrorResponseBytes(new IllegalArgumentException(
+                        "Browser request rejected: only GET/POST are supported and the target must match "
+                                + "the Browser settings target host regex.")));
+                rejected.setComment(FROM_BROWSER);
+                return rejected;
+            }
             return null;
         }
-        synchronized (mBrowserRequestLock) {
-            if (isTaskStopRequested()) {
-                Logger.debug("doBrowserRequest: task stop requested after acquiring browser lock");
+        // BrowserRequestManager serializes navigation within each Browser ID.
+        if (isTaskStopRequested()) {
+            Logger.debug("doBrowserRequest: task stop requested before browser navigation");
+            return null;
+        }
+        try {
+            waitForRequestMode(RequestMode.BROWSER);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        if (isTaskStopRequested()) {
+            Logger.debug("doBrowserRequest: task stop requested after browser pause check");
+            return null;
+        }
+        try {
+            IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
+            URL url = getUrlByRequestInfo(info);
+            Logger.debug("Do browser request: %s", url);
+            BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes, isolateCookies, browserId);
+            long browserTimeout = getBrowserRequestTimeout();
+            BrowserRequestManager.BrowserResult result = mBrowserRequestManager.navigate(
+                    browserRequest, Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
+                    Config.get(Config.KEY_BROWSER_BINARY_PATH),
+                    browserTimeout, Config.getWorkDir(),
+                    Config.get(Config.KEY_BROWSER_PYTHON_PATH),
+                    Config.getBoolean(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES));
+            IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
+            reqResp.setResponse(buildBrowserResponseBytes(result));
+            reqResp.setComment(FROM_BROWSER);
+            return reqResp;
+        } catch (Exception e) {
+            Logger.debug("Browser request error: %s", e.getMessage());
+            if (isTaskStopRequested() || mPausedRequestModes.contains(RequestMode.BROWSER)) {
                 return null;
             }
-            try {
-                waitForRequestMode(RequestMode.BROWSER);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-            if (isTaskStopRequested()) {
-                Logger.debug("doBrowserRequest: task stop requested after browser pause check");
-                return null;
-            }
-            try {
-                IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
-                URL url = getUrlByRequestInfo(info);
-                Logger.debug("Do browser request: %s", url);
-                BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes, isolateCookies);
-                long browserTimeout = getBrowserRequestTimeout();
-                BrowserRequestManager.BrowserResult result = mBrowserRequestManager.navigate(
-                        browserRequest, Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
-                        Config.get(Config.KEY_BROWSER_BINARY_PATH),
-                        browserTimeout, Config.getWorkDir(),
-                        Config.get(Config.KEY_BROWSER_PYTHON_PATH),
-                        Config.getBoolean(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES));
-                IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
-                reqResp.setResponse(buildBrowserResponseBytes(result));
-                reqResp.setComment(FROM_BROWSER);
-                return reqResp;
-            } catch (Exception e) {
-                Logger.debug("Browser request error: %s", e.getMessage());
-                if (isTaskStopRequested() || mPausedRequestModes.contains(RequestMode.BROWSER)) {
-                    return null;
-                }
-                IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
-                reqResp.setResponse(buildBrowserErrorResponseBytes(e));
-                reqResp.setComment(FROM_BROWSER);
-                return reqResp;
-            }
+            IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
+            reqResp.setResponse(buildBrowserErrorResponseBytes(e));
+            reqResp.setComment(FROM_BROWSER);
+            return reqResp;
         }
     }
 
@@ -2019,6 +2123,11 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes, boolean isolateCookies) throws MalformedURLException {
+        return buildBrowserRequest(info, reqRawBytes, isolateCookies, BrowserRequest.DEFAULT_BROWSER_ID);
+    }
+
+    private BrowserRequest buildBrowserRequest(IRequestInfo info, byte[] reqRawBytes, boolean isolateCookies,
+                                               String browserId) throws MalformedURLException {
         URL url = getUrlByRequestInfo(info);
         if (url == null) {
             throw new IllegalArgumentException("browser request url is empty");
@@ -2027,7 +2136,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         byte[] bodyBytes = bodyOffset >= 0 && bodyOffset < reqRawBytes.length
                 ? Arrays.copyOfRange(reqRawBytes, bodyOffset, reqRawBytes.length)
                 : EMPTY_BYTES;
-        return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes, isolateCookies);
+        return BrowserRequest.of(info.getMethod(), url.toString(), info.getHeaders(), bodyBytes, isolateCookies,
+                browserId);
     }
 
     private boolean matchesBrowserRequestTarget(IHttpService service, IRequestInfo info) {
@@ -2293,9 +2403,13 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (mBrowserCloseExecutor.isShutdown()) {
             return;
         }
+        Runnable closeRetired = mBrowserRequestManager.detachSessionsForClose(Config.getWorkDir(),
+                Config.get(Config.KEY_BROWSER_PYTHON_PATH),
+                Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
+                Config.get(Config.KEY_BROWSER_BINARY_PATH));
         mBrowserCloseExecutor.submit(() -> {
             try {
-                closeBrowserRequestDriver();
+                closeRetired.run();
             } catch (Exception e) {
                 Logger.debug("Async close browser bridge error: %s", e.getMessage());
             }
@@ -3054,22 +3168,10 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     @Override
     public void onChangeSelection(TaskData data) {
-        // 如果 data 为空，表示执行了清空历史记录操作
-        if (data == null) {
-            onClearHistory();
-            return;
+        if (mMainMessageView != null) {
+            // Clearing or changing a selection must not reset running browser sessions.
+            mMainMessageView.showMessage(getReqResp(data));
         }
-        mCurrentReqResp = getReqResp(data);
-        if (mCurrentReqResp == null) {
-            mRequestTextEditor.setMessage(EMPTY_BYTES, true);
-            mResponseTextEditor.setMessage(EMPTY_BYTES, false);
-            return;
-        }
-        // 加载请求、响应数据包
-        byte[] hintBytes = mHelpers.stringToBytes(L.get("message_editor_loading"));
-        mRequestTextEditor.setMessage(hintBytes, true);
-        mResponseTextEditor.setMessage(hintBytes, false);
-        mRefreshMsgTask.execute(this::refreshReqRespMessage);
     }
 
     /**
@@ -3113,74 +3215,19 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
     }
 
-    /**
-     * 清空历史记录
-     */
-    private void onClearHistory() {
-        mCurrentReqResp = null;
-        // 清空去重过滤集合
-        clearRepeatFilter();
-        // 清空超时的请求主机集合
-        sTimeoutReqHost.clear();
-        mBrowserFallbackStats.clear();
-        cancelBrowserRequestDriver();
-        clearBrowserRequestTasks();
-        // 清空显示的请求、响应数据包
-        mRequestTextEditor.setMessage(EMPTY_BYTES, true);
-        mResponseTextEditor.setMessage(EMPTY_BYTES, false);
-        // 清除指纹识别历史记录
-        FpManager.clearHistory();
-        closeBrowserRequestDriverAsync();
-    }
-
-    /**
-     * 刷新请求响应信息
-     */
-    private void refreshReqRespMessage() {
-        byte[] request = getRequest();
-        byte[] response = getResponse();
-        if (request == null || request.length == 0) {
-            request = EMPTY_BYTES;
-        }
-        if (response == null || response.length == 0) {
-            response = EMPTY_BYTES;
-        }
-        // 检测是否超过配置的显示长度限制
-        int maxLength = Config.getInt(Config.KEY_MAX_DISPLAY_LENGTH);
-        if (maxLength >= 100000 && request.length >= maxLength) {
-            String hint = L.get("message_editor_request_length_limit_hint");
-            request = mHelpers.stringToBytes(hint);
-        }
-        if (maxLength >= 100000 && response.length >= maxLength) {
-            String hint = L.get("message_editor_response_length_limit_hint");
-            response = mHelpers.stringToBytes(hint);
-        }
-        mRequestTextEditor.setMessage(request, true);
-        mResponseTextEditor.setMessage(response, false);
-    }
-
     @Override
     public IHttpService getHttpService() {
-        if (mCurrentReqResp != null) {
-            return mCurrentReqResp.getHttpService();
-        }
-        return null;
+        return mMainMessageView == null ? null : mMainMessageView.getHttpService();
     }
 
     @Override
     public byte[] getRequest() {
-        if (mCurrentReqResp != null) {
-            return mCurrentReqResp.getRequest();
-        }
-        return new byte[0];
+        return mMainMessageView == null ? EMPTY_BYTES : mMainMessageView.getRequest();
     }
 
     @Override
     public byte[] getResponse() {
-        if (mCurrentReqResp != null) {
-            return mCurrentReqResp.getResponse();
-        }
-        return new byte[0];
+        return mMainMessageView == null ? EMPTY_BYTES : mMainMessageView.getResponse();
     }
 
     /**
@@ -3213,47 +3260,44 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         if (list == null || list.isEmpty()) {
             return;
         }
+        // The caller may clear or edit its list after submitting the asynchronous import.
+        final List<?> urls = new ArrayList<>(list);
+        final List<IdentityProfile> selectedProfiles = profiles == null ? List.of() : new ArrayList<>(profiles);
+        final String payloadItem = WordlistManager.getItem(WordlistManager.KEY_PAYLOAD);
         final long taskGeneration = captureTaskGeneration();
-        new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
-            for (Object item : list) {
+        Logger.info("URL import submitted: entries=%d, mode=%s", urls.size(), requestMode);
+        new Thread(() -> runWithTaskGeneration(taskGeneration, () -> runManualScan(() -> {
+            // Import is an explicit manual action, just like Send to OST. Reset history
+            // once per request ID for this batch, not once per URL/dictionary occurrence.
+            int failed = 0;
+            int visited = 0;
+            for (Object item : urls) {
+                if (isTaskStopRequested(taskGeneration)) {
+                    Logger.info("URL import stopped: visited=%d/%d, errors=%d", visited, urls.size(), failed);
+                    return;
+                }
+                visited++;
                 try {
                     IHttpRequestResponse httpReqResp = HttpReqRespAdapter.from(String.valueOf(item));
-                    doScan(httpReqResp, FROM_IMPORT, WordlistManager.getItem(WordlistManager.KEY_PAYLOAD),
-                            requestMode, profiles, expandDirectories);
-                } catch (IllegalArgumentException e) {
-                    Logger.error("Import error: " + e.getMessage());
-                }
-                if (isTaskStopRequested(taskGeneration)) {
-                    Logger.debug("importUrl: task stop requested, stop import url");
-                    return;
+                    // Log only the origin, not query values that may contain credentials.
+                    Logger.info("URL import entry %d/%d: target=%s", visited, urls.size(),
+                            getReqHostByHttpService(httpReqResp.getHttpService()));
+                    doScan(httpReqResp, FROM_IMPORT, payloadItem, requestMode, selectedProfiles, expandDirectories);
+                } catch (RuntimeException e) {
+                    // A malformed entry or failure in Burp request analysis must not
+                    // terminate the importer and silently discard every later URL.
+                    failed++;
+                    Logger.error("URL import entry %d/%d failed: %s: %s",
+                            visited, urls.size(), e.getClass().getSimpleName(), e.getMessage());
                 }
             }
-        })).start();
+            // This reports preparation, not HTTP completion; requests use the existing task queues.
+            Logger.info("URL import preparation finished: visited=%d/%d, errors=%d", visited, urls.size(), failed);
+        })), "OST-url-import").start();
     }
 
-
     private void importUrl(List<?> list, RequestMode requestMode) {
-        if (list == null || list.isEmpty()) {
-            return;
-        }
-        // 处理导入的 URL 数据
-        final long taskGeneration = captureTaskGeneration();
-        new Thread(() -> runWithTaskGeneration(taskGeneration, () -> {
-            for (Object item : list) {
-                try {
-                    String url = String.valueOf(item);
-                    IHttpRequestResponse httpReqResp = HttpReqRespAdapter.from(url);
-                    doScan(httpReqResp, FROM_IMPORT, requestMode);
-                } catch (IllegalArgumentException e) {
-                    Logger.error("Import error: " + e.getMessage());
-                }
-                // 线程池关闭后，停止导入 Url 数据
-                if (isTaskStopRequested(taskGeneration)) {
-                    Logger.debug("importUrl: task stop requested, stop import url");
-                    return;
-                }
-            }
-        })).start();
+        importUrl(list, requestMode, List.of(), true);
     }
 
     @Override
@@ -3288,9 +3332,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             return new byte[]{};
         }
         IHttpRequestResponse reqResp = getReqResp(data);
-        if (reqResp != null) {
-            mCurrentReqResp = reqResp;
-        }
         byte[] respBytes = reqResp == null ? data.getRespBytes() : reqResp.getResponse();
         if (respBytes == null || respBytes.length == 0) {
             return new byte[]{};
@@ -3356,6 +3397,421 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             case DataBoardTab.EVENT_CLEAR_ALL_TASK:
                 stopAllTask();
                 break;
+            case DataBoardTab.EVENT_PARAMETER_FUZZ_SCAN:
+                if (params.length > 0 && params[0] instanceof ParameterFuzzScanOptions options) {
+                    startParameterFuzzScan(options);
+                }
+                break;
+        }
+    }
+
+    private void startParameterFuzzScan(ParameterFuzzScanOptions options) {
+        if (!mParameterFuzzRunning.compareAndSet(false, true)) {
+            mDataBoardTab.getParameterFuzzPanel().setScanStatus(L.get("parameter_fuzz.scan_busy"));
+            return;
+        }
+        final long taskGeneration = captureTaskGeneration();
+        final long parameterFuzzGeneration = mParameterFuzzGeneration.incrementAndGet();
+        final ParameterFuzzProgress progress = new ParameterFuzzProgress(parameterFuzzGeneration);
+        mActiveParameterFuzzProgress = progress;
+        mDataBoardTab.getParameterFuzzPanel().setScanRunning(true);
+        mDataBoardTab.getParameterFuzzPanel().showTraffic();
+        mDataBoardTab.getParameterFuzzPanel().setScanProgress(0, 0,
+                L.get("parameter_fuzz.scan_preparing"));
+        try {
+            mParameterFuzzPreparationExecutor.execute(() -> runWithTaskGeneration(taskGeneration, () -> {
+                try {
+                    executeParameterFuzzScan(options, progress);
+                } catch (Exception e) {
+                    Logger.error("Parameter scan failed: %s", e.getMessage());
+                    progress.finishWithStatus(L.get("parameter_fuzz.scan_failed", e.getMessage()));
+                }
+            }));
+        } catch (RejectedExecutionException e) {
+            if (mParameterFuzzGeneration.get() == parameterFuzzGeneration) {
+                progress.finishWithStatus(L.get("parameter_fuzz.scan_unavailable"));
+            }
+        }
+    }
+
+    private void executeParameterFuzzScan(ParameterFuzzScanOptions options, ParameterFuzzProgress progress) {
+        if (isTaskStopRequested()) {
+            progress.cancel();
+            return;
+        }
+        List<ParameterFuzzProbe> probes;
+        try {
+            progress.setStatus(L.get("parameter_fuzz.scan_building"));
+            probes = buildParameterFuzzProbes(options);
+        } catch (ParameterFuzzLimitException e) {
+            progress.finishWithStatus(L.get("parameter_fuzz.scan_limit", MAX_PARAMETER_FUZZ_REQUESTS));
+            return;
+        }
+        if (isTaskStopRequested()) {
+            progress.cancel();
+            return;
+        }
+        if (probes.isEmpty()) {
+            progress.finishWithStatus(L.get("parameter_fuzz.scan_no_probes"));
+            return;
+        }
+
+        progress.startDispatch(probes.size());
+        runWithParameterFuzzProgress(progress, () -> {
+            for (int index = 0; index < probes.size(); index++) {
+                if (isTaskStopRequested()) {
+                    break;
+                }
+                ParameterFuzzProbe probe = probes.get(index);
+                try {
+                    HttpReqRespAdapter reqResp = HttpReqRespAdapter.from(probe.service(), probe.request());
+                    IRequestInfo info = mHelpers.analyzeRequest(probe.service(), probe.request());
+                    String variantId = buildVariantId(probe.service(), probe.request());
+                    runWithBrowserRequestId(probe.browserId(), () ->
+                            runScanTask(reqResp, info, null, FROM_PARAMETER_FUZZ, probe.requestMode(), List.of(),
+                                    false, variantId));
+                } catch (Exception e) {
+                    Logger.debug("Parameter probe skipped: %s", e.getMessage());
+                } finally {
+                    progress.probeDispatched(index + 1);
+                }
+            }
+        });
+        progress.finishSubmission(isTaskStopRequested());
+    }
+
+    private List<ParameterFuzzProbe> buildParameterFuzzProbes(ParameterFuzzScanOptions batch) {
+        List<ParameterFuzzProbe> probes = new ArrayList<>();
+        for (TargetOptions options : batch.scans()) {
+            if (isTaskStopRequested()) break;
+            if (!options.eligible()) continue;
+            TaskData target = options.target();
+            LinkedHashSet<String> parameterValues = new LinkedHashSet<>();
+            for (String value : options.parameterValues()) {
+                if (value != null && !value.isEmpty()) parameterValues.add(value);
+            }
+            LinkedHashSet<String> nameCandidates = new LinkedHashSet<>();
+            for (String name : options.parameterNameCandidates()) {
+                if (name != null && !name.trim().isEmpty()) nameCandidates.add(name.trim());
+            }
+            if (!options.customPositions() && (parameterValues.isEmpty()
+                    || (options.discoverParameterNames() && nameCandidates.isEmpty()))) continue;
+            String method = target.getMethod() == null ? "" : target.getMethod().trim();
+            List<Byte> locations = new ArrayList<>();
+            if (isParameterScanMethodAllowed(method, options.scanGet(), options.scanPost())
+                    && "GET".equalsIgnoreCase(method)) {
+                locations.add(IParameter.PARAM_URL);
+            } else if (isParameterScanMethodAllowed(method, options.scanGet(), options.scanPost())
+                    && "POST".equalsIgnoreCase(method)) {
+                // POST scans query-string and JSON parameters; form-urlencoded bodies
+                // are deliberately excluded per the selected workflow.
+                locations.add(IParameter.PARAM_URL);
+                locations.add(IParameter.PARAM_JSON);
+            } else {
+                continue;
+            }
+            IHttpRequestResponse source = resolveParameterFuzzTarget(target);
+            if (source == null || source.getHttpService() == null || source.getRequest() == null) {
+                continue;
+            }
+            IHttpService service = source.getHttpService();
+            byte[] originalRequest = source.getRequest();
+            if (options.customPositions()) {
+                byte[] template = options.requestTemplate();
+                if (ParameterFuzzRequestBuilder.countPayloadPositions(template) == 0
+                        || !isParameterScanMethodAllowed(ParameterFuzzRequestBuilder.requestMethod(template),
+                        options.scanGet(), options.scanPost())) {
+                    continue;
+                }
+                var plan = ParameterFuzzRequestBuilder.positionPlan(template, options.positionValues());
+                if (plan.count() > MAX_PARAMETER_FUZZ_REQUESTS - probes.size()) {
+                    throw new ParameterFuzzLimitException();
+                }
+                for (Map<String, String> payloads : plan) {
+                    if (isTaskStopRequested()) break;
+                    // Exact positions support independent parameter names, values and JSON elements.
+                    byte[] mutated = ParameterFuzzRequestBuilder.applyPayloadPositions(template, payloads);
+                    addParameterFuzzProbe(probes, service, mutated, options);
+                }
+                continue;
+            }
+            IRequestInfo info = mHelpers.analyzeRequest(service, originalRequest);
+            for (byte type : locations) {
+                if (!isParameterLocationAvailable(info, originalRequest, type)) {
+                    continue;
+                }
+                LinkedHashSet<String> names = new LinkedHashSet<>();
+                if (options.discoverParameterNames()) {
+                    names.addAll(nameCandidates);
+                } else {
+                    info.getParameters().stream()
+                            .filter(parameter -> parameter.getType() == type)
+                            .map(IParameter::getName)
+                            .filter(name -> name != null && !name.isEmpty())
+                            .forEach(names::add);
+                }
+                for (String name : names) {
+                    for (String value : parameterValues) {
+                        if (isTaskStopRequested()) {
+                            break;
+                        }
+                        try {
+                            byte[] mutated = ParameterFuzzRequestBuilder.applyProbe(
+                                    mHelpers, originalRequest, name, value, type);
+                            if (!Arrays.equals(mutated, originalRequest)) {
+                                addParameterFuzzProbe(probes, service, mutated, options);
+                            }
+                        } catch (ParameterFuzzLimitException e) {
+                            throw e;
+                        } catch (Exception e) {
+                            Logger.debug("Parameter dictionary entry skipped: %s", e.getMessage());
+                        }
+                    }
+                }
+            }
+        }
+        return probes;
+    }
+
+    private void addParameterFuzzProbe(List<ParameterFuzzProbe> probes, IHttpService service, byte[] request, TargetOptions options) {
+        byte[] adjusted = updateContentLength(request);
+        if (adjusted == null) {
+            return;
+        }
+        if (probes.size() >= MAX_PARAMETER_FUZZ_REQUESTS) {
+            throw new ParameterFuzzLimitException();
+        }
+        probes.add(new ParameterFuzzProbe(service, adjusted, options.requestMode(), options.browserId()));
+    }
+
+    private IHttpRequestResponse resolveParameterFuzzTarget(TaskData target) {
+        if (target == null) {
+            return null;
+        }
+        Object reqRespObject = target.getReqResp();
+        IHttpRequestResponse original = reqRespObject instanceof IHttpRequestResponse
+                ? (IHttpRequestResponse) reqRespObject : null;
+        IHttpService service = original == null ? null : original.getHttpService();
+        byte[] request = target.getReqBytes();
+        if (request == null || request.length == 0) {
+            request = original == null ? null : original.getRequest();
+        }
+        if (service == null) {
+            try {
+                String host = target.getHost();
+                if (!UrlUtils.isHTTP(host)) {
+                    return null;
+                }
+                service = buildHttpServiceByURL(new URL(host));
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        if (request == null || request.length == 0) {
+            return null;
+        }
+        HttpReqRespAdapter adapter = HttpReqRespAdapter.from(service, request);
+        if (original != null && original.getResponse() != null) {
+            adapter.setResponse(original.getResponse());
+        } else if (target.getRespBytes() != null) {
+            adapter.setResponse(target.getRespBytes());
+        }
+        return adapter;
+    }
+
+    private boolean isParameterLocationAvailable(IRequestInfo info, byte[] request, byte type) {
+        boolean hasTypedParameter = info.getParameters().stream().anyMatch(parameter -> parameter.getType() == type);
+        if (type == IParameter.PARAM_URL) {
+            return true;
+        }
+        if (type != IParameter.PARAM_JSON) {
+            return false;
+        }
+        if (info.getBodyOffset() >= request.length) {
+            return false;
+        }
+        String contentType = "";
+        for (String header : info.getHeaders()) {
+            if (header.regionMatches(true, 0, "Content-Type:", 0, "Content-Type:".length())) {
+                contentType = header.substring("Content-Type:".length()).trim().toLowerCase(Locale.ROOT);
+                break;
+            }
+        }
+        if (type == IParameter.PARAM_JSON) {
+            String mediaType = contentType.split(";", 2)[0].trim();
+            return hasTypedParameter || mediaType.equals("application/json") || mediaType.endsWith("+json");
+        }
+        return false;
+    }
+
+    static boolean isParameterScanMethodAllowed(String method, boolean scanGet, boolean scanPost) {
+        return ParameterFuzzRequestBuilder.isSelectedMethod(method, scanGet, scanPost);
+    }
+
+    static boolean isConfirmedExistingRouteStatus(int status) {
+        return ParameterFuzzRequestBuilder.isExistingRoute(status);
+    }
+
+    private void runWithBrowserRequestId(String browserId, Runnable runnable) {
+        String previous = mBrowserRequestIdContext.get();
+        if (StringUtils.isEmpty(browserId)) {
+            mBrowserRequestIdContext.remove();
+        } else {
+            mBrowserRequestIdContext.set(browserId);
+        }
+        try {
+            runnable.run();
+        } finally {
+            if (previous == null) {
+                mBrowserRequestIdContext.remove();
+            } else {
+                mBrowserRequestIdContext.set(previous);
+            }
+        }
+    }
+
+    private void runWithParameterFuzzProgress(ParameterFuzzProgress progress, Runnable runnable) {
+        ParameterFuzzProgress previous = mParameterFuzzProgressContext.get();
+        mParameterFuzzProgressContext.set(progress);
+        try {
+            runnable.run();
+        } finally {
+            if (previous == null) {
+                mParameterFuzzProgressContext.remove();
+            } else {
+                mParameterFuzzProgressContext.set(previous);
+            }
+        }
+    }
+
+    private record ParameterFuzzProbe(IHttpService service, byte[] request, RequestMode requestMode, String browserId) {
+    }
+
+    private static final class ParameterFuzzLimitException extends RuntimeException {
+    }
+
+    private final class ParameterFuzzProgress {
+        private final long generation;
+        private int total;
+        private int probesDispatched;
+        private int requestsQueued;
+        private int requestsSettled;
+        private int requestsRejected;
+        private boolean dispatchFinished;
+        private boolean stopped;
+        private boolean ended;
+
+        private ParameterFuzzProgress(long generation) {
+            this.generation = generation;
+        }
+
+        private synchronized void setStatus(String status) {
+            if (isCurrent()) {
+                mDataBoardTab.getParameterFuzzPanel().setScanProgress(0, total, status);
+            }
+        }
+
+        private synchronized void startDispatch(int total) {
+            this.total = total;
+            publish(L.get("parameter_fuzz.scan_sending", 0, 0, total));
+        }
+
+        private synchronized void probeDispatched(int count) {
+            probesDispatched = count;
+            if (isCurrent() && !dispatchFinished && (count == 1 || count % 20 == 0 || count >= total)) {
+                publish(L.get("parameter_fuzz.scan_sending", requestsSettled, requestsQueued, total));
+            }
+        }
+
+        private synchronized void requestQueued() {
+            if (ended) return;
+            requestsQueued++;
+            if (isCurrent() && (requestsQueued == 1 || requestsQueued % 20 == 0)) {
+                publish(L.get("parameter_fuzz.scan_sending", requestsSettled, requestsQueued, total));
+            }
+        }
+
+        private synchronized void requestCompleted() {
+            if (ended) return;
+            requestsSettled++;
+            publishProgress();
+            finishIfIdle();
+        }
+
+        private synchronized void requestRejected() {
+            if (ended) return;
+            requestsRejected++;
+            requestsSettled++;
+            publishProgress();
+            finishIfIdle();
+        }
+
+        private synchronized void finishSubmission(boolean stopped) {
+            if (ended) return;
+            dispatchFinished = true;
+            this.stopped = stopped;
+            finishIfIdle();
+            if (!ended && isCurrent()) {
+                publish(L.get("parameter_fuzz.scan_sending", requestsSettled, requestsQueued, total));
+            }
+        }
+
+        private synchronized void finishWithStatus(String status) {
+            if (ended) return;
+            ended = true;
+            if (isCurrent()) {
+                mDataBoardTab.getParameterFuzzPanel().setScanProgress(requestsSettled, total, status);
+                release();
+            }
+        }
+
+        private synchronized void cancel() {
+            if (ended) return;
+            ended = true;
+            if (isCurrent()) {
+                mDataBoardTab.getParameterFuzzPanel().setScanProgress(requestsSettled, total,
+                        L.get("parameter_fuzz.scan_stopped_count", requestsQueued, total));
+                release();
+            }
+        }
+
+        private void publishProgress() {
+            if (isCurrent()) {
+                publish(L.get("parameter_fuzz.scan_sending", requestsSettled, requestsQueued, total));
+            }
+        }
+
+        private void publish(String status) {
+            if (isCurrent()) {
+                mDataBoardTab.getParameterFuzzPanel().setScanProgress(
+                        Math.min(requestsSettled, total), total, status);
+            }
+        }
+
+        private void finishIfIdle() {
+            if (!dispatchFinished || requestsSettled < requestsQueued || ended) return;
+            ended = true;
+            if (isCurrent()) {
+                String status = stopped
+                        ? L.get("parameter_fuzz.scan_stopped_count", requestsQueued, total)
+                        : L.get("parameter_fuzz.scan_completed", requestsQueued - requestsRejected, total,
+                        total - requestsQueued + requestsRejected);
+                mDataBoardTab.getParameterFuzzPanel().setScanProgress(requestsSettled, total, status);
+                release();
+            }
+        }
+
+        private boolean isCurrent() {
+            return mActiveParameterFuzzProgress == this
+                    && mParameterFuzzGeneration.get() == generation;
+        }
+
+        private void release() {
+            mDataBoardTab.getParameterFuzzPanel().setScanRunning(false);
+            mParameterFuzzRunning.set(false);
+            if (mActiveParameterFuzzProgress == this) {
+                mActiveParameterFuzzProgress = null;
+            }
         }
     }
 
@@ -3394,10 +3850,17 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      */
     private void stopAllTask() {
         mTaskGeneration.incrementAndGet();
+        ParameterFuzzProgress parameterFuzzProgress = mActiveParameterFuzzProgress;
+        if (parameterFuzzProgress != null) {
+            parameterFuzzProgress.cancel();
+        } else {
+            mParameterFuzzRunning.set(false);
+        }
+        mParameterFuzzGeneration.incrementAndGet();
         // 关闭线程池，处理未执行的任务
         List<Runnable> taskList = mTaskThreadPool.shutdownNow();
         List<Runnable> lfTaskList = mLFTaskThreadPool.shutdownNow();
-        List<Runnable> browserTaskList = mBrowserTaskThreadPool.shutdownNow();
+        List<Runnable> browserTaskList = shutdownBrowserTaskQueues();
         cancelBrowserRequestDriver();
         handleStopTasks(taskList);
         handleStopTasks(lfTaskList);
@@ -3412,14 +3875,16 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         mBrowserFallbackStats.clear();
         // 提示信息
         UIHelper.showTipsDialog(L.get("clear_all_task_tips"));
+        // Retire old Browser IDs before new tasks can reuse them.
+        closeBrowserRequestDriverAsync();
         // 停止后，重新初始化任务线程池
         mTaskThreadPool = Executors.newFixedThreadPool(TASK_THREAD_COUNT);
         // 停止后，重新初始化低频任务线程池
         mLFTaskThreadPool = Executors.newFixedThreadPool(LF_TASK_THREAD_COUNT);
         mBrowserTaskThreadPool = Executors.newSingleThreadExecutor();
+        mParameterFuzzBrowserTaskThreadPool = newParameterFuzzBrowserExecutor();
         // 重新初始化 QPS 限制器
         initQpsLimiter();
-        closeBrowserRequestDriverAsync();
     }
 
     /**
@@ -3438,12 +3903,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                 String from = task.getFrom();
                 // 将未执行的任务从去重过滤集合中移除
                 sRepeatFilter.remove(reqId);
-                // 将未执行的任务计数
-                if (isLowFrequencyTask(from)) {
-                    mLFTaskOverCounter.incrementAndGet();
-                } else {
-                    mTaskOverCounter.incrementAndGet();
-                }
+                // Balance the same queue used at submission, including browser sends.
+                incrementTaskOverCounter(from, task.getRequestMode());
             }
         }
     }
@@ -5084,13 +5545,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 停止状态栏刷新定时器
         mStatusRefresh.stop();
         mRefreshMsgTask.shutdownNow();
+        mParameterFuzzPreparationExecutor.shutdownNow();
         // 关闭任务线程池
         int count = mTaskThreadPool.shutdownNow().size();
         Logger.info("Close: task thread pool completed. Task %d records.", count);
         // 关闭低频任务线程池
         count = mLFTaskThreadPool.shutdownNow().size();
         Logger.info("Close: low frequency task thread pool completed. Task %d records.", count);
-        count = mBrowserTaskThreadPool.shutdownNow().size();
+        count = shutdownBrowserTaskQueues().size();
         Logger.info("Close: browser task thread pool completed. Task %d records.", count);
         // 关闭指纹识别线程池
         count = mFpThreadPool.shutdownNow().size();
@@ -5101,6 +5563,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // Stop new snapshots and let queued/manual saves finish before closing persistence resources.
         if (mDataBoardTab != null) {
             mDataBoardTab.closeAutoSaveTimer();
+            mDataBoardTab.getParameterFuzzPanel().close();
             mDataBoardTab.closeDataSaveExecutor();
         }
         TaskPersistenceManager.close();
@@ -5136,7 +5599,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         // 清除任务列表
         count = 0;
         if (mDataBoardTab != null) {
-            for (TaskTable taskTable : mDataBoardTab.getTaskTables()) {
+            for (TaskTable taskTable : mDataBoardTab.getAllTaskTables()) {
                 if (taskTable == null) {
                     continue;
                 }

@@ -8,6 +8,10 @@ local MCP-style JSON-RPC service.
 
 > Build target: **Java 21**. JDK 8 is not supported.
 
+## Release 1.2.6
+
+See [release notes and validation scope](docs/RELEASE_1.2.6.md).
+
 ## Highlights
 
 ### Scan Workflow
@@ -52,7 +56,7 @@ local MCP-style JSON-RPC service.
    .\mvnw.cmd clean package
    ```
 
-2. Load `extender/target/OST-v1.2.5.jar` in Burp Suite under `Extensions` -> `Add`.
+2. Load `extender/target/OST-v1.2.6.jar` in Burp Suite under `Extensions` -> `Add`.
 
 3. Open the OST tab and configure dictionaries, request behavior, browser replay, redirects,
    persistence, and optional MCP from `Config`.
@@ -62,6 +66,22 @@ local MCP-style JSON-RPC service.
    ```bash
    python -m pip install DrissionPage
    ```
+
+## Custom Parameter Scan Positions
+
+Select endpoints in the data board, choose **Parameter scan** from the context menu,
+and switch to **Custom positions**. Select a parameter name or value and click **Add marker**.
+The editor inserts `$1$`, `$2$`, and so on; select a separate existing Payload dictionary for each ID in **Position dictionaries**.
+For example, `$1$=$2$&$3$=$4$` uses four independent dictionaries; `{"items":[1,$1$,3]}` replaces only the marked array element.
+
+- Numbered markers replace the old `$$` syntax. Manually typed numbered markers also appear in the dictionary table.
+- Different IDs use all dictionary combinations; repeated occurrences of the same ID share one value. Two dictionaries of 2 and 3 values generate 6 requests per eligible endpoint.
+- Modes, name/value dictionaries, GET/POST filters, route filtering and HTTP/Browser selection are saved per endpoint. One scan submits all endpoint configurations together; selecting another endpoint does not change the batch. **Apply to all endpoints** copies the current settings without overwriting request drafts or position dictionaries. The target list and preview display each endpoint's mode.
+- New endpoint imports append to the target list. Importing the same method/host/URL from the same request source again does not overwrite its draft or dictionary choices. HTTP and browser sources remain separate targets. Switch endpoints to edit their independent settings; **Remove endpoint** and **Clear endpoints** manage this list without clearing scan traffic.
+- **Remove selected markers** removes the IDs selected in the dictionary table, or the marker at the editor caret. **Clear all markers** removes every ID in the current request. These operations restore the original selected text; manually typed markers have no original text and are removed. **Restore original request** resets the current draft and its marker assignments.
+- Payloads are substituted literally, without extra quoting, encoding, or recursive expansion. Unmarked endpoints are skipped; automatic name discovery and existing-value scans need no markers.
+- Preview and execution share the same custom-position combination count. A scan exceeding 5000 requests is cancelled before any requests are sent. Starting a scan snapshots its templates and dictionaries, so subsequent editing or removing endpoints does not change that run.
+- Scans reuse the existing scheduling, rate limits, retries, progress tracking and browser isolation. Ordinary browser scans and parameter browser scans have independent queues; requests within the same Browser ID remain serial. Global pause still applies to both queues. Responses appear in Parameter scan → Scan traffic, with separate request/response viewers and existing Repeater actions. Clearing this table does not clear the data board or stop active scans.
 
 ## Configuration Guide
 
@@ -212,7 +232,7 @@ Tool-call example:
 Run the Quick Start build command from the repository root. The packaged extension is:
 
 ```text
-extender/target/OST-v1.2.5.jar
+extender/target/OST-v1.2.6.jar
 ```
 
 ## License

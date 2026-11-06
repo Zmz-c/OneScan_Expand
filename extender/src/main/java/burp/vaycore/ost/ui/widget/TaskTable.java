@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.function.Consumer;
 
 /**
  * 任务列表
@@ -60,6 +61,7 @@ public class TaskTable extends JTable implements ActionListener {
 
     private final TaskTableModel mTaskTableModel;
     private TableRowSorter<TaskTableModel> mTableRowSorter;
+    private Consumer<List<TaskData>> mParameterFuzzRequestedHandler;
     private ArrayList<TableFilter<AbstractTableModel>> mTableFilters = new ArrayList<>();
     private final ArrayList<TableFilter<AbstractTableModel>> mTempFilters = new ArrayList<>();
     private volatile String mSearchText = "";
@@ -215,6 +217,7 @@ public class TaskTable extends JTable implements ActionListener {
         addPopupMenuItem(menu, L.get("task_table_menu.copy_url"), "copy-url");
         addPopupMenuItem(menu, L.get("task_table_menu.send_to_repeater"), "send-to-repeater");
         addPopupMenuItem(menu, L.get("task_table_menu.compare_profiles"), "compare-profiles");
+        addPopupMenuItem(menu, L.get("task_table_menu.parameter_fuzz"), "parameter-fuzz");
         addPopupMenuItem(menu, L.get("task_table_menu.add_host_to_blocklist"), "add-host-to-blocklist");
         addPopupMenuItem(menu, L.get("task_table_menu.delete_selected_items"), "remove-items");
         addPopupMenuItem(menu, L.get("task_table_menu.clear_history"), "clean-all");
@@ -359,6 +362,10 @@ public class TaskTable extends JTable implements ActionListener {
         this.mOnTaskTableEventListener = l;
     }
 
+    public void setParameterFuzzRequestedHandler(Consumer<List<TaskData>> handler) {
+        this.mParameterFuzzRequestedHandler = handler;
+    }
+
     /**
      * 添加展示的任务数据
      *
@@ -428,6 +435,9 @@ public class TaskTable extends JTable implements ActionListener {
             case "compare-profiles":
                 doCompareProfiles(selectedRows, item);
                 break;
+            case "parameter-fuzz":
+                doParameterFuzz(selectedRows);
+                break;
             case "add-host-to-blocklist":
                 doAddHostToBlocklist(selectedRows);
                 break;
@@ -444,6 +454,22 @@ public class TaskTable extends JTable implements ActionListener {
                 // 处理临时过滤事件
                 onTempFilterEvent(action, selectedRows);
                 break;
+        }
+    }
+
+    private void doParameterFuzz(int[] selectedRows) {
+        if (mParameterFuzzRequestedHandler == null || selectedRows == null || selectedRows.length == 0) {
+            return;
+        }
+        List<TaskData> selected = new ArrayList<TaskData>();
+        for (int row : selectedRows) {
+            TaskData data = getTaskData(row);
+            if (data != null) {
+                selected.add(data);
+            }
+        }
+        if (!selected.isEmpty()) {
+            mParameterFuzzRequestedHandler.accept(selected);
         }
     }
 

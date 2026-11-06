@@ -7,7 +7,13 @@ import burp.vaycore.common.utils.StringUtils;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
 public class BrowserRequestManager {
@@ -18,26 +24,30 @@ public class BrowserRequestManager {
     private static final String PROFILE_DIR_NAME = "profile";
     private static final String STATE_FILE_NAME = "state.txt";
     private static final String REQUEST_FILE_PREFIX = "request-";
-    private static final int DEBUG_PORT = 9777;
+    private static final int FIRST_DEBUG_PORT = 9777;
+    private static final int LAST_DEBUG_PORT = 30000;
     private static final long DISCOVERY_COMMAND_TIMEOUT_MILLIS = 1500L;
     private static final long DEFAULT_BRIDGE_TIMEOUT_EXTRA_MILLIS = 5000L;
     private static final long NAVIGATION_POST_BRIDGE_TIMEOUT_EXTRA_MILLIS = 20000L;
     private static final String OS_NAME = System.getProperty("os.name", "").toLowerCase();
 
-    private final String mSessionId = "session-" + Long.toHexString(System.currentTimeMillis())
-            + "-" + Integer.toHexString(System.identityHashCode(this));
-    private final Object mProcessLock = new Object();
-    private volatile Process mActiveProcess;
+    private static final Object DEBUG_PORT_LOCK = new Object();
+    private static final Set<Integer> RESERVED_DEBUG_PORTS = new HashSet<Integer>();
+    private static int sNextDebugPort = FIRST_DEBUG_PORT;
 
-    public synchronized BrowserResult navigate(String url, String browserType, String browserBinaryPath,
-                                               long timeoutMillis, String workDir, String pythonPath) {
+    private final ConcurrentMap<String, BrowserSession> mSessions = new ConcurrentHashMap<String, BrowserSession>();
+    private final Set<BrowserSession> mRetiredSessions = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.atomic.AtomicLong mSessionSequence = new java.util.concurrent.atomic.AtomicLong();
+
+    public BrowserResult navigate(String url, String browserType, String browserBinaryPath,
+                                  long timeoutMillis, String workDir, String pythonPath) {
         BrowserRequest request = BrowserRequest.of("GET", url, List.of(), new byte[0]);
         return navigate(request, browserType, browserBinaryPath, timeoutMillis, workDir, pythonPath, false);
     }
 
-    public synchronized BrowserResult navigate(BrowserRequest request, String browserType, String browserBinaryPath,
-                                               long timeoutMillis, String workDir, String pythonPath,
-                                               boolean loadStaticResources) {
+    public BrowserResult navigate(BrowserRequest request, String browserType, String browserBinaryPath,
+                                  long timeoutMillis, String workDir, String pythonPath,
+                                  boolean loadStaticResources) {
         if (request == null) {
             throw new IllegalArgumentException("browser request is null");
         }
@@ -48,9 +58,20 @@ public class BrowserRequestManager {
             throw new IllegalArgumentException("browser request workdir is empty");
         }
 
+        BrowserSession session = getSession(request.getBrowserId());
+        synchronized (session) {
+            return navigateInSession(session, request, browserType, browserBinaryPath, timeoutMillis,
+                    workDir, pythonPath, loadStaticResources);
+        }
+    }
+
+    private BrowserResult navigateInSession(BrowserSession session, BrowserRequest request, String browserType,
+                                             String browserBinaryPath, long timeoutMillis, String workDir,
+                                             String pythonPath, boolean loadStaticResources) {
+
         File scriptFile = ensureScriptFile(workDir);
         File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
-        File sessionDir = new File(browserWorkDir, mSessionId);
+        File sessionDir = new File(browserWorkDir, session.sessionId);
         File profileDir = new File(sessionDir, PROFILE_DIR_NAME);
         File stateFile = new File(sessionDir, STATE_FILE_NAME);
         if (!sessionDir.exists()) {
@@ -84,8 +105,8 @@ public class BrowserRequestManager {
                 arguments.add("--load-static-resources");
             }
 
-            String output = execute(arguments, timeoutMillis + bridgeTimeoutExtraMillis(request), workDir, pythonPath,
-                    scriptFile, profileDir, stateFile);
+            String output = execute(session, arguments, timeoutMillis + bridgeTimeoutExtraMillis(request), workDir,
+                    pythonPath, scriptFile, profileDir, stateFile);
             return parseBrowserResult(output);
         } catch (IOException e) {
             throw new IllegalStateException("browser bridge prepare failed: " + e.getMessage(), e);
@@ -97,17 +118,50 @@ public class BrowserRequestManager {
         }
     }
 
-    public synchronized void close(String workDir, String pythonPath, String browserType, String browserBinaryPath) {
-        if (StringUtils.isEmpty(workDir)) {
-            return;
+    public void close(String workDir, String pythonPath, String browserType, String browserBinaryPath) {
+        closeSessions(allSessions(), workDir, pythonPath, browserType, browserBinaryPath);
+    }
+
+    /** Capture and retire old profiles before workers for the next scan are opened. */
+    public Runnable detachSessionsForClose(String workDir, String pythonPath, String browserType, String browserBinaryPath) {
+        List<BrowserSession> retired;
+        synchronized (mSessions) {
+            retired = new ArrayList<>(mSessions.values());
+            mSessions.clear();
+            mRetiredSessions.addAll(retired);
         }
+        return () -> closeSessions(retired, workDir, pythonPath, browserType, browserBinaryPath);
+    }
+
+    private List<BrowserSession> allSessions() {
+        synchronized (mSessions) {
+            List<BrowserSession> result = new ArrayList<>(mSessions.values());
+            result.addAll(mRetiredSessions);
+            return result;
+        }
+    }
+
+    private void closeSessions(List<BrowserSession> sessions, String workDir, String pythonPath,
+                               String browserType, String browserBinaryPath) {
+        if (StringUtils.isEmpty(workDir)) return;
+        for (BrowserSession session : sessions) {
+            synchronized (session) {
+                closeSession(session, workDir, pythonPath, browserType, browserBinaryPath);
+            }
+        }
+    }
+
+    private void closeSession(BrowserSession session, String workDir, String pythonPath,
+                              String browserType, String browserBinaryPath) {
+        if (session.closed) return;
         try {
             File scriptFile = ensureScriptFile(workDir);
             File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
-            File sessionDir = new File(browserWorkDir, mSessionId);
+            File sessionDir = new File(browserWorkDir, session.sessionId);
             File profileDir = new File(sessionDir, PROFILE_DIR_NAME);
             File stateFile = new File(sessionDir, STATE_FILE_NAME);
             if (!profileDir.exists()) {
+                session.closed = true;
                 return;
             }
 
@@ -120,7 +174,7 @@ public class BrowserRequestManager {
                 arguments.add("--browser-path");
                 arguments.add(browserBinaryPath);
             }
-            execute(arguments, 8000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
+            execute(session, arguments, 8000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
 
             arguments = new ArrayList<String>();
             arguments.add("--action");
@@ -131,24 +185,30 @@ public class BrowserRequestManager {
                 arguments.add("--browser-path");
                 arguments.add(browserBinaryPath);
             }
-            execute(arguments, 10000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
+            execute(session, arguments, 10000L, workDir, pythonPath, scriptFile, profileDir, stateFile);
+            session.closed = true;
         } catch (Exception e) {
             Logger.debug("Close browser bridge error: %s", e.getMessage());
         }
     }
 
     public void cancelCurrentProcess() {
-        Process process = mActiveProcess;
-        if (process == null) {
-            return;
-        }
-        try {
-            process.destroy();
-            if (!process.waitFor(800L, TimeUnit.MILLISECONDS)) {
+        for (BrowserSession session : allSessions()) {
+            Process process;
+            synchronized (session.processLock) {
+                process = session.activeProcess;
+            }
+            if (process == null) {
+                continue;
+            }
+            try {
+                process.destroy();
+                if (!process.waitFor(800L, TimeUnit.MILLISECONDS)) {
+                    process.destroyForcibly();
+                }
+            } catch (Exception e) {
                 process.destroyForcibly();
             }
-        } catch (Exception e) {
-            process.destroyForcibly();
         }
     }
 
@@ -156,9 +216,12 @@ public class BrowserRequestManager {
         if (StringUtils.isEmpty(workDir)) {
             return;
         }
-        File sessionDir = new File(new File(workDir, SCRIPT_DIR_NAME), mSessionId);
-        if (sessionDir.exists()) {
-            FileUtils.deleteFile(sessionDir);
+        File browserWorkDir = new File(workDir, SCRIPT_DIR_NAME);
+        for (BrowserSession session : allSessions()) {
+            File sessionDir = new File(browserWorkDir, session.sessionId);
+            if (sessionDir.exists()) {
+                FileUtils.deleteFile(sessionDir);
+            }
         }
     }
 
@@ -187,74 +250,120 @@ public class BrowserRequestManager {
         writer.newLine();
     }
 
-    private String execute(List<String> arguments, long timeoutMillis, String workDir, String pythonPath,
-                           File scriptFile, File profileDir, File stateFile) {
-        List<List<String>> commands = buildPythonCommands(scriptFile, profileDir, stateFile, arguments, pythonPath);
+    private String execute(BrowserSession session, List<String> arguments, long timeoutMillis, String workDir,
+                           String pythonPath, File scriptFile, File profileDir, File stateFile) {
+        List<List<String>> commands = buildPythonCommands(scriptFile, profileDir, stateFile, arguments, pythonPath,
+                session.debugPort);
+        return executeCommands(commands, command -> runCommand(session, command, timeoutMillis, workDir));
+    }
+
+    @FunctionalInterface
+    interface BridgeCommandRunner {
+        String run(List<String> command) throws Exception;
+    }
+
+    static String executeCommands(List<List<String>> commands, BridgeCommandRunner runner) {
         Exception lastError = null;
         for (List<String> command : commands) {
             try {
-                return runCommand(command, timeoutMillis, workDir);
+                return runner.run(command);
             } catch (IOException e) {
                 lastError = e;
                 Logger.debug("Run python browser bridge error: %s", e.getMessage());
             } catch (Exception e) {
-                // Once an interpreter has started the bridge, retrying can replay a non-idempotent request.
+                // Importing DrissionPage happens before the bridge can send a request. An interpreter
+                // without the package is safe to skip; another installed Python may have it.
+                if (isMissingDrissionPage(e)) {
+                    lastError = e;
+                    Logger.debug("Python interpreter has no DrissionPage, trying next candidate: %s", command.get(0));
+                    continue;
+                }
+                // Other failures may occur after navigation starts; retrying could replay a POST.
                 throw new IllegalStateException("python browser bridge execute failed: " + e.getMessage(), e);
             }
+        }
+        if (isMissingDrissionPage(lastError)) {
+            throw new IllegalStateException("DrissionPage is not available in any detected Python interpreter. "
+                    + "Install it in the Python selected in Browser settings or select an interpreter "
+                    + "where it is installed.", lastError);
         }
         throw new IllegalStateException(lastError == null
                 ? "python browser bridge execute failed"
                 : lastError.getMessage(), lastError);
     }
 
-    private File ensureScriptFile(String workDir) {
-        File scriptDir = new File(workDir, SCRIPT_DIR_NAME);
-        if (!scriptDir.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            scriptDir.mkdirs();
+    static boolean isMissingDrissionPage(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null && message.contains("No module named 'DrissionPage'")) {
+                return true;
+            }
         }
-        File scriptFile = new File(scriptDir, SCRIPT_FILE_NAME);
-        InputStream is = BrowserRequestManager.class.getClassLoader().getResourceAsStream(SCRIPT_RESOURCE_PATH);
-        if (is == null) {
-            throw new IllegalStateException("browser bridge script resource not found");
+        return false;
+    }
+
+    private synchronized File ensureScriptFile(String workDir) {
+        // Sessions share the script, not their execution lock. Never truncate a
+        // script another Python process may be opening during concurrent startup.
+        Path scriptDir = new File(workDir, SCRIPT_DIR_NAME).toPath();
+        Path scriptFile = scriptDir.resolve(SCRIPT_FILE_NAME);
+        Path temporary = null;
+        try (InputStream is = BrowserRequestManager.class.getClassLoader().getResourceAsStream(SCRIPT_RESOURCE_PATH)) {
+            if (is == null) throw new IllegalStateException("browser bridge script resource not found");
+            byte[] content = is.readAllBytes();
+            Files.createDirectories(scriptDir);
+            if (Files.isRegularFile(scriptFile) && Arrays.equals(content, Files.readAllBytes(scriptFile))) {
+                return scriptFile.toFile();
+            }
+            temporary = Files.createTempFile(scriptDir, SCRIPT_FILE_NAME, ".tmp");
+            Files.write(temporary, content);
+            try {
+                Files.move(temporary, scriptFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, scriptFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return scriptFile.toFile();
+        } catch (IOException e) {
+            throw new IllegalStateException("write browser bridge script failed: " + e.getMessage(), e);
+        } finally {
+            if (temporary != null) {
+                try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+            }
         }
-        if (!FileUtils.writeFile(is, scriptFile)) {
-            throw new IllegalStateException("write browser bridge script failed");
-        }
-        return scriptFile;
     }
 
     private List<List<String>> buildPythonCommands(File scriptFile, File profileDir, File stateFile,
-                                                   List<String> arguments, String pythonPath) {
+                                                   List<String> arguments, String pythonPath, int debugPort) {
         List<List<String>> commands = new ArrayList<List<String>>();
         Set<String> added = new HashSet<String>();
         if (StringUtils.isNotEmpty(pythonPath)) {
             addWindowsPythonCommand(commands, added, normalizePythonCommand(pythonPath),
-                    scriptFile, profileDir, stateFile, arguments);
+                    scriptFile, profileDir, stateFile, arguments, debugPort);
         }
         if (isMac()) {
             addCommand(commands, added,
-                    buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments));
+                    buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments, debugPort));
             addCommand(commands, added,
-                    buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments));
+                    buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments, debugPort));
         } else if (isWindows()) {
             for (String candidate : findWindowsPythonExecutables()) {
                 addWindowsPythonCommand(commands, added, normalizePythonCommand(candidate),
-                        scriptFile, profileDir, stateFile, arguments);
+                        scriptFile, profileDir, stateFile, arguments, debugPort);
             }
             addWindowsPythonCommand(commands, added, Arrays.asList("py", "-3"),
-                    scriptFile, profileDir, stateFile, arguments);
+                    scriptFile, profileDir, stateFile, arguments, debugPort);
             addWindowsPythonCommand(commands, added, Arrays.asList("python"),
-                    scriptFile, profileDir, stateFile, arguments);
+                    scriptFile, profileDir, stateFile, arguments, debugPort);
             addWindowsPythonCommand(commands, added, Arrays.asList("python3"),
-                    scriptFile, profileDir, stateFile, arguments);
+                    scriptFile, profileDir, stateFile, arguments, debugPort);
         } else {
             addCommand(commands, added,
-                    buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments));
+                    buildCommand(Arrays.asList("python3"), scriptFile, profileDir, stateFile, arguments, debugPort));
             addCommand(commands, added,
-                    buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments));
+                    buildCommand(Arrays.asList("python"), scriptFile, profileDir, stateFile, arguments, debugPort));
             addCommand(commands, added,
-                    buildCommand(Arrays.asList("py", "-3"), scriptFile, profileDir, stateFile, arguments));
+                    buildCommand(Arrays.asList("py", "-3"), scriptFile, profileDir, stateFile, arguments,
+                            debugPort));
         }
         return commands;
     }
@@ -270,16 +379,19 @@ public class BrowserRequestManager {
     }
 
     private void addWindowsPythonCommand(List<List<String>> commands, Set<String> added, List<String> pythonCommand,
-                                         File scriptFile, File profileDir, File stateFile, List<String> arguments) {
+                                         File scriptFile, File profileDir, File stateFile, List<String> arguments,
+                                         int debugPort) {
         if (pythonCommand == null || pythonCommand.isEmpty()) {
             return;
         }
-        addCommand(commands, added, buildCommand(pythonCommand, scriptFile, profileDir, stateFile, arguments));
+        addCommand(commands, added, buildCommand(pythonCommand, scriptFile, profileDir, stateFile, arguments,
+                debugPort));
         String executable = pythonCommand.get(0);
         if (pythonCommand.size() == 1 && isPythonLauncher(executable)) {
             List<String> launcherCommand = new ArrayList<String>(pythonCommand);
             launcherCommand.add("-3");
-            addCommand(commands, added, buildCommand(launcherCommand, scriptFile, profileDir, stateFile, arguments));
+            addCommand(commands, added, buildCommand(launcherCommand, scriptFile, profileDir, stateFile, arguments,
+                    debugPort));
         }
     }
 
@@ -365,31 +477,28 @@ public class BrowserRequestManager {
     }
 
     private List<String> runProcessAndCollectOutput(List<String> command) {
-        List<String> lines = new ArrayList<String>();
         Process process = null;
+        InputStream stream = null;
+        Thread reader = null;
+        StringBuilder output = new StringBuilder();
         try {
             process = new ProcessBuilder(command).redirectErrorStream(true).start();
-            BufferedReader reader = null;
-            try {
-                reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (StringUtils.isNotEmpty(line)) {
-                        lines.add(line.trim());
-                    }
-                }
-            } finally {
-                IOUtils.closeIO(reader);
-            }
+            stream = process.getInputStream();
+            reader = startOutputReader(stream, output);
+            // Reading to EOF first defeats the deadline if a launcher never exits.
             if (!process.waitFor(DISCOVERY_COMMAND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
             }
+            joinOutputReader(reader, stream);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (Exception ignored) {
-            if (process != null) {
-                process.destroyForcibly();
-            }
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
+            IOUtils.closeIO(stream);
+            if (reader != null && reader.isAlive()) reader.interrupt();
         }
-        return lines;
+        return outputSnapshot(output).lines().map(String::trim).filter(line -> !line.isEmpty()).toList();
     }
 
     private void addCandidate(Set<String> result, String candidate) {
@@ -481,11 +590,11 @@ public class BrowserRequestManager {
     }
 
     private List<String> buildCommand(List<String> pythonCommand, File scriptFile,
-                                      File profileDir, File stateFile, List<String> arguments) {
+                                      File profileDir, File stateFile, List<String> arguments, int debugPort) {
         List<String> command = new ArrayList<String>(pythonCommand);
         command.add(scriptFile.getAbsolutePath());
         command.add("--port");
-        command.add(String.valueOf(DEBUG_PORT));
+        command.add(String.valueOf(debugPort));
         command.add("--user-data-path");
         command.add(profileDir.getAbsolutePath());
         command.add("--state-file");
@@ -494,7 +603,8 @@ public class BrowserRequestManager {
         return command;
     }
 
-    private String runCommand(List<String> command, long timeoutMillis, String workDir) throws Exception {
+    private String runCommand(BrowserSession session, List<String> command, long timeoutMillis,
+                              String workDir) throws Exception {
         if (Thread.currentThread().isInterrupted()) {
             throw new IllegalStateException("python browser bridge cancelled");
         }
@@ -505,8 +615,8 @@ public class BrowserRequestManager {
         InputStream processOutput = process.getInputStream();
         StringBuilder output = new StringBuilder();
         Thread outputReader = startOutputReader(processOutput, output);
-        synchronized (mProcessLock) {
-            mActiveProcess = process;
+        synchronized (session.processLock) {
+            session.activeProcess = process;
         }
         try {
             boolean completed;
@@ -534,9 +644,9 @@ public class BrowserRequestManager {
             }
             return outputText;
         } finally {
-            synchronized (mProcessLock) {
-                if (mActiveProcess == process) {
-                    mActiveProcess = null;
+            synchronized (session.processLock) {
+                if (session.activeProcess == process) {
+                    session.activeProcess = null;
                 }
             }
             IOUtils.closeIO(processOutput);
@@ -657,6 +767,43 @@ public class BrowserRequestManager {
         }
     }
 
+    private BrowserSession getSession(String browserId) {
+        String normalizedId = StringUtils.isEmpty(browserId)
+                ? BrowserRequest.DEFAULT_BROWSER_ID : browserId.trim();
+        synchronized (mSessions) {
+            return mSessions.computeIfAbsent(normalizedId, id -> new BrowserSession(
+                    buildSessionDirectoryName(id), allocateDebugPort()));
+        }
+    }
+
+    private String buildSessionDirectoryName(String browserId) {
+        String readable = browserId.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (readable.length() > 32) {
+            readable = readable.substring(0, 32);
+        }
+        String identity = UUID.nameUUIDFromBytes(browserId.getBytes(StandardCharsets.UTF_8))
+                .toString().replace("-", "").substring(0, 12);
+        String instance = Long.toHexString(System.currentTimeMillis())
+                + "-" + Integer.toHexString(System.identityHashCode(this)) + "-" + mSessionSequence.incrementAndGet();
+        return "session-" + readable + "-" + identity + "-" + instance;
+    }
+
+    private int allocateDebugPort() {
+        synchronized (DEBUG_PORT_LOCK) {
+            int available = LAST_DEBUG_PORT - FIRST_DEBUG_PORT + 1;
+            for (int i = 0; i < available; i++) {
+                int candidate = sNextDebugPort++;
+                if (sNextDebugPort > LAST_DEBUG_PORT) {
+                    sNextDebugPort = FIRST_DEBUG_PORT;
+                }
+                if (RESERVED_DEBUG_PORTS.add(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        throw new IllegalStateException("no browser debug port available for isolated session");
+    }
+
     private int parseInt(String value, int defValue) {
         if (StringUtils.isEmpty(value)) {
             return defValue;
@@ -677,6 +824,19 @@ public class BrowserRequestManager {
             return NAVIGATION_POST_BRIDGE_TIMEOUT_EXTRA_MILLIS;
         }
         return DEFAULT_BRIDGE_TIMEOUT_EXTRA_MILLIS;
+    }
+
+    private static final class BrowserSession {
+        private final String sessionId;
+        private final int debugPort;
+        private final Object processLock = new Object();
+        private volatile Process activeProcess;
+        private boolean closed;
+
+        private BrowserSession(String sessionId, int debugPort) {
+            this.sessionId = sessionId;
+            this.debugPort = debugPort;
+        }
     }
 
     public record BrowserResult(int status, String reason, Map<String, String> headers, byte[] bodyBytes,
