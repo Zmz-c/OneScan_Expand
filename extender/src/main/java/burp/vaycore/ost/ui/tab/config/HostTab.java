@@ -14,6 +14,7 @@ public class HostTab extends BaseConfigTab {
 
     @Override
     protected void initView() {
+        addEnabledConfigPanel(L.get("scope_only"), L.get("scope_only_description"), Config.KEY_SCOPE_ONLY);
         // 拦截超时主机
         addEnabledConfigPanel(L.get("intercept_timeout_host"), L.get("intercept_timeout_host_sub_title"),
                 Config.KEY_INTERCEPT_TIMEOUT_HOST);

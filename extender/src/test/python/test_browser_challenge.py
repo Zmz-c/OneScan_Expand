@@ -52,6 +52,40 @@ def packet(status=401, body="Unauthorized", **kwargs):
 
 
 class ChallengeUnitTest(unittest.TestCase):
+    def test_scope_pipe_decision_and_failure_are_closed(self):
+        import io
+        output = io.StringIO()
+        with patch.object(bridge.sys, 'stdin', io.StringIO('ALLOW\nDENY\n')), patch.object(bridge.sys, 'stdout', output):
+            self.assertTrue(bridge.burp_scope_allows('https://scope.test/allowed'))
+            self.assertFalse(bridge.burp_scope_allows('https://scope.test/denied'))
+            self.assertFalse(bridge.burp_scope_allows('https://scope.test/eof'))
+            self.assertFalse(bridge.burp_scope_allows('file:///outside'))
+        self.assertEqual(3, output.getvalue().count('SCOPE_CHECK='))
+
+    def test_scope_guard_denies_after_finish_and_on_query_denial(self):
+        tab = Mock()
+        guard = bridge.BurpScopeGuard(tab)
+        with patch.object(bridge, 'burp_scope_allows', return_value=False):
+            guard.paused(requestId='denied', request={'url': 'https://scope.test/outside'})
+        tab.run_cdp.assert_called_with('Fetch.failRequest', requestId='denied', errorReason='BlockedByClient')
+        guard.finish()
+        with patch.object(bridge, 'burp_scope_allows') as query:
+            guard.paused(requestId='finished', request={'url': 'https://scope.test/allowed'})
+            query.assert_not_called()
+        tab.run_cdp.assert_called_with('Fetch.failRequest', requestId='finished', errorReason='BlockedByClient')
+
+    def test_scope_disabled_never_queries_java(self):
+        with patch.object(bridge, 'burp_scope_allows') as query, patch.object(bridge, '_execute_network_request', return_value='original'):
+            self.assertEqual('original', bridge.execute_network_request(Mock(), request(), 1, False))
+            query.assert_not_called()
+
+    def test_scope_initial_denial_does_not_start_navigation(self):
+        req = request(); req['scope_check'] = True
+        with patch.object(bridge, 'burp_scope_allows', return_value=False), patch.object(bridge, '_execute_network_request') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'Burp Scope'):
+                bridge.execute_network_request(Mock(), req, 1, False)
+            execute.assert_not_called()
+
     def test_auxiliary_host_matching_is_exact_and_not_based_on_path_text(self):
         auxiliary = 'http://me.kis.v2.scr.kaspersky-labs.com/token/to/wsm.sessionActivated'
         self.assertTrue(bridge.is_auxiliary_browser_url(auxiliary))
@@ -268,7 +302,15 @@ class BrowserLoopbackTest(unittest.TestCase):
                 status = 200
                 headers = {}
                 content = b'<html><body>context</body></html>'
-                if self.path == '/hold-browser':
+                if self.path == '/scope-redirect':
+                    status = 302
+                    headers['Location'] = '/scope-denied'
+                elif self.path == '/scope-page':
+                    content = b'<html><script src="/scope-denied"></script><script src="/scope-allowed"></script>scope</html>'
+                elif self.path in ('/scope-allowed', '/scope-denied'):
+                    headers['Content-Type'] = 'application/javascript'
+                    content = b'window.scopeLoaded = true;'
+                elif self.path == '/hold-browser':
                     cls.blocked_started.set()
                     cls.release_blocked.wait(10)
                     content = self.headers.get('Cookie', '').encode()
@@ -394,6 +436,35 @@ class BrowserLoopbackTest(unittest.TestCase):
             self.release_blocked.set()
             executor.shutdown(wait=True)
             browser.quit()
+
+    def scoped_execute(self, path, policy):
+        tab = self.browser.new_tab()
+        req = request('GET', True, self.origin + path)
+        req['scope_check'] = True
+        try:
+            with patch.object(bridge, 'burp_scope_allows', side_effect=policy):
+                return bridge.execute_network_request(tab, req, 4, True)
+        finally:
+            tab.close()
+
+    def test_scope_blocks_redirect_before_outside_request_is_sent(self):
+        try:
+            self.scoped_execute('/scope-redirect', lambda url: url == self.origin + '/scope-redirect')
+        except RuntimeError:
+            pass  # A blocked redirect may leave no readable response body in Chromium.
+        self.assertEqual(1, self.count('/scope-redirect'))
+        self.assertEqual(0, self.count('/scope-denied'))
+
+    def test_scope_blocks_resources_but_keeps_allowed_script(self):
+        result = self.scoped_execute('/scope-page', lambda url: url in (self.origin + '/scope-page', self.origin + '/scope-allowed'))
+        self.assertEqual(200, result['status'])
+        self.assertEqual(0, self.count('/scope-denied'))
+        self.assertEqual(1, self.count('/scope-allowed'))
+
+    def test_scope_keeps_in_scope_cookie_challenge_working(self):
+        result = self.scoped_execute('/challenge/412', lambda url: url.startswith(self.origin + '/'))
+        self.assertEqual(200, result['status'])
+        self.assertEqual(2, self.count('/challenge/412'))
 
     def test_plain_errors_make_one_request_and_keep_original_body(self):
         for method in ('GET', 'POST'):

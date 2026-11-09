@@ -1,11 +1,14 @@
 package burp.vaycore.ost.bean;
 
-import burp.vaycore.common.utils.FileUtils;
 import burp.vaycore.common.utils.GsonUtils;
 import burp.vaycore.ost.manager.FpManager;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.*;
 
 /**
  * 指纹配置
@@ -13,6 +16,14 @@ import java.util.List;
  * Created by vaycore on 2025-05-19.
  */
 public class FpConfig {
+
+    // Serialize writes; idle workers expire so unloading an extension does not retain a permanent thread.
+    private static final ExecutorService WRITER = new ThreadPoolExecutor(0, 1, 30, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(), runnable -> {
+                Thread thread = new Thread(runnable, "ost-fingerprint-save");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     /**
      * 指纹字段
@@ -193,11 +204,41 @@ public class FpConfig {
      */
     private void writeToFile() {
         // 后台保存
-        new Thread(() -> {
-            synchronized (FpConfig.class) {
-                String json = GsonUtils.toJson(this);
-                FileUtils.writeFile(FpManager.getPath(), json);
+        String path = FpManager.getPath();
+        String snapshot = GsonUtils.toJson(this);
+        WRITER.execute(() -> saveToFile(path, snapshot));
+    }
+
+    public void saveNow() {
+        String path = FpManager.getPath();
+        String snapshot = GsonUtils.toJson(this);
+        try {
+            WRITER.submit(() -> saveToFile(path, snapshot)).get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Fingerprint save interrupted", e);
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Fingerprint save failed", e.getCause());
+        }
+    }
+
+    private static void saveToFile(String path, String snapshot) {
+        synchronized (FpConfig.class) {
+            Path target = Path.of(path).toAbsolutePath();
+            Path temp = null;
+            try {
+                temp = Files.createTempFile(target.getParent(), "fingerprints-", ".tmp");
+                Files.writeString(temp, snapshot);
+                try {
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            } finally {
+                if (temp != null) try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
             }
-        }).start();
+        }
     }
 }

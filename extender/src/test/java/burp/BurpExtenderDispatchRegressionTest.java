@@ -32,6 +32,10 @@ public class BurpExtenderDispatchRegressionTest {
     private final QueueExecutor parameterBrowser = new QueueExecutor();
     private final List<byte[]> sent = new ArrayList<>();
     private boolean replaceHeaders;
+    private java.util.function.Predicate<URL> scope = url -> true;
+    private Runnable afterSend = () -> {};
+    private boolean noResponse;
+    private final List<URL> scopeQueries = new ArrayList<>();
 
     @Before public void setup() throws Exception {
         Config.init(temp.newFolder().getAbsolutePath() + File.separator);
@@ -56,11 +60,16 @@ public class BurpExtenderDispatchRegressionTest {
         set("mHelpers", helpers());
         set("mCallbacks", Proxy.newProxyInstance(IBurpExtenderCallbacks.class.getClassLoader(),
                 new Class<?>[]{IBurpExtenderCallbacks.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("isInScope")) {
+                        scopeQueries.add((URL) args[0]);
+                        return scope.test((URL) args[0]);
+                    }
                     assertEquals("makeHttpRequest", method.getName());
                     byte[] request = ((byte[]) args[1]).clone();
                     sent.add(request);
+                    afterSend.run();
                     var response = HttpReqRespAdapter.from((IHttpService) args[0], request);
-                    response.setResponse(bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
+                    if (!noResponse) response.setResponse(bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
                     return response;
                 }));
     }
@@ -89,6 +98,119 @@ public class BurpExtenderDispatchRegressionTest {
         ExecutorService collector = (ExecutorService) collectorField.get(null);
         collector.shutdown();
         assertTrue(collector.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    @Test public void scopeDisabledDoesNotCallBurpScopeOrChangeSending() throws Exception {
+        assertFalse(Config.getBoolean(Config.KEY_SCOPE_ONLY));
+        scope = url -> { throw new AssertionError("disabled scope must never be queried"); };
+        enqueue("Send", RequestMode.BURP);
+        low.drain();
+        assertEquals(1, sent.size());
+        assertTrue(scopeQueries.isEmpty());
+    }
+
+    @Test public void emptyBurpScopeBlocksAllQueuesIncludingManualReplay() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> false;
+        for (RequestMode mode : RequestMode.values()) enqueue("Send", mode);
+        assertTrue(http.tasks.isEmpty()); assertTrue(low.tasks.isEmpty());
+        assertTrue(browser.tasks.isEmpty()); assertTrue(sent.isEmpty());
+        assertTrue(((AtomicLong) get("mScopeBlockedCounter")).get() > 0);
+    }
+
+    @Test public void queuedRequestRechecksLiveBurpScopeBeforeSending() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        enqueue("Send", RequestMode.BURP);
+        assertEquals(1, low.tasks.size());
+        scope = url -> false;
+        low.drain();
+        assertTrue(sent.isEmpty());
+        assertEquals(count("mLFTaskCommitCounter"), count("mLFTaskOverCounter"));
+    }
+
+    @Test public void enablingScopeAfterQueueingStillBlocksHttpAndBrowser() throws Exception {
+        enqueue("Send", RequestMode.BURP);
+        enqueue("Send", RequestMode.BROWSER);
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> false;
+        low.drain(); browser.drain();
+        assertTrue(sent.isEmpty());
+        assertTrue(board.getBrowserTaskTable().getTaskDataList().isEmpty());
+    }
+
+    @Test public void parametersUseActualMutatedUrlAndFinishProgressWhenBlocked() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> !url.getFile().contains("blocked");
+        scan("GET /$1$ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", List.of("allowed", "blocked"));
+        assertEquals(1, sent.size());
+        assertTrue(text(sent.get(0)).startsWith("GET /allowed "));
+        assertTrue(scopeQueries.stream().anyMatch(url -> url.getPath().equals("/blocked")));
+    }
+
+    @Test public void scopeApiFailureAndMissingCallbacksFailClosed() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> { throw new IllegalStateException("unavailable"); };
+        enqueue("Send", RequestMode.BURP);
+        set("mCallbacks", null);
+        enqueue("Send", RequestMode.BURP);
+        assertTrue(low.tasks.isEmpty()); assertTrue(sent.isEmpty());
+    }
+
+    @Test public void fullUrlIsDelegatedAndPluginExclusionsCannotBeOverridden() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        URL target = new URL("https://example.test:8443/allowed?key=1");
+        scope = url -> url.toExternalForm().equals(target.toExternalForm());
+        assertEquals(true, invoke("isBurpScopeAllowed", new Class<?>[]{URL.class}, target));
+        assertEquals(target.toExternalForm(), scopeQueries.get(0).toExternalForm());
+        WordlistManager.putList(WordlistManager.KEY_HOST_BLOCKLIST, List.of("example.test"));
+        assertEquals(false, invoke("isBurpScopeAllowed", new Class<?>[]{URL.class}, target));
+        WordlistManager.putList(WordlistManager.KEY_HOST_BLOCKLIST, List.of());
+        WordlistManager.putList(WordlistManager.KEY_HOST_ALLOWLIST, List.of("another.test"));
+        assertEquals(false, invoke("isBurpScopeAllowed", new Class<?>[]{URL.class}, target));
+    }
+
+    @Test public void retryRechecksScopeAfterTheFirstAttempt() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        Config.put(Config.KEY_RETRY_INTERVAL, "0");
+        noResponse = true;
+        afterSend = () -> scope = url -> false;
+        var request = HttpReqRespAdapter.from("http://127.0.0.1/allowed");
+        Object result = invoke("doMakeHttpRequest", new Class<?>[]{IHttpService.class, byte[].class, int.class},
+                request.getHttpService(), request.getRequest(), 3);
+        assertNull(result); assertEquals(1, sent.size());
+    }
+
+    @Test public void httpRedirectCannotQueueAnOutOfScopeRequest() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        Config.put(Config.KEY_FOLLOW_REDIRECT, "true");
+        Config.put(Config.KEY_REDIRECT_COOKIES_FOLLOW, "false");
+        scope = url -> url.getPath().equals("/allowed");
+        var response = HttpReqRespAdapter.from("http://127.0.0.1/allowed");
+        response.setResponse(bytes("HTTP/1.1 302 Found\r\nLocation: /outside\r\nContent-Length: 0\r\n\r\n"));
+        TaskData data = new TaskData(); data.setReqResp(response); data.setHost("http://127.0.0.1");
+        data.setUrl("/allowed"); data.setStatus(302);
+        invoke("handleFollowRedirect", new Class<?>[]{TaskData.class}, data);
+        assertTrue(scopeQueries.stream().anyMatch(url -> url.getPath().equals("/outside")));
+        assertTrue(low.tasks.isEmpty()); assertTrue(http.tasks.isEmpty());
+    }
+
+    @Test public void absoluteTargetCannotHideAnOutOfScopeTransportHost() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> url.getHost().equals("allowed.test");
+        var request = HttpReqRespAdapter.from("http://outside.test/target");
+        request.setRequest(bytes("GET http://allowed.test/target HTTP/1.1\r\nHost: allowed.test\r\n\r\n"));
+        assertEquals(false, invoke("isRequestInBurpScope", new Class<?>[]{IHttpService.class, byte[].class},
+                request.getHttpService(), request.getRequest()));
+        assertTrue(scopeQueries.stream().anyMatch(url -> url.getHost().equals("outside.test")));
+    }
+
+    @Test public void directHttpEntryCannotBypassScopeOrRetryWhenDenied() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> false;
+        var request = HttpReqRespAdapter.from("http://127.0.0.1/outside");
+        Object result = invoke("doMakeHttpRequest", new Class<?>[]{IHttpService.class, byte[].class, int.class},
+                request.getHttpService(), request.getRequest(), 3);
+        assertNull(result); assertTrue(sent.isEmpty());
     }
 
     @Test public void customDictionaryValuesStayLiteralThroughActualDispatch() throws Exception {
@@ -563,7 +685,8 @@ public class BurpExtenderDispatchRegressionTest {
                             String raw = text((byte[]) args[0]);
                             return Proxy.newProxyInstance(IResponseInfo.class.getClassLoader(), new Class<?>[]{IResponseInfo.class},
                                     (p, getter, ignored) -> switch (getter.getName()) {
-                                        case "getStatusCode" -> (short) 200;
+                                        case "getStatusCode" -> Short.parseShort(raw.split(" ", 3)[1]);
+                                        case "getHeaders" -> Arrays.asList(raw.substring(0, raw.indexOf("\r\n\r\n")).split("\r\n"));
                                         case "getBodyOffset" -> raw.indexOf("\r\n\r\n") + 4;
                                         default -> throw new AssertionError(getter.getName());
                                     });

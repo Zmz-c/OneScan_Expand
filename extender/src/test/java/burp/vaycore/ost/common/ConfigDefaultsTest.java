@@ -24,6 +24,17 @@ public class ConfigDefaultsTest {
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void scopeOnlyDefaultsOffAndPersistsWithoutReplacingOtherSettings() throws Exception {
+        String dir = temporaryFolder.newFolder("scope").getAbsolutePath() + File.separator;
+        Config.init(dir);
+        assertFalse(Config.getBoolean(Config.KEY_SCOPE_ONLY));
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        Config.init(dir);
+        assertTrue(Config.getBoolean(Config.KEY_SCOPE_ONLY));
+        assertFalse(Config.getBoolean(Config.KEY_ENABLE_BROWSER_REQUEST));
+    }
+
+    @Test
     public void installsDisabledAuthFuzzVariableAndProcessingBypasses() throws Exception {
         File workDir = temporaryFolder.newFolder("defaults");
         Config.init(workDir.getAbsolutePath() + File.separator);
@@ -37,7 +48,7 @@ public class ConfigDefaultsTest {
                 .noneMatch("{{random.AuthFuzz}}"::equals));
 
         List<ProcessingItem> rules = Config.getPayloadProcessList();
-        assertEquals(10, rules.size());
+        assertEquals(11, rules.size());
         assertTrue(rules.stream().noneMatch(ProcessingItem::isEnabled));
         assertTrue(rules.stream().noneMatch(ProcessingItem::isMerge));
 
@@ -57,7 +68,7 @@ public class ConfigDefaultsTest {
         // The persisted JSON is converted back to typed ProcessingItem/PayloadRule
         // instances on the next plugin initialization.
         Config.init(workDir.getAbsolutePath() + File.separator);
-        assertEquals(10, Config.getPayloadProcessList().size());
+        assertEquals(11, Config.getPayloadProcessList().size());
         assertEquals("MatchReplace", Config.getPayloadProcessList().get(0).getItems().get(0)
                 .getRule().getClass().getSimpleName());
     }

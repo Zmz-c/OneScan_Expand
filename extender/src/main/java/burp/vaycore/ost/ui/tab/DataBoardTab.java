@@ -61,6 +61,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private HistoryManagerWindow mHistoryManagerWindow;
     private JComboBox<RequestScopeItem> mTaskControlScope;
     private Boolean mListenProxyMessageBeforePause;
+    private JLabel mScopeStatus;
     private JLabel mTaskStatus;
     private JLabel mLFTaskStatus;
     private JLabel mFpCacheStatus;
@@ -284,6 +285,8 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         panel.add(new JPanel(), "1w");
         add(panel);
 
+        mScopeStatus = addStatusInfoPanel(panel);
+        refreshScopeStatus(0);
         mTaskStatus = addStatusInfoPanel(panel);
         mLFTaskStatus = addStatusInfoPanel(panel);
         mTaskHistoryStatus = addStatusInfoPanel(panel);
@@ -302,17 +305,28 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         return label;
     }
 
+    private List<TaskData> getFilterHistory() {
+        List<TaskData> items = new ArrayList<>();
+        for (TaskTable table : getTaskTables()) items.addAll(table.getTaskSnapshot().items());
+        return items;
+    }
+
     private void loadFilterRules() {
         ArrayList<FilterRule> rules = Config.getDataboardFilterRules();
         if (rules == null) {
             return;
         }
-        TableFilterPanel panel = new TableFilterPanel(TaskTable.getColumnNames(), rules);
+        TableFilterPanel panel = new TableFilterPanel(TaskFilterFields.create(this::getFilterHistory), rules);
         ArrayList<TableFilter<AbstractTableModel>> filters = panel.exportTableFilters();
         String rulesText = panel.exportRulesText();
         setRowFilterForAll(filters);
         mFilterRuleText.setText(rulesText);
-        mLastFilters = rules;
+        mLastFilters = panel.exportRules();
+        // Persist legacy index migration before fingerprint columns can be reordered.
+        if (rules.stream().anyMatch(rule -> rule.getFieldKey() == null
+                && (rule.getColumnIndex() == 10 || rule.getColumnIndex() >= TaskTable.getBaseColumnCount()))) {
+            Config.put(Config.KEY_DATABOARD_FILTER_RULES, mLastFilters);
+        }
     }
 
     private JCheckBox newJCheckBox(JPanel panel, String text, String configKey) {
@@ -559,8 +573,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         TaskFieldSelectionPanel fieldPanel = new TaskFieldSelectionPanel(TaskPersistenceManager.getConfiguredFieldKeys());
         JScrollPane scrollPane = new JScrollPane(fieldPanel);
         scrollPane.setPreferredSize(new Dimension(420, 220));
-        int ret = JOptionPane.showConfirmDialog(this, scrollPane, L.get("export_stored_data"),
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        int ret = UIHelper.showCustomDialog(L.get("export_stored_data"), scrollPane, this);
         if (ret != JOptionPane.OK_OPTION) {
             return;
         }
@@ -593,8 +606,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
             JPanel panel = new JPanel(new BorderLayout(5, 5));
             panel.add(new JLabel(L.get("select_data_label")), BorderLayout.NORTH);
             panel.add(labelBox, BorderLayout.CENTER);
-            int ret = JOptionPane.showConfirmDialog(this, panel, L.get("import_stored_data"),
-                    JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            int ret = UIHelper.showCustomDialog(L.get("import_stored_data"), panel, this);
             if (ret != JOptionPane.OK_OPTION) {
                 return;
             }
@@ -794,6 +806,14 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         return mPayloadProcessing != null && mPayloadProcessing.isSelected();
     }
 
+    public void refreshScopeStatus(long blocked) {
+        if (mScopeStatus != null) {
+            mScopeStatus.setText(Config.getBoolean(Config.KEY_SCOPE_ONLY)
+                    ? L.get("scope_status_on", blocked) : L.get("scope_status_off"));
+            mScopeStatus.setToolTipText(L.get("scope_only_description"));
+        }
+    }
+
     public void refreshTaskStatus(int over, int commit) {
         if (mTaskStatus != null) {
             mTaskStatus.setText(L.get("status_bar_task", over, commit));
@@ -866,7 +886,7 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     }
 
     private void showSetupFilterDialog() {
-        TableFilterPanel panel = new TableFilterPanel(TaskTable.getColumnNames(), mLastFilters);
+        TableFilterPanel panel = new TableFilterPanel(TaskFilterFields.create(this::getFilterHistory), mLastFilters);
         panel.showDialog(new DialogCallbackAdapter() {
 
             @Override

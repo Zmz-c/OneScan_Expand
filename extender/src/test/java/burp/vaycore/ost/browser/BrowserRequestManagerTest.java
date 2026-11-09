@@ -122,6 +122,40 @@ public class BrowserRequestManagerTest {
         assertEquals(1, attempts.get());
     }
 
+    @Test public void scopeDecisionsUseExistingProcessPipesWithoutLeakingProtocolIntoResponse() throws Exception {
+        BrowserRequestManager manager = new BrowserRequestManager();
+        var get = BrowserRequestManager.class.getDeclaredMethod("getSession", String.class); get.setAccessible(true);
+        Object session = get.invoke(manager, "scope-pipes");
+        var predicate = session.getClass().getDeclaredField("scopeCheck"); predicate.setAccessible(true);
+        AtomicInteger queries = new AtomicInteger();
+        predicate.set(session, (java.util.function.Predicate<String>) url -> {
+            queries.incrementAndGet();
+            if (url.endsWith("/error")) throw new IllegalStateException("scope unavailable");
+            return url.endsWith("/allowed");
+        });
+        var run = BrowserRequestManager.class.getDeclaredMethod("runCommand", session.getClass(), List.class, long.class, String.class);
+        run.setAccessible(true);
+        String java = new java.io.File(System.getProperty("java.home"), "bin/java").getAbsolutePath();
+        String cp = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        String result = (String) run.invoke(manager, session, List.of(java, "-cp", cp, ScopePipeFixture.class.getName()),
+                5000L, temp.newFolder().getAbsolutePath());
+        assertEquals("STATUS=200", result); assertEquals(3, queries.get());
+    }
+
+    public static class ScopePipeFixture {
+        public static void main(String[] args) throws Exception {
+            var input = new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
+            for (String path : List.of("allowed", "denied", "error")) {
+                System.out.println("SCOPE_CHECK=" + java.util.Base64.getEncoder().encodeToString(
+                        ("https://scope.test/" + path).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                System.out.flush();
+                String expected = path.equals("allowed") ? "ALLOW" : "DENY";
+                if (!expected.equals(input.readLine())) throw new AssertionError("Invalid scope decision");
+            }
+            System.out.println("STATUS=200");
+        }
+    }
+
     @Test public void missingDependencyEverywhereHasActionableError() {
         try {
             BrowserRequestManager.executeCommands(List.of(List.of("first"), List.of("second")), command -> {

@@ -18,6 +18,7 @@ public class FpMethodHandler {
             "iEquals",
             "iNotEquals",
             "contains",
+            "containsRequestMatch",
             "notContains",
             "iContains",
             "iNotContains",
@@ -26,6 +27,19 @@ public class FpMethodHandler {
             "iRegex",
             "iNotRegex",
     };
+
+    /** Extract a value from the paired request using an editable regex and find it literally in data. */
+    public static boolean containsRequestMatch(String data, String expression, String request) {
+        if (data == null || request == null || expression == null || expression.isBlank()) return false;
+        try {
+            var match = Pattern.compile(expression).matcher(request);
+            if (!match.find()) return false;
+            String value = match.groupCount() > 0 ? match.group(1) : match.group();
+            return value != null && !value.isEmpty() && data.contains(value);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
 
     /**
      * 检测相等

@@ -1,240 +1,164 @@
 # OST
 
-[中文说明](README_zh_CN.md) | [Variables and identity guide (Chinese)](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)
+[中文](README_zh_CN.md) · [User manual](docs/user-guide.html)
 
-OST is a Burp Suite extension for authorized web-security testing. It combines request replay,
-payload-driven scanning, browser-assisted requests, local result persistence, and an optional
-local MCP-style JSON-RPC service.
+OST is a Burp Suite extension for web-security testing, combining endpoint scanning, request transformations,
+parameter tests, browser replay, fingerprinting and identity comparison.
 
-> Build target: **Java 21**. JDK 8 is not supported.
+**Stable release: 1.2.7** · **Runtime: Java 21**
 
-## Release 1.2.6
+## Release 1.2.7
 
-See [release notes and validation scope](docs/RELEASE_1.2.6.md).
+- **Scope control**: optional Burp Target Scope checks complement existing host and path exclusions.
+- **Result filtering**: fingerprint filters and selectable fingerprint/identity conditions.
+- **Reflection templates**: editable request-processing and fingerprint presets with the `{{nonce}}` random value.
+- **Usability**: improved Chinese/English localization and a bundled offline manual with variable references and worked examples.
+- **Reliability**: fixes for mixed-scope request processing, request-correlated fingerprint caching and configuration persistence.
 
-## Highlights
+See the [release notes](docs/RELEASE_1.2.7.md) for changes, validation coverage and upgrade steps.
+Download `OST-v1.2.7.jar` from this repository's GitHub Releases. The HTML manual is also available separately or from within the extension.
 
-### Scan Workflow
+## Features
 
-- Send selected Burp requests to OST from the context menu, or collect eligible proxy traffic.
-- Generate request variants with payload dictionaries and request-processing rules.
-- Follow redirects when enabled, with configurable cookie propagation and target-host limits.
-- Skip paths matching a case-insensitive fragment blocklist before and after request processing.
-- Aggregate requests, responses, fingerprints, and collected values in one data board.
+- **Endpoint scanning** — Send requests from Burp, import URLs or listen to proxy traffic; generate variants with path dictionaries and processing rules.
+- **Request processing** — Configure prefix, suffix, match-and-replace and condition-check groups. Built-in templates are editable and can be enabled or removed.
+- **Parameter testing** — Discover names, test existing values or define custom positions, with independent endpoint settings and batch execution.
+- **Browser replay** — Use Edge/Chrome for browser-session-dependent requests and manage sessions through Browser IDs.
+- **Fingerprinting** — Configure request/response conditions, result fields and colors, including request-correlated reflection checks.
+- **Identity comparison** — Override credentials and parameters with Profiles and compare responses for the same request variant.
+- **Data management** — Dedicated parameter-scan traffic, conditional filters, SQLite persistence, history import and CSV export.
+- **Local integration** — An optional MCP interface exposes status, configuration and scan operations to trusted local clients.
 
-### Variables and Identity Profiles
+## Installation
 
-- Create fixed, random, or round-robin named variables backed by editable dictionaries.
-- Default random variables are `ip`, `local-ip`, and `ua`, used as `{{random.ip}}`,
-  `{{random.local-ip}}`, and `{{random.ua}}`.
-- Replay the same request variant with explicitly selected identity Profiles that can override
-  Cookie, headers, query parameters, body parameters, and Profile-local variables.
-- Compare responses from different Profiles for the same request variant; the comparison shows
-  differences but does not determine whether an authorization vulnerability exists.
-- Browser Profile replay isolates cookies from the shared browser session.
+Run Burp Suite with Java 21. In `Extensions → Add`, select Java and load the bundled OST JAR.
 
-### Browser, History, and MCP
+Build from source:
 
-- Replay requests through Edge or Chrome using DrissionPage, with configurable Python, browser,
-  timeout, static-resource, and target-host settings.
-- Persist selected result fields locally in SQLite; support manual save, periodic auto-save,
-  history labels, import, and CSV export.
-- Optionally expose local status, scan, task, fingerprint, collection, wordlist, history, and
-  export operations through a localhost MCP-style JSON-RPC endpoint.
+```powershell
+.\mvnw.cmd package
+```
+
+macOS / Linux:
+
+```bash
+./mvnw package
+```
+
+Artifact: `extender/target/OST-v1.2.7.jar`.
+
+Ordinary Burp transport needs no Python. Browser transport requires Edge or Chrome and Python 3.9+ with DrissionPage:
+
+```bash
+python -m pip install DrissionPage
+```
+
+Select that interpreter and the browser executable in Browser settings.
 
 ## Quick Start
 
-1. Build the extension with JDK 21:
+1. Configure authorized targets in Burp Target Scope and enable `Host → Scope Only` when required.
+2. Set QPS, delay, retries and scan depth in Request settings. Select the dictionaries and processing groups needed.
+3. Send requests from the Burp context menu or import one URL per line in Databoard.
+4. Inspect paired messages and fingerprints, then run parameter scans or identity replay for selected endpoints.
+5. Send requests requiring further verification to Repeater, or save and export results as needed.
 
-   ```bash
-   ./mvnw clean package
-   ```
+## Configuration
 
-   On Windows:
+| Page | Settings |
+|------|----------|
+| Variables | Named variables, fixed/random/round-robin strategies and variable dictionaries. |
+| Payload | Path/Payload dictionaries and request-processing groups. |
+| Request | QPS, delay, scan depth, retries, identity Profiles, method/suffix filters, headers and path blocklist. |
+| Browser | Python/browser paths, timeout, static resources and target-host rules. |
+| Host | Burp Scope, timeout-host blocking and host allow/blocklists. |
+| Redirect | Following policy, cookie propagation and destination-host restriction. |
+| Other | Language, user manual, persistence and MCP service. |
 
-   ```powershell
-   .\mvnw.cmd clean package
-   ```
+### Processing Templates
 
-2. Load `extender/target/OST-v1.2.6.jar` in Burp Suite under `Extensions` -> `Add`.
+Built-in and custom groups use the same editor. Change a group's name, enabled state and merge mode,
+and edit each sub-rule's scope, match expression and replacement. Non-merged groups generate independent
+variants; enabled merged groups form an ordered pipeline.
 
-3. Open the OST tab and configure dictionaries, request behavior, browser replay, redirects,
-   persistence, and optional MCP from `Config`.
+`Reflection probe` contains ordinary query/form match-and-replace rules and uses `{{nonce}}` for random markers.
+The paired `Reflection candidate` fingerprint uses `containsRequestMatch` to extract the current request's marker
+and find it in the response body, with status, content-type and error-page exclusions. Both groups are editable;
+update the extraction expression when changing the marker format.
 
-4. If browser replay is needed, install DrissionPage into the configured Python environment:
+Reflection is an input-echo lead, not confirmed XSS. Built-in processing templates are disabled by default.
 
-   ```bash
-   python -m pip install DrissionPage
-   ```
+### Parameter and Identity Testing
 
-## Custom Parameter Scan Positions
+Each parameter-scan endpoint retains its own mode, dictionaries, methods and transport. Define custom positions
+in the request editor and assign dictionaries to names, values or body fragments. Preview the plan before execution;
+results appear in `Parameter scan → Scan traffic`.
 
-Select endpoints in the data board, choose **Parameter scan** from the context menu,
-and switch to **Custom positions**. Select a parameter name or value and click **Add marker**.
-The editor inserts `$1$`, `$2$`, and so on; select a separate existing Payload dictionary for each ID in **Position dictionaries**.
-For example, `$1$=$2$&$3$=$4$` uses four independent dictionaries; `{"items":[1,$1$,3]}` replaces only the marked array element.
+Create identities in `Request → Identity profiles` and select them through Profile replay actions.
+Interpret same-variant response differences in the context of object ownership and expected permissions.
 
-- Numbered markers replace the old `$$` syntax. Manually typed numbered markers also appear in the dictionary table.
-- Different IDs use all dictionary combinations; repeated occurrences of the same ID share one value. Two dictionaries of 2 and 3 values generate 6 requests per eligible endpoint.
-- Modes, name/value dictionaries, GET/POST filters, route filtering and HTTP/Browser selection are saved per endpoint. One scan submits all endpoint configurations together; selecting another endpoint does not change the batch. **Apply to all endpoints** copies the current settings without overwriting request drafts or position dictionaries. The target list and preview display each endpoint's mode.
-- New endpoint imports append to the target list. Importing the same method/host/URL from the same request source again does not overwrite its draft or dictionary choices. HTTP and browser sources remain separate targets. Switch endpoints to edit their independent settings; **Remove endpoint** and **Clear endpoints** manage this list without clearing scan traffic.
-- **Remove selected markers** removes the IDs selected in the dictionary table, or the marker at the editor caret. **Clear all markers** removes every ID in the current request. These operations restore the original selected text; manually typed markers have no original text and are removed. **Restore original request** resets the current draft and its marker assignments.
-- Payloads are substituted literally, without extra quoting, encoding, or recursive expansion. Unmarked endpoints are skipped; automatic name discovery and existing-value scans need no markers.
-- Preview and execution share the same custom-position combination count. A scan exceeding 5000 requests is cancelled before any requests are sent. Starting a scan snapshots its templates and dictionaries, so subsequent editing or removing endpoints does not change that run.
-- Scans reuse the existing scheduling, rate limits, retries, progress tracking and browser isolation. Ordinary browser scans and parameter browser scans have independent queues; requests within the same Browser ID remain serial. Global pause still applies to both queues. Responses appear in Parameter scan → Scan traffic, with separate request/response viewers and existing Repeater actions. Clearing this table does not clear the data board or stop active scans.
+### Dynamic Variables
 
-## Configuration Guide
+Ordinary request headers, path Payloads and processing rules support dynamic variables:
 
-| Area                   | What it controls                                                                  |
-|------------------------|-----------------------------------------------------------------------------------|
-| `Variables & Identity` | Named variables, variable dictionaries, and identity Profiles.                    |
-| `Payload`              | Path dictionaries and request-processing rules that generate variants.            |
-| `Request`              | Request method/suffix filters, browser settings, headers, and the path blocklist. |
-| `Redirect`             | Redirect following, cookie propagation, and target-host restrictions.             |
-| `Other`                | Local SQLite persistence, save interval, selected fields, and the MCP server.     |
+| Reference | Purpose and configuration |
+|-----------|---------------------------|
+| `{{nonce}}` | No setup; 24 lowercase hexadecimal characters per expansion, shared by repeated references in that expansion. |
+| `{{random.ip}}` / `{{random.local-ip}}` | Sample `random-ip` / `random-local-ip` variable dictionaries; the actual connection source does not change. |
+| `{{random.ua}}` | Select a User-Agent from the `user-agent` variable dictionary. |
+| `{{random.AuthFuzz}}` | Disabled by default; when enabled, produces a complete header and belongs on its own header-list line. |
+| `{{value.name}}` | Custom `fixed` or `round-robin` variable using a configured value or sequential dictionary entries. |
+| `{{random.name}}` | Custom `random` variable sampling its associated variable dictionary. |
+| `{{host}}` / `{{protocol}}` / `{{domain}}` / `{{ip}}` | Target host, protocol, hostname without port and resolved target IP; `{{ip}}` is not the random-IP variable. |
+| `{{timestamp}}` / `{{date.yyyy}}` / `{{time.HH}}` | Unix timestamp in seconds and date/time components. |
+| `{{profile.name}}` | Identity-local variable used during explicit Profile replay. |
 
-### Variables and Dictionaries
+Names are case-sensitive and named variables must be defined and enabled. See the [variable reference](docs/user-guide.html#variables) for all domain, subdomain, directory and date/time fields and expansion boundaries.
 
-Use `{{value.name}}` for fixed or round-robin variables, and `{{random.name}}` for random
-variables. The default entries are ordinary editable named variables:
+### Configuration Examples
 
-| Name       | Placeholder           | Default dictionary |
-|------------|-----------------------|--------------------|
-| `ip`       | `{{random.ip}}`       | `random-ip`        |
-| `local-ip` | `{{random.local-ip}}` | `random-local-ip`  |
-| `ua`       | `{{random.ua}}`       | `user-agent`       |
-| `AuthFuzz` | `{{random.AuthFuzz}}` | `AuthFuzz`         |
+**Dynamic headers and reflection detection**: create fixed variable `tenant` with value `demo-a`, fixed variable `trace` with value `run-{{nonce}}`, and retain the bundled random variable `ua`. Configure these header-list entries:
 
-They can be edited, replaced, or removed like any other named variable. The `ip`, `local-ip`, and
-`ua` entries remain enabled by default; `AuthFuzz` is provided as an opt-in definition and is
-disabled until you enable it. AuthFuzz contains common Authorization, API key, Cookie, and Token
-request headers; random values come from the associated dictionary.
-
-For the complete variable, Profile, request-processing, and response-comparison behavior, see
-the [detailed guide (Chinese)](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md).
-
-### Identity Profile Replay
-
-Profiles are applied only from the explicit Profile replay context-menu actions. This makes it
-possible to replay one processed request variant as several identities without silently changing
-ordinary scan traffic. Profile credentials and request values are stored locally; protect the OST
-work directory, SQLite database, exports, and screenshots accordingly.
-
-### Path Blocklist
-
-Add one path fragment per line under `Config` -> `Request` -> `Path blocklist`. A request is
-skipped when its URL path contains any non-empty fragment, ignoring case. OST checks both the
-incoming path and the final path after request processing. Host names and query strings are not
-matched by this list.
-
-## MCP / AI Integration
-
-The protocol layer is extracted into the standalone Maven module `mcp-core`
-(`burp.zm:mcp-core:1.1.2`). Its public Java package is `burp.zm.mcp`. It only depends on Gson and exposes `McpServer`,
-`McpTool`, and `McpToolProvider`, so other Burp extensions can reuse the same local
-MCP contract by implementing a provider. The `burp.vaycore.ost.mcp` classes remain
-as compatibility facades; OST-specific tools stay in the extension adapter layer.
-
-To run the MCP core independently, execute `./mvnw -pl mcp-core package` and then run
-`mcp-core/target/mcp-core-1.1.2-standalone.jar`. The standalone package exposes diagnostic tools by
-default; load application tools with `--provider-class` and a `McpToolProvider` implementation.
-OpenAPI 3.1 documentation is available at `mcp-core/openapi.yaml` for Swagger Editor or Swagger UI.
-
-MCP is disabled by default. Enable `MCP server` under `Config` -> `Other`; the panel then shows the
-actual endpoint and health check. The shared host binds only to `127.0.0.1:8765`. The first plugin
-that acquires the port becomes the host; later plugins register their providers and share the same
-endpoint instead of opening additional ports. Providers use a heartbeat-backed channel and can take
-over the port when the host exits. Tool names must be unique, so extensions should use a namespace.
-
-```text
-http://127.0.0.1:8765/mcp
-http://127.0.0.1:8765/health
-http://127.0.0.1:8765/docs/
+```http
+User-Agent: {{random.ua}}
+X-Tenant-ID: {{value.tenant}}
+X-Request-ID: {{value.trace}}
+X-Request-ID-Copy: {{value.trace}}
 ```
 
-Treat the MCP endpoint as a privileged local API. It has no separate authentication layer, so do
-not expose it through a reverse proxy, port forward, or public listener. Browser requests are
-accepted only when their `Origin` host is loopback (`localhost`, `127.0.0.1`, or `::1`); ordinary
-desktop MCP clients normally omit `Origin`.
+Enable header replacement, request processing and the `Reflection probe` group, then send an authorized search request to OST with ordinary Burp transport.
+Inspect the expanded headers, query marker and paired fingerprint in Databoard. Both trace headers share a value within that header expansion; the subsequent processing group generates its reflection marker independently.
+See the [dynamic-variable worked example](docs/user-guide.html#dynamic-example) for complete steps, expected messages and tenant rotation.
 
-This is a standard HTTP JSON-RPC MCP endpoint. Clients should send `initialize`, notify
-`notifications/initialized`, discover operations through `tools/list`, and invoke them through
-`tools/call`. The server negotiates and returns `MCP-Protocol-Version`; supported versions are
-`2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`. POST requests must use
-`Content-Type: application/json`; when an `Accept` header is sent, it must permit
-`application/json` (standard Streamable HTTP clients commonly advertise JSON and SSE together).
-After initialization, clients should send the negotiated version in `MCP-Protocol-Version` on
-subsequent requests. The `initialize` response also returns `Mcp-Session-Id`; session-aware clients
-should echo it on subsequent requests and may close the session with `DELETE /mcp`. Sessions expire
-after 30 minutes of inactivity. For backwards compatibility, POST requests without a session header
-remain supported in stateless mode.
+**Multi-position Parameter Fuzz**: mark `q` and `page` as separate positions. Assign a search dictionary containing `apple` and `orange`, and a page dictionary containing `1` and `2`.
+Preview should produce four combinations; inspect them in parameter-scan traffic after execution. See the [Parameter Fuzz worked example](docs/user-guide.html#parameter-example).
 
-In addition to status, scanning, tasks, fingerprints, collection, wordlists, history, and export, MCP
-exposes:
+Parameter Fuzz uses literal Payload dictionary content: **dynamic variables are not expanded, and global headers and ordinary processing groups are not reapplied**.
+Assign changing content to position dictionaries; concrete headers inherited from ordinary scans remain unchanged.
 
-- `ost.variables.list` and `ost.variable.get/create/update/delete` for named variables.
-- `ost.profiles.list` and `ost.profile.get/create/update/delete` for identity Profiles.
-- Optional `profiles: ["reader", "admin"]` on `ost.scan.urls` and `ost.scan.request`; only enabled
-  existing Profiles can be applied.
-- Read persisted records with `ost.history.tasks.list`; delete selected history labels only with
-  `ost.history.delete` and `confirm: true`.
-- CSV export requires `confirm: true` before replacing an existing file. Wordlist replacement and
-  replace-mode file import also require confirmation.
-- Tool annotations identify read-only, destructive, idempotent, and network-scanning behavior.
-- `tools/call` validates required fields, basic types, enum values, and array items from each tool's
-  `inputSchema` before invoking the provider; OST business-level validation remains in place as a
-  second layer.
+### Scope and Data
 
-Profile queries return summaries by default and do not disclose Cookie, headers, parameters, or
-Profile-local values. Use `include_sensitive: true` only in a trusted local environment. Likewise, raw
-task requests and responses require `include_body: true`.
+Burp Scope supplements existing host/path exclusions. Table filters only control display, not request eligibility.
+Browser scope checks are not a process-wide firewall; use network isolation for strict-scope assessments.
 
-Initialization example:
+Credentials, raw messages and exports may contain sensitive information. Protect the local working directory
+and sanitize data before sharing it.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2025-11-25",
-    "capabilities": {},
-    "clientInfo": { "name": "local-client", "version": "1.0" }
-  }
-}
-```
+## User Manual
 
-Tool-call example:
+Open `Other → Open user guide` inside the extension, or download the [HTML manual](docs/user-guide.html)
+and open it directly in a browser. It covers installation, workflow, configuration, rule editing, parameter scans,
+identity replay, browser requests, fingerprints and data management. Language switching, search and printing
+work offline without a web server.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "ost.profiles.list",
-    "arguments": {}
-  }
-}
-```
+## MCP Integration
 
+MCP is disabled by default. Enable it in Other to display the local endpoint and service status. Use trusted local
+clients only; do not expose the service through public proxies or port forwarding.
 
-## Requirements
-
-- Burp Suite with support for external Java extensions. The project depends on
-  `burp-extender-api 2.3` and `montoya-api 2023.12.1`.
-- JDK 21 to build the project.
-- Python 3.9+ and DrissionPage only when browser-request mode is used.
-- Edge or Chrome only when browser-request mode is used.
-
-## Build Output
-
-Run the Quick Start build command from the repository root. The packaged extension is:
-
-```text
-extender/target/OST-v1.2.6.jar
-```
+See the [mcp-core documentation](mcp-core/README.md) for the standalone protocol module and extension interfaces,
+and [OpenAPI](mcp-core/openapi.yaml) for the API definition.
 
 ## License
 
-This project follows the repository [LICENSE](LICENSE).
+See [LICENSE](LICENSE). Use only for authorized security testing.

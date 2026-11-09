@@ -22,21 +22,23 @@ public class FilterRule {
     public static final int OPERATE_INCLUDE = 11;
     public static final int OPERATE_NOT_INCLUDE = 12;
 
-    public static final String[] OPERATE_ITEMS = {
-            L.get("table_filter_rule.please_select"),
-            L.get("table_filter_rule.equal_to"),
-            L.get("table_filter_rule.not_equal_to"),
-            L.get("table_filter_rule.greater_than"),
-            L.get("table_filter_rule.greater_than_or_equal_to"),
-            L.get("table_filter_rule.less_than"),
-            L.get("table_filter_rule.less_than_or_equal_to"),
-            L.get("table_filter_rule.starts_with"),
-            L.get("table_filter_rule.not_starts_with"),
-            L.get("table_filter_rule.ends_with"),
-            L.get("table_filter_rule.not_ends_with"),
-            L.get("table_filter_rule.contains"),
-            L.get("table_filter_rule.not_contains"),
-    };
+    public static String[] getOperateItems() {
+        return new String[]{
+                L.get("table_filter_rule.please_select"),
+                L.get("table_filter_rule.equal_to"),
+                L.get("table_filter_rule.not_equal_to"),
+                L.get("table_filter_rule.greater_than"),
+                L.get("table_filter_rule.greater_than_or_equal_to"),
+                L.get("table_filter_rule.less_than"),
+                L.get("table_filter_rule.less_than_or_equal_to"),
+                L.get("table_filter_rule.starts_with"),
+                L.get("table_filter_rule.not_starts_with"),
+                L.get("table_filter_rule.ends_with"),
+                L.get("table_filter_rule.not_ends_with"),
+                L.get("table_filter_rule.contains"),
+                L.get("table_filter_rule.not_contains"),
+        };
+    }
 
     public static final String[] OPERATE_CHAR = {"",
             "==", "!=", ">", ">=", "<", "<=",
@@ -44,15 +46,26 @@ public class FilterRule {
             "noEndsWith", "contains", "noContains"};
 
     private final int columnIndex;
+    // Optional stable field identifier; absent in legacy index-based configurations.
+    private final String fieldKey;
     private final ArrayList<Item> items;
 
     public FilterRule(int columnIndex) {
+        this(columnIndex, null);
+    }
+
+    public FilterRule(int columnIndex, String fieldKey) {
         this.columnIndex = columnIndex;
+        this.fieldKey = fieldKey;
         this.items = new ArrayList<>();
     }
 
     public int getColumnIndex() {
         return columnIndex;
+    }
+
+    public String getFieldKey() {
+        return fieldKey;
     }
 
     public ArrayList<Item> getItems() {
@@ -63,7 +76,7 @@ public class FilterRule {
         if (!items.isEmpty() && logic <= 0) {
             throw new IllegalArgumentException("logic is 0");
         }
-        if (operate <= 0) {
+        if (operate <= 0 || operate >= OPERATE_CHAR.length) {
             throw new IllegalArgumentException("operate is 0");
         }
         items.add(new Item(logic, operate, value));

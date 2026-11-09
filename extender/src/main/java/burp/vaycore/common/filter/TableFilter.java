@@ -5,6 +5,7 @@ import burp.vaycore.common.utils.StringUtils;
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import java.util.ArrayList;
+import java.util.List;
 
 public class TableFilter<T extends AbstractTableModel> extends RowFilter<T, Object> {
 
@@ -28,44 +29,64 @@ public class TableFilter<T extends AbstractTableModel> extends RowFilter<T, Obje
     public boolean include(Entry<? extends T, ?> entry) {
         T model = entry.getModel();
         Integer rowIndex = (Integer) entry.getIdentifier();
-        int columnIndex = rule.getColumnIndex();
-        if (columnIndex < 0 || columnIndex >= model.getColumnCount()
-                || rowIndex < 0 || rowIndex >= model.getRowCount()) {
+        if (rowIndex < 0 || rowIndex >= model.getRowCount()) {
             return false;
         }
-
-        Object valueObj = model.getValueAt(rowIndex, columnIndex);
-        String value = valueObj == null ? "" : String.valueOf(valueObj);
+        List<String> values;
+        if (rule.getFieldKey() != null) {
+            if (!(model instanceof ValueProvider provider)) {
+                return false;
+            }
+            values = provider.getFilterValues(rowIndex, rule.getFieldKey());
+            // Unknown fields fail closed instead of binding to a different column.
+            if (values == null) {
+                return false;
+            }
+        } else {
+            int columnIndex = rule.getColumnIndex();
+            if (columnIndex < 0 || columnIndex >= model.getColumnCount()) {
+                return false;
+            }
+            Object value = model.getValueAt(rowIndex, columnIndex);
+            values = List.of(value == null ? "" : String.valueOf(value));
+        }
+        if (values.isEmpty()) {
+            values = List.of("");
+        }
         ArrayList<FilterRule.Item> items = rule.getItems();
         boolean result = false;
+        // Rules are folded in display order. Do not short-circuit across later OR/AND items.
         for (int i = 0; i < items.size(); i++) {
             FilterRule.Item item = items.get(i);
-            boolean check = checkRuleItem(value, item);
-            if (items.size() == 1) {
-                return check;
-            }
-
-            int logic = item.getLogic();
-            if (logic == 0) {
+            boolean check = checkValues(values, item);
+            if (i == 0) {
                 result = check;
-            } else if (logic == FilterRule.LOGIC_OR) {
+            } else if (item.getLogic() == FilterRule.LOGIC_OR) {
                 result = result || check;
-            } else if (logic == FilterRule.LOGIC_AND) {
+            } else {
                 result = result && check;
-            }
-
-            int nextIndex = i + 1;
-            if (nextIndex < items.size()) {
-                int nextLogic = items.get(nextIndex).getLogic();
-                if (nextLogic == FilterRule.LOGIC_AND && !result) {
-                    return false;
-                }
-                if (nextLogic == FilterRule.LOGIC_OR && result) {
-                    return true;
-                }
             }
         }
         return result;
+    }
+
+    /** A model may expose virtual or stable fields without adding visible table columns. */
+    public interface ValueProvider {
+        List<String> getFilterValues(int rowIndex, String fieldKey);
+    }
+
+    private boolean checkValues(List<String> values, FilterRule.Item item) {
+        boolean negative = item.getOperate() == FilterRule.OPERATE_NOT_EQUAL
+                || item.getOperate() == FilterRule.OPERATE_NOT_START
+                || item.getOperate() == FilterRule.OPERATE_NOT_END
+                || item.getOperate() == FilterRule.OPERATE_NOT_INCLUDE;
+        // Positive: any fingerprint matches. Negative: no fingerprint matches.
+        for (String value : values) {
+            boolean check = checkRuleItem(value == null ? "" : value, item);
+            if (negative && !check) return false;
+            if (!negative && check) return true;
+        }
+        return negative;
     }
 
     private boolean checkRuleItem(String value, FilterRule.Item item) {

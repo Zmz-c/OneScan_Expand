@@ -15,6 +15,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 public class BrowserRequestManager {
 
@@ -48,6 +49,13 @@ public class BrowserRequestManager {
     public BrowserResult navigate(BrowserRequest request, String browserType, String browserBinaryPath,
                                   long timeoutMillis, String workDir, String pythonPath,
                                   boolean loadStaticResources) {
+        return navigate(request, browserType, browserBinaryPath, timeoutMillis, workDir, pythonPath,
+                loadStaticResources, null);
+    }
+
+    public BrowserResult navigate(BrowserRequest request, String browserType, String browserBinaryPath,
+                                  long timeoutMillis, String workDir, String pythonPath,
+                                  boolean loadStaticResources, Predicate<String> scopeCheck) {
         if (request == null) {
             throw new IllegalArgumentException("browser request is null");
         }
@@ -60,8 +68,13 @@ public class BrowserRequestManager {
 
         BrowserSession session = getSession(request.getBrowserId());
         synchronized (session) {
-            return navigateInSession(session, request, browserType, browserBinaryPath, timeoutMillis,
-                    workDir, pythonPath, loadStaticResources);
+            session.scopeCheck = scopeCheck;
+            try {
+                return navigateInSession(session, request, browserType, browserBinaryPath, timeoutMillis,
+                        workDir, pythonPath, loadStaticResources);
+            } finally {
+                session.scopeCheck = null;
+            }
         }
     }
 
@@ -86,7 +99,7 @@ public class BrowserRequestManager {
         File requestFile = null;
         try {
             requestFile = File.createTempFile(REQUEST_FILE_PREFIX, ".txt", sessionDir);
-            writeRequestFile(requestFile, request);
+            writeRequestFile(requestFile, request, session.scopeCheck != null);
 
             List<String> arguments = new ArrayList<String>();
             arguments.add("--action");
@@ -225,11 +238,12 @@ public class BrowserRequestManager {
         }
     }
 
-    private void writeRequestFile(File requestFile, BrowserRequest request) throws IOException {
+    private void writeRequestFile(File requestFile, BrowserRequest request, boolean scopeCheck) throws IOException {
         BufferedWriter writer = null;
         try {
             writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(requestFile),
                     StandardCharsets.UTF_8));
+            writeLine(writer, "SCOPE_CHECK", String.valueOf(scopeCheck));
             writeLine(writer, "METHOD", encodeString(request.getMethod()));
             writeLine(writer, "URL", encodeString(request.getUrl()));
             writeLine(writer, "ISOLATE_COOKIES", String.valueOf(request.isolateCookies()));
@@ -614,7 +628,7 @@ public class BrowserRequestManager {
         Process process = builder.start();
         InputStream processOutput = process.getInputStream();
         StringBuilder output = new StringBuilder();
-        Thread outputReader = startOutputReader(processOutput, output);
+        Thread outputReader = startOutputReader(processOutput, output, process.getOutputStream(), session.scopeCheck);
         synchronized (session.processLock) {
             session.activeProcess = process;
         }
@@ -654,12 +668,31 @@ public class BrowserRequestManager {
     }
 
     private Thread startOutputReader(InputStream is, StringBuilder output) {
+        return startOutputReader(is, output, null, null);
+    }
+
+    private Thread startOutputReader(InputStream is, StringBuilder output, OutputStream replies,
+                                     Predicate<String> scopeCheck) {
         Thread thread = new Thread(() -> {
             BufferedReader reader = null;
             try {
                 reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("SCOPE_CHECK=")) {
+                        boolean allowed = false;
+                        try {
+                            if (scopeCheck != null && line.length() < 131072) {
+                                String url = new String(Base64.getDecoder().decode(line.substring(12)), StandardCharsets.UTF_8);
+                                allowed = scopeCheck.test(url);
+                            }
+                        } catch (Exception ignored) { /* Fail closed, never retry a request. */ }
+                        if (replies != null) {
+                            replies.write((allowed ? "ALLOW\n" : "DENY\n").getBytes(StandardCharsets.US_ASCII));
+                            replies.flush();
+                        }
+                        continue;
+                    }
                     synchronized (output) {
                         if (output.length() > 0) {
                             output.append('\n');
@@ -832,6 +865,7 @@ public class BrowserRequestManager {
         private final Object processLock = new Object();
         private volatile Process activeProcess;
         private boolean closed;
+        private Predicate<String> scopeCheck;
 
         private BrowserSession(String sessionId, int debugPort) {
             this.sessionId = sessionId;

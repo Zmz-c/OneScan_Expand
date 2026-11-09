@@ -1,221 +1,155 @@
 # OST
 
-[English](README.md) | [动态变量与身份 Profile 详细说明](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)
+[English](README.md) · [用户手册](docs/user-guide.html)
 
-OST 是用于已获授权安全测试的 Burp Suite 扩展，提供请求重放、Payload 驱动扫描、浏览器辅助请求、本地结果持久化，以及可选的本地
-MCP 风格 JSON-RPC 服务。
+OST 是用于 Web 安全测试的 Burp Suite 扩展，集成端点扫描、请求处理、参数测试、浏览器重放、指纹识别与身份比较。
 
-> 构建目标为 **Java 21**，不支持 JDK 8。
+**当前正式版：1.2.7** · **运行环境：Java 21**
 
-## 1.2.6 正式版
+## 1.2.7 正式版
 
-参见[发布说明及验证范围](docs/RELEASE_1.2.6.md)。
+- **范围控制**：可选使用 Burp Target Scope，与现有主机和路径排除规则配合。
+- **结果筛选**：新增指纹过滤，指纹和身份条件支持列表选择。
+- **反射检测模板**：提供可编辑请求处理组、配套指纹及 `{{nonce}}` 随机值，支持按业务调整检测条件。
+- **使用体验**：完善中英文本地化，内置离线手册、变量参考和组合配置案例。
+- **可靠性**：修复混合作用范围的请求处理、指纹缓存关联及配置保存问题。
 
-## 功能概览
+完整更新、验证范围和升级步骤见[发行说明](docs/RELEASE_1.2.7.md)。
+从本仓库 GitHub Releases 下载 `OST-v1.2.7.jar`；HTML 用户手册可独立下载，也可从插件内打开。
 
-### 扫描与请求流程
+## 功能
 
-- 通过 Burp 右键菜单发送选中的请求到 OST，或监听符合条件的代理流量。
-- 使用路径字典和请求包处理规则生成请求变体。
-- 可选跟随重定向，并配置 Cookie 传递和目标 Host 限制。
-- 在请求处理前后检查路径黑名单，跳过命中大小写无关路径片段的请求。
-- 在数据面板集中查看请求、响应、指纹和收集结果。
+- **端点扫描**：从 Burp 发送请求、导入 URL 或监听代理流量，结合路径字典与请求规则生成测试变体。
+- **请求处理**：使用前缀、后缀、匹配替换和条件检查配置处理组；内置模板可直接编辑、启用或删除。
+- **参数测试**：参数名探测、已有参数值测试和自定义位置，支持多端点独立配置及批量执行。
+- **浏览器重放**：通过 Edge/Chrome 处理需要浏览器会话的请求，使用 Browser ID 管理会话。
+- **指纹识别**：配置请求响应条件、结果字段和颜色，支持关联当前请求的反射检查。
+- **身份比较**：按 Profile 覆盖凭据与参数，比较同一请求变体的不同身份响应。
+- **数据管理**：独立参数扫描流量视图、条件过滤、SQLite 持久化、历史导入与 CSV 导出。
+- **本地集成**：可选 MCP 接口，为可信本地客户端提供状态、配置和扫描操作。
 
-### 字典、变量与身份 Profile
+## 安装
 
-- 支持固定值、随机和轮询三种命名变量策略，变量取值由可编辑字典提供。
-- 内置随机变量为 `ip`、`local-ip`、`ua`、`AuthFuzz`，其中 AuthFuzz 默认关闭；对应
-  `{{random.ip}}`、`{{random.local-ip}}`、`{{random.ua}}`、`{{random.AuthFuzz}}`。
-- 可通过明确的 Profile 重放菜单，对同一请求变体应用 Cookie、Header、Query、Body
-  参数及 Profile 局部变量覆盖。
-- 可比较同一请求变体下不同 Profile 的响应差异；比较结果不自动判定权限漏洞。
-- 浏览器 Profile 重放会隔离 Cookie，避免与普通浏览器会话或其他 Profile 串用。
+使用 Java 21 启动 Burp Suite，在 `Extensions → Add` 中选择 Java 并加载包含依赖的 OST JAR。
 
-### 浏览器、历史与 MCP
+源码构建：
 
-- 通过 DrissionPage 使用 Edge 或 Chrome 重放请求；可配置 Python、浏览器路径、超时、
-  静态资源加载和目标 Host 限制。
-- 支持 SQLite 本地持久化、手动保存、周期自动保存、历史标签、导入及 CSV 导出。
-- 可选启用本地 MCP 风格 JSON-RPC 接口，提供状态、扫描、任务、指纹、收集、字典、
-  历史和导出能力。
+```powershell
+.\mvnw.cmd package
+```
+
+macOS / Linux：
+
+```bash
+./mvnw package
+```
+
+产物：`extender/target/OST-v1.2.7.jar`。
+
+普通 Burp 请求不需要 Python。使用浏览器模式时，需要 Edge 或 Chrome，以及安装了 DrissionPage 的 Python 3.9+：
+
+```bash
+python -m pip install DrissionPage
+```
+
+在浏览器配置中选择安装依赖的解释器和浏览器路径。
 
 ## 快速开始
 
-1. 使用 JDK 21 在项目根目录构建：
+1. 在 Burp Target Scope 配置授权目标，按需启用 `主机配置 → 仅扫描 Burp Scope`。
+2. 在请求配置中设置 QPS、延迟、重试和扫描层级，选择需要的字典与请求处理组。
+3. 从 Burp 右键发送请求到 OST，或在数据看板导入 URL，每行一条。
+4. 查看请求响应和指纹结果，对选定端点执行参数扫描或身份重放。
+5. 将需要进一步验证的请求发送到 Repeater，或按需保存和导出结果。
 
-   ```bash
-   ./mvnw clean package
-   ```
+## 配置入口
 
-   Windows 下：
+| 配置页 | 内容 |
+|--------|------|
+| 变量与字典 | 命名变量、固定/随机/轮询策略和变量字典。 |
+| 字典配置 | 路径/Payload 字典与请求包处理组。 |
+| 请求配置 | QPS、延迟、扫描层级、重试、身份 Profile、方法/后缀过滤、请求头与路径黑名单。 |
+| 浏览器配置 | Python/浏览器路径、超时、静态资源和目标主机规则。 |
+| 主机配置 | Burp Scope、超时主机拦截和主机黑白名单。 |
+| 重定向配置 | 跟随策略、Cookie 传递与目标主机限制。 |
+| 其他配置 | 语言、使用说明、持久化和 MCP 服务。 |
 
-   ```powershell
-   .\mvnw.cmd clean package
-   ```
+### 请求处理模板
 
-2. 在 Burp Suite 的 `Extensions` -> `Add` 中加载：
+内置处理组与自建处理组使用相同的编辑界面。可以修改名称、启用状态、合并方式以及每个子规则的范围、匹配表达式和替换内容。
+非合并组生成独立变体；启用合并的组组成顺序处理链。
 
-   ```text
-   extender/target/OST-v1.2.6.jar
-   ```
+`Reflection probe` 包含普通的查询参数和表单参数匹配替换规则，使用 `{{nonce}}` 生成随机标记。
+配套 `Reflection candidate` 指纹使用 `containsRequestMatch` 从当前请求提取标记并检查响应正文，
+结合状态码、内容类型及错误页排除条件筛选结果。两组规则均可编辑；修改标记格式时同步调整指纹提取表达式。
 
-3. 打开 OST 标签页，在 `Config` 中配置字典、请求行为、浏览器重放、重定向、持久化和
-   可选 MCP 服务。
+反射结果属于输入回显线索，不等于确认 XSS。内置模板默认禁用，按测试需求启用。
 
-4. 如需浏览器请求模式，在配置的 Python 环境中安装 DrissionPage：
+### 参数与身份测试
 
-   ```bash
-   python -m pip install DrissionPage
-   ```
+参数扫描为每个端点保存独立的模式、字典、方法和请求方式。自定义位置通过编辑器标记并关联字典，
+可覆盖参数名、参数值或正文片段。预览计划后开始执行，结果显示在 `参数扫描 → 扫描流量`。
 
-## 参数扫描自定义位置
+在 `请求配置 → 身份 Profile` 创建身份，通过 Profile 重放菜单选择使用的身份。
+比较同一变体的响应差异时，应结合对象归属和预期权限判断。
 
-在数据看板选择端点，右键进入“参数扫描”，模式选择“自定义位置”。
-选择参数名或参数值后点击“添加标记”，依次插入 `$1$`、`$2$` 等编号，在右侧“位置字典”中为每个编号选择现有 Payload 字典。
-例如 `$1$=$2$&$3$=$4$` 分别配置四个字典；`{"items":[1,$1$,3]}` 只替换数组中的指定位置。
+### 动态变量
 
-- 编号标记替代旧版 `$$`，手动输入编号也会同步到位置字典列表。
-- 不同编号使用字典的全部组合，相同编号重复出现时共用一个值。两个字典分别有 2 个和 3 个值，每个符合条件的端点生成 6 个请求。
-- 模式、参数名和值字典、GET/POST 筛选、路由筛选及 HTTP/浏览器选择均按端点独立保存。一次开始扫描会提交全部端点的混合配置，不受当前选中端点影响。“应用到全部端点”可批量复制当前配置，但不覆盖各端点的请求草稿和位置字典；端点列表和预览会显示各自模式。
-- 再次添加端点会追加到列表；重复添加同一请求来源、方法、主机和 URL 不覆盖原有草稿或字典选择，HTTP 与浏览器来源保留为独立目标。切换端点可编辑各自配置，“移除端点”和“清空端点”不会删除扫描流量。
-- “删除选中标记”删除位置字典表中选中的编号，或编辑器光标所在的标记；“清除全部标记”清除当前请求的全部编号，并恢复原先选中的文本。手动输入的标记没有原文本，删除时直接移除。“恢复原始请求”重置当前草稿及标记配置。
-- 字典值按原文替换，不额外添加引号、编码或二次展开。未设置标记的端点跳过，自动参数名探测和已有参数值扫描不需要标记。
-- 自定义位置预览与实际扫描共用组合计数；超过单次 5000 个请求会在发送前取消。开始扫描会保存本次请求和字典快照，后续编辑或移除端点不影响已提交的扫描。
-- 请求复用既有调度、限速、重试、进度统计和浏览器隔离。普通浏览器扫描与参数浏览器扫描使用独立队列，同一 Browser ID 内仍串行执行，全局暂停对两个队列均生效；响应在“参数扫描 → 扫描流量”中查看，配有独立请求/响应详情及发送到 Repeater 等操作。清空扫描流量不会清空总看板或停止正在运行的扫描。
+普通请求的请求头、路径 Payload 和请求处理规则支持动态变量。常用引用如下：
 
-## 配置说明
+| 引用 | 用途与配置 |
+|------|------------|
+| `{{nonce}}` | 无需配置；每次展开生成 24 个小写十六进制字符，同一次展开重复引用共用一个值。 |
+| `{{random.ip}}` / `{{random.local-ip}}` | 从 `random-ip` / `random-local-ip` 变量字典取样，不改变真实连接源地址。 |
+| `{{random.ua}}` | 从 `user-agent` 变量字典选择 User-Agent。 |
+| `{{random.AuthFuzz}}` | 默认禁用；显式开启后生成完整请求头，应在请求头列表独占一行。 |
+| `{{value.tenant}}` | 自建 `fixed` 或 `round-robin` 变量，分别使用固定值或顺序读取变量字典。 |
+| `{{random.tenant}}` | 自建 `random` 变量，从关联变量字典随机取值。 |
+| `{{host}}` / `{{protocol}}` / `{{domain}}` / `{{ip}}` | 目标主机、协议、无端口主机名及目标解析 IP；`{{ip}}` 不同于随机 IP 变量。 |
+| `{{timestamp}}` / `{{date.yyyy}}` / `{{time.HH}}` | 秒级时间戳及日期时间字段。 |
+| `{{profile.tenant}}` | 显式 Profile 重放时使用该身份的局部变量。 |
 
-| 配置区域       | 用途                            |
-|------------|-------------------------------|
-| `字典与变量`    | 命名变量、变量字典和身份 Profile。         |
-| `Payload`  | 生成请求变体的路径字典和请求包处理规则。          |
-| `Request`  | 请求方法/后缀过滤、浏览器设置、请求头及路径黑名单。    |
-| `Redirect` | 重定向跟随、Cookie 传递和目标 Host 限制。   |
-| `Other`    | SQLite 持久化、保存周期、选定字段和 MCP 服务。 |
+变量名称区分大小写，命名变量须定义并启用。完整域名、子域、目录、日期时间变量及展开边界见[变量参考](docs/user-guide.html#variables)。
 
-### 命名变量与变量字典
+### 配置案例
 
-固定值或轮询变量使用 `{{value.name}}`，随机变量使用 `{{random.name}}`。默认项是普通的
-可编辑命名变量：
+**动态请求头与反射识别**：创建 `tenant` 固定变量，值为 `demo-a`；创建 `trace` 固定变量，值为 `run-{{nonce}}`；保留内置 `ua` 随机变量。在请求头列表配置：
 
-| 名称         | 占位符                   | 默认字典              |
-|------------|-----------------------|-------------------|
-| `ip`       | `{{random.ip}}`       | `random-ip`       |
-| `local-ip` | `{{random.local-ip}}` | `random-local-ip` |
-| `ua`       | `{{random.ua}}`       | `user-agent`      |
-| `AuthFuzz` | `{{random.AuthFuzz}}` | `AuthFuzz`        |
-
-这四项和其他命名变量一样，可以编辑、替换或删除。`ip`、`local-ip` 和 `ua` 默认启用；
-`AuthFuzz` 仅作为可选定义提供，默认关闭，需手动启用后才会参与请求。AuthFuzz 字典包含
-常见 Authorization、API Key、Cookie 和 Token 请求头；随机值由关联字典决定。
-
-关于变量、Profile、请求包处理和响应比较的完整行为，请参阅[详细说明](docs/REQUEST_VARIABLES_AND_IDENTITY_REPLAY.md)。
-
-### 身份 Profile 重放
-
-Profile 只会通过右键菜单中明确的 Profile 重放操作应用，因此可以让同一个处理后请求变体
-以多个身份发送，而不会悄悄影响普通扫描流量。Profile 凭据和请求值保存在本地，请妥善保护
-OST 工作目录、SQLite 数据库、导出文件和截图。
-
-### 路径黑名单
-
-在 `Config` -> `Request` -> `路径黑名单` 中每行填写一个路径片段。URL path 包含任一非空
-片段时将跳过扫描，匹配忽略大小写。OST 会检查入口路径和请求包处理后的最终路径；该黑名单
-不匹配 Host 或查询参数。
-
-## MCP / AI 集成
-
-MCP 协议层已抽取为独立的 `mcp-core` Maven 模块（坐标：`burp.zm:mcp-core:1.1.2`）。公开 Java 包名为
-`burp.zm.mcp`，旧的 `burp.vaycore.mcp` 包不再使用。
-它只依赖 Gson，提供 `McpServer`、`McpTool` 和 `McpToolProvider`，可被其他 Burp 插件直接复用；
-插件作者只需实现 Provider 并注册自己的工具即可。OST 中的 `burp.vaycore.ost.mcp` 类型仅作为
-兼容门面保留，业务工具实现仍在 OST 适配层中。
-
-如需单独运行 MCP 核心模块，可执行 `.\mvnw.cmd -pl mcp-core package`，然后运行
-`mcp-core/target/mcp-core-1.1.2-standalone.jar`。独立包默认提供诊断工具；接入业务功能时，
-通过 `--provider-class` 加载实现 `McpToolProvider` 的 Provider。OpenAPI 3.1 文档位于
-`mcp-core/openapi.yaml`，可直接导入 Swagger Editor 或 Swagger UI。
-
-MCP 默认关闭。在 `Config` -> `Other` 中启用 `MCP server` 后，界面会显示实际端点和健康
-检查地址。共享 Host 仅绑定到 `127.0.0.1:8765`。第一个成功占用端口的插件成为 Host，后续插件
-通过本地注册接口加入并复用同一个端点，不再监听新的端口；Provider 使用带心跳的长连接，Host
-退出后其他插件可重新抢占该端口。工具名必须唯一，建议使用插件名前缀作为命名空间。
-
-```text
-http://127.0.0.1:8765/mcp
-http://127.0.0.1:8765/health
-http://127.0.0.1:8765/docs/
+```http
+User-Agent: {{random.ua}}
+X-Tenant-ID: {{value.tenant}}
+X-Request-ID: {{value.trace}}
+X-Request-ID-Copy: {{value.trace}}
 ```
 
-请将 MCP 端点视为本地特权接口。它没有独立的身份认证层，不要通过反向代理、端口转发或公网
-监听对外暴露。浏览器请求的 `Origin` Host 仅允许 loopback（`localhost`、`127.0.0.1` 或
-`::1`）；普通桌面 MCP 客户端通常不会发送 `Origin`。
+启用请求头替换、请求包处理及 `Reflection probe` 组，将已授权的搜索请求通过普通 Burp 方式发送到 OST。
+在数据看板核对头部展开、查询参数标记及配套指纹结果。两个追踪头共用本次头部展开的值，后续处理组的反射标记独立生成。
+完整步骤、预期请求和租户轮询配置见[动态变量组合案例](docs/user-guide.html#dynamic-example)。
 
-这是标准 HTTP JSON-RPC MCP 接口：客户端应先发送 `initialize`，再通知
-`notifications/initialized`，之后通过 `tools/list` 发现工具并用 `tools/call` 调用。服务协商并返回
-`MCP-Protocol-Version`，目前支持 `2024-11-05`、`2025-03-26`、`2025-06-18` 和
-`2025-11-25`。POST 请求必须使用 `Content-Type: application/json`；如发送 `Accept` 请求头，
-其中必须允许 `application/json`（标准 Streamable HTTP 客户端通常会同时声明 JSON 与 SSE）。
-初始化完成后，后续请求应通过 `MCP-Protocol-Version` 携带协商得到的协议版本。
-`initialize` 响应会返回 `Mcp-Session-Id`；支持会话的客户端应在后续请求中回传该请求头，
-并可通过 `DELETE /mcp` 主动关闭会话。会话空闲 30 分钟后自动失效。为兼容旧版本地客户端，
-不携带会话头的 POST 仍支持无状态调用。
+**多位置参数 Fuzz**：为 `q` 和 `page` 分别标记两个位置，绑定包含 `apple`、`orange` 的关键词字典和包含 `1`、`2` 的页码字典。
+预览应得到 4 个组合，执行后在参数扫描流量中检查。详见[参数 Fuzz 组合案例](docs/user-guide.html#parameter-example)。
 
-主要工具包括状态、扫描、任务、指纹、收集、字典、历史和导出，以及：
+参数 Fuzz 使用 Payload 字典原文，**不会展开动态变量，也不重新应用全局请求头和普通处理组**。
+需要逐项变化的内容应绑定位置字典；从普通扫描继承的具体头部值会保持不变。
 
-- `ost.variables.list`、`ost.variable.get/create/update/delete`：管理命名变量。
-- `ost.profiles.list`、`ost.profile.get/create/update/delete`：管理身份 Profile。
-- `ost.scan.urls`、`ost.scan.request`：可传 `profiles: ["reader", "admin"]`，仅接受已启用的
-  Profile，并会按每个身份重放。
-- 使用 `ost.history.tasks.list` 读取已持久化记录；`ost.history.delete` 删除指定历史标签时必须传
-  `confirm: true`。
-- CSV 导出覆盖已有文件前必须传 `confirm: true`；字典整体替换及 replace 模式的文件导入同样需要确认。
-- 工具元数据包含只读、破坏性、幂等性和扫描网络提示。
-- `tools/call` 会根据工具声明的 `inputSchema` 校验必填字段、基础类型、枚举值及数组元素，
-  失败时返回 `isError: true`，并保留 OST 业务层的二次校验。
+### 范围与数据
 
-Profile 查询默认只返回摘要，不包含 Cookie、Header、参数或 Profile 局部变量的值。仅在可信的
-本地环境中，并明确传递 `include_sensitive: true` 时才返回这些值。任务的原始请求/响应也需要
-显式传递 `include_body: true`。
+Burp Scope 是现有主机与路径排除规则的补充；数据表过滤仅控制显示，不限制请求发送。
+浏览器范围检查不等同于进程级网络隔离，严格范围项目应同时设置网络边界。
 
-初始化示例：
+身份凭据、原始请求响应和导出文件可能包含敏感数据，请保护本地工作目录并在分享前脱敏。
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2025-11-25",
-    "capabilities": {},
-    "clientInfo": { "name": "local-client", "version": "1.0" }
-  }
-}
-```
+## 使用说明
 
-工具调用示例：
+在插件内打开 `其他配置 → 打开使用说明`，或下载 [HTML 用户手册](docs/user-guide.html) 后直接用浏览器打开。
+手册包含安装、工作流程、配置参考、规则编辑、参数扫描、身份重放、浏览器请求、指纹和数据管理，支持中英切换、搜索及打印，无需部署服务器。
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "ost.profiles.list",
-    "arguments": {}
-  }
-}
-```
+## MCP 集成
 
+MCP 默认关闭。在其他配置中启用后，面板显示本地端点与服务状态。仅供可信本地客户端使用，不应通过代理或端口转发公开暴露。
 
-## 运行环境
-
-- 支持加载外部 Java 扩展的 Burp Suite；项目依赖 `burp-extender-api 2.3` 和
-  `montoya-api 2023.12.1`。
-- 构建需要 JDK 21。
-- 仅使用浏览器请求模式时需要 Python 3.9+ 与 DrissionPage。
-- 仅使用浏览器请求模式时需要 Edge 或 Chrome。
+独立协议模块与扩展开发接口见 [mcp-core 文档](mcp-core/README.md)，接口定义见 [OpenAPI](mcp-core/openapi.yaml)。
 
 ## 许可证
 
-本项目遵循仓库中的 [LICENSE](LICENSE)。
+本项目遵循 [LICENSE](LICENSE)。仅用于已获授权的安全测试。

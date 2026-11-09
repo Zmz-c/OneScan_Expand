@@ -67,6 +67,10 @@ public class L {
         sLanguage = loadLanguage(resolveLocale(normalizeLanguageSetting(languageSetting)));
     }
 
+    public static Locale getLocale() {
+        return sLanguage.getLocale();
+    }
+
     public static String normalizeLanguageSetting(String languageSetting) {
         if (LANGUAGE_CHINESE.equalsIgnoreCase(languageSetting)) {
             return LANGUAGE_CHINESE;

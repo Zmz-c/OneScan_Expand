@@ -4,6 +4,7 @@ import burp.vaycore.common.helper.UIHelper;
 import burp.vaycore.common.utils.StringUtils;
 import burp.vaycore.ost.common.Config;
 import burp.vaycore.ost.common.L;
+import burp.vaycore.ost.common.LocalHelp;
 import burp.vaycore.ost.common.NumberFilter;
 import burp.vaycore.ost.manager.TaskPersistenceManager;
 import burp.vaycore.ost.ui.base.BaseConfigTab;
@@ -30,6 +31,9 @@ public class OtherTab extends BaseConfigTab {
 
     protected void initView() {
         addLanguagePanel();
+        JButton help = new JButton(L.get("help.open"));
+        help.addActionListener(e -> LocalHelp.open(this));
+        addConfigItem(L.get("help.title"), L.get("help.description"), help);
         // 请求响应最大长度
         addTextConfigPanel(L.get("maximum_display_length"), L.get("maximum_display_length_sub_title"),
                 20, Config.KEY_MAX_DISPLAY_LENGTH).addKeyListener(new NumberFilter(8));
@@ -195,8 +199,7 @@ public class OtherTab extends BaseConfigTab {
         TaskFieldSelectionPanel fieldPanel = new TaskFieldSelectionPanel(TaskPersistenceManager.getConfiguredFieldKeys());
         JScrollPane scrollPane = new JScrollPane(fieldPanel);
         scrollPane.setPreferredSize(new Dimension(420, 220));
-        int ret = JOptionPane.showConfirmDialog(this, scrollPane, L.get("data_persistence_select_fields"),
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        int ret = UIHelper.showCustomDialog(L.get("data_persistence_select_fields"), scrollPane, this);
         if (ret != JOptionPane.OK_OPTION) {
             return;
         }

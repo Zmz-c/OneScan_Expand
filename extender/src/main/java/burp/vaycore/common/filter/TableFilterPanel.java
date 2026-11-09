@@ -9,6 +9,8 @@ import burp.vaycore.ost.common.L;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -17,6 +19,7 @@ import java.awt.event.ItemEvent;
 import java.awt.event.ItemListener;
 import java.util.ArrayList;
 import java.util.Vector;
+import java.util.List;
 
 /**
  * 表过滤面板
@@ -25,40 +28,54 @@ import java.util.Vector;
  */
 public class TableFilterPanel extends JPanel implements ItemListener, ActionListener {
 
-    private JComboBox<String> mColumnList;
+    private JComboBox<FilterField> mColumnList;
     private JPanel mRulesPanel;
 
     private final ArrayList<FilterRule> mRules;
     private int mLastColumnIndex = 0;
-    private final Vector<String> mColumns;
+    private final List<FilterField> mFields;
     private JScrollPane mRulesScrollPanel;
 
     public TableFilterPanel(Vector<String> columns, ArrayList<FilterRule> rules) {
-        if (columns == null) {
-            throw new IllegalArgumentException("columns param is null.");
+        this(FilterField.fromColumns(columns), rules);
+    }
+
+    public TableFilterPanel(List<FilterField> fields, ArrayList<FilterRule> rules) {
+        if (fields == null || fields.isEmpty()) {
+            throw new IllegalArgumentException("filter fields are empty");
         }
-        if (rules == null) {
-            rules = new ArrayList<>();
+        mFields = new ArrayList<>(fields);
+        mRules = new ArrayList<>();
+        if (rules != null) {
+            for (FilterRule rule : rules) {
+                FilterField field = mFields.stream().filter(f -> f.matches(rule)).findFirst().orElse(null);
+                if (field == null) {
+                    field = new FilterField(rule.getColumnIndex(), rule.getFieldKey(),
+                            L.get("table_filter.unavailable_field", rule.getFieldKey() == null
+                                    ? String.valueOf(rule.getColumnIndex()) : rule.getFieldKey()), null);
+                    mFields.add(field);
+                }
+                FilterRule copy = new FilterRule(field.columnIndex(), field.key());
+                copy.getItems().addAll(rule.getItems());
+                mRules.add(copy);
+            }
         }
-        mRules = rules;
-        mColumns = columns;
         initView();
         setupData();
     }
 
     private void initView() {
-        setPreferredSize(new Dimension(500, 290));
+        setPreferredSize(new Dimension(700, 320));
         setLayout(new VLayout(10));
         // 选择过滤字段，添加、清除字段过滤规则
         JPanel columnPanel = new JPanel(new HLayout(5, true));
         add(columnPanel);
         JLabel filterLabel = new JLabel(L.get("table_filter.select_column"));
         columnPanel.add(filterLabel);
-        mColumnList = new JComboBox<>(mColumns);
+        mColumnList = new JComboBox<>(new Vector<>(mFields));
         mColumnList.setSelectedIndex(mLastColumnIndex);
         mColumnList.addItemListener(this);
-        columnPanel.add(mColumnList, "20%");
-        columnPanel.add(new JPanel(), "1w");
+        columnPanel.add(mColumnList, "1w");
         // 添加过滤
         JButton addItemBtn = new JButton(L.get("table_filter.add_filter"));
         addItemBtn.setToolTipText(L.get("table_filter.add_filter"));
@@ -123,18 +140,55 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
         // 过滤规则条件
         JPanel rulePanel = new JPanel(new HLayout(5, true));
         panel.add(rulePanel);
-        JComboBox<String> operateBox = new JComboBox<>(FilterRule.OPERATE_ITEMS);
+        JComboBox<String> operateBox = new JComboBox<>(FilterRule.getOperateItems());
         operateBox.setSelectedIndex(operate);
         rulePanel.add(operateBox);
-        JTextField input = new JTextField(value);
-        rulePanel.add(input, "1w");
+        rulePanel.add(createValueInput(mFields.get(mLastColumnIndex), value), "1w");
         JButton delBtn = new JButton(L.get("table_filter.x"));
+        delBtn.setMargin(new Insets(2, 6, 2, 6));
         rulePanel.add(delBtn, "40px");
         delBtn.setEnabled(logic > 0);
         delBtn.addActionListener(e -> {
             mRulesPanel.remove(panel);
             UIHelper.refreshUI(mRulesScrollPanel);
         });
+    }
+
+    private JComponent createValueInput(FilterField field, String value) {
+        if (field.choices() == null) {
+            return new JTextField(value);
+        }
+        JComboBox<FilterField.Choice> box = new JComboBox<>();
+        box.setEditable(true);
+        box.setMaximumRowCount(16);
+        refreshChoices(box, field, value == null ? "" : value);
+        box.addPopupMenuListener(new PopupMenuListener() {
+            @Override
+            public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
+                refreshChoices(box, field, readValue(box));
+            }
+            @Override public void popupMenuWillBecomeInvisible(PopupMenuEvent e) { }
+            @Override public void popupMenuCanceled(PopupMenuEvent e) { }
+        });
+        return box;
+    }
+
+    private void refreshChoices(JComboBox<FilterField.Choice> box, FilterField field, String value) {
+        List<FilterField.Choice> choices = new ArrayList<>(field.choices().get());
+        FilterField.Choice selected = choices.stream().filter(c -> c.value().equals(value)).findFirst()
+                .orElseGet(() -> new FilterField.Choice(value, value));
+        if (!choices.contains(selected)) choices.add(selected);
+        box.setModel(new DefaultComboBoxModel<>(choices.toArray(new FilterField.Choice[0])));
+        box.setSelectedItem(selected);
+    }
+
+    private String readValue(Component input) {
+        if (input instanceof JComboBox<?> box) {
+            Object value = box.getEditor().getItem();
+            return value instanceof FilterField.Choice choice ? choice.value()
+                    : value == null ? "" : value.toString();
+        }
+        return ((JTextField) input).getText();
     }
 
     @Override
@@ -155,7 +209,8 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
 
     private void saveColumnRuleItem(int lastColumnIndex) {
         int index = indexOfByColumnIndex(lastColumnIndex);
-        FilterRule rule = new FilterRule(lastColumnIndex);
+        FilterField field = mFields.get(lastColumnIndex);
+        FilterRule rule = new FilterRule(field.columnIndex(), field.key());
         int ruleCount = mRulesPanel.getComponentCount();
         // 遍历组件数据，填充到对象
         for (int i = 0; i < ruleCount; i++) {
@@ -172,10 +227,9 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
             JComboBox<String> operateBox = (JComboBox<String>) rulePanel.getComponent(0);
             int operate = operateBox.getSelectedIndex();
             // 获取值
-            JTextField input = (JTextField) rulePanel.getComponent(1);
-            String value = input.getText();
+            String value = readValue(rulePanel.getComponent(1));
             try {
-                rule.addRule(logic, operate, value);
+                rule.addRule(rule.getItems().isEmpty() ? 0 : logic == 0 ? FilterRule.LOGIC_AND : logic, operate, value);
             } catch (Exception e) {
                 // 如果添加规则失败，舍弃该规则
             }
@@ -187,6 +241,8 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
             } else {
                 mRules.add(rule);
             }
+        } else if (index >= 0) {
+            mRules.remove(index);
         }
     }
 
@@ -202,7 +258,7 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
         }
         for (int i = 0; i < mRules.size(); i++) {
             FilterRule rule = mRules.get(i);
-            if (rule.getColumnIndex() == columnIndex) {
+            if (mFields.get(columnIndex).matches(rule)) {
                 return i;
             }
         }
@@ -226,26 +282,29 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
      * @return 返回过滤规则表达式
      */
     public String exportRulesText() {
+        saveColumnRuleItem(mLastColumnIndex);
         StringBuilder result = new StringBuilder();
         if (mRules == null || mRules.isEmpty()) {
             return result.toString();
         }
         for (FilterRule rule : mRules) {
-            int columnIndex = rule.getColumnIndex();
-            String columnName = getColumnName(columnIndex);
+            String columnName = mFields.stream().filter(f -> f.matches(rule))
+                    .map(FilterField::label).findFirst().orElse("");
             ArrayList<FilterRule.Item> items = rule.getItems();
             // 规则与规则之间是并且的关系
             if (!StringUtils.isEmpty(result)) {
                 result.append(" && ");
             }
+            StringBuilder expression = new StringBuilder();
             for (FilterRule.Item item : items) {
                 int logic = item.getLogic();
                 int operate = item.getOperate();
                 String value = item.getValue();
-                if (logic > 0) {
-                    result.append(logic == FilterRule.LOGIC_AND ? " && " : " || ");
+                if (expression.length() > 0) {
+                    expression.insert(0, "(").append(")");
+                    expression.append(logic == FilterRule.LOGIC_AND ? " && " : " || ");
                 }
-                result.append(columnName);
+                expression.append(columnName);
                 String operateStr = FilterRule.OPERATE_CHAR[operate];
                 // 拼接操作符，区分运算符和方法处理
                 if (operate < FilterRule.OPERATE_START) {
@@ -257,29 +316,17 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
                             value = "'" + value + "'";
                         }
                     }
-                    result.append(" ").append(operateStr).append(" ");
-                    result.append(value);
+                    expression.append(" ").append(operateStr).append(" ");
+                    expression.append(value);
                 } else {
                     value = "'" + value + "'";
-                    result.append(".").append(operateStr).append("(");
-                    result.append(value).append(")");
+                    expression.append(".").append(operateStr).append("(");
+                    expression.append(value).append(")");
                 }
             }
+            result.append("(").append(expression).append(")");
         }
         return result.toString();
-    }
-
-    /**
-     * 获取过滤的字段名
-     *
-     * @param columnIndex 字段下标
-     * @return 失败返回空字符串
-     */
-    private String getColumnName(int columnIndex) {
-        if (columnIndex < 0 || columnIndex >= mColumns.size()) {
-            return "";
-        }
-        return mColumns.get(columnIndex);
     }
 
     /**
@@ -288,6 +335,7 @@ public class TableFilterPanel extends JPanel implements ItemListener, ActionList
      * @return 表过滤器规则数据
      */
     public ArrayList<TableFilter<AbstractTableModel>> exportTableFilters() {
+        saveColumnRuleItem(mLastColumnIndex);
         ArrayList<TableFilter<AbstractTableModel>> filters = new ArrayList<>();
         for (FilterRule rule : mRules) {
             TableFilter<AbstractTableModel> filter = new TableFilter<>(rule);

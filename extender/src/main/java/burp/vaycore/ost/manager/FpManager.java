@@ -147,7 +147,10 @@ public class FpManager {
                     String field = ruleItem.getField();
                     String method = ruleItem.getMethod();
                     String matchData = provider.getMatchData(dataSource, field);
-                    boolean state = invokeFpMethod(method, matchData, ruleItem.getContent());
+                    boolean state = "containsRequestMatch".equals(method)
+                            ? FpMethodHandler.containsRequestMatch(matchData, ruleItem.getContent(),
+                                    provider.hasRequest() ? provider.getRequest().getData() : null)
+                            : invokeFpMethod(method, matchData, ruleItem.getContent());
                     // 里面为 and 运算，只要有一处为 false，表示规则不匹配
                     if (!state) {
                         return false;
@@ -164,7 +167,12 @@ public class FpManager {
             addResultToCache(hashKey, result);
             // 将指纹识别结果添加到历史记录
             String host = provider.getRequestHost();
-            addResultToHistory(host, result);
+            // A reflected marker is evidence for this request only, not a site-wide technology.
+            List<FpData> siteFingerprints = result.stream().filter(item -> item.getRules().stream()
+                    .noneMatch(group -> group.stream().anyMatch(rule -> "reflection".equals(rule.getDataSource())
+                            || "containsRequestMatch".equals(rule.getMethod()))))
+                    .collect(Collectors.toList());
+            addResultToHistory(host, siteFingerprints);
         }
         return result;
     }
@@ -198,6 +206,11 @@ public class FpManager {
      *
      * @param data 指纹数据实例
      */
+    public static void saveNow() {
+        checkInit();
+        sConfig.saveNow();
+    }
+
     public static void addItem(FpData data) {
         checkInit();
         sConfig.addListItem(data);

@@ -11,12 +11,13 @@ public interface Constants {
 
     // 插件信息
     String PLUGIN_NAME = "OST";
-    String PLUGIN_VERSION = "1.2.6";
+    String PLUGIN_VERSION = "1.2.7";
     String PARAMETER_FUZZ_SOURCE = "Parameter Fuzz";
     boolean DEBUG = false;
 
     // 插件启动显示的信息
-    String BANNER = "#" +
+    static String banner() {
+        return "#" +
             "#############################################\n" +
             "  " + PLUGIN_NAME + " v" + PLUGIN_VERSION + "\n" +
             "  Author:    0ne_1\n" +
@@ -24,8 +25,9 @@ public interface Constants {
             "  Developer: Rural.Dog\n" +
             "  Developer:人间小福星\n"+
             "  Project:    OST\n" +
-            "  Note:UI小调整，归类调整，增加语言选择功能，可以更好的玩耍了！\n" +
+            "  " + L.get("startup_note") + "\n" +
             "#############################################\n";
+    }
 
     // 插件卸载显示的信息
     String UNLOAD_BANNER = "\n" +

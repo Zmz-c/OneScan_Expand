@@ -30,7 +30,7 @@ public class Ost extends JTabbedPane {
     }
 
     private void loadModule() {
-        Logger.info(Constants.BANNER);
+        Logger.info(Constants.banner());
     }
 
     private void initView() {

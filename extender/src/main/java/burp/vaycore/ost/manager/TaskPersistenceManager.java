@@ -47,20 +47,6 @@ public class TaskPersistenceManager {
     public static final String DEFAULT_DATA_LABEL = "default";
     private static final DateTimeFormatter LABEL_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
-    private static final List<FieldDef> BASE_FIELDS = List.of(
-            new FieldDef(FIELD_FROM, L.get("task_table_columns.from")),
-            new FieldDef(FIELD_METHOD, L.get("task_table_columns.method")),
-            new FieldDef(FIELD_HOST, L.get("task_table_columns.host")),
-            new FieldDef(FIELD_URL, L.get("task_table_columns.url")),
-            new FieldDef(FIELD_TITLE, L.get("task_table_columns.title")),
-            new FieldDef(FIELD_IP, L.get("task_table_columns.ip")),
-            new FieldDef(FIELD_STATUS, L.get("task_table_columns.status")),
-            new FieldDef(FIELD_LENGTH, L.get("task_table_columns.length")),
-            new FieldDef(FIELD_COLOR, L.get("task_table_columns.color")),
-            new FieldDef(FIELD_PROFILE, L.get("task_table_columns.profile")),
-            new FieldDef(FIELD_VARIANT, L.get("task_table_columns.variant")),
-            new FieldDef(FIELD_PARAMS, L.get("data_persistence_fields.params"))
-    );
     private static final Object EXECUTOR_LOCK = new Object();
     private static final Object DB_LOCK = new Object();
     private static ExecutorService sExecutor = createExecutor();
@@ -70,11 +56,24 @@ public class TaskPersistenceManager {
     }
 
     public static List<FieldDef> getBaseFields() {
-        return BASE_FIELDS;
+        return List.of(
+                new FieldDef(FIELD_FROM, L.get("task_table_columns.from")),
+                new FieldDef(FIELD_METHOD, L.get("task_table_columns.method")),
+                new FieldDef(FIELD_HOST, L.get("task_table_columns.host")),
+                new FieldDef(FIELD_URL, L.get("task_table_columns.url")),
+                new FieldDef(FIELD_TITLE, L.get("task_table_columns.title")),
+                new FieldDef(FIELD_IP, L.get("task_table_columns.ip")),
+                new FieldDef(FIELD_STATUS, L.get("task_table_columns.status")),
+                new FieldDef(FIELD_LENGTH, L.get("task_table_columns.length")),
+                new FieldDef(FIELD_COLOR, L.get("task_table_columns.color")),
+                new FieldDef(FIELD_PROFILE, L.get("task_table_columns.profile")),
+                new FieldDef(FIELD_VARIANT, L.get("task_table_columns.variant")),
+                new FieldDef(FIELD_PARAMS, L.get("data_persistence_fields.params"))
+        );
     }
 
     public static List<FieldDef> getSelectableFields() {
-        ArrayList<FieldDef> result = new ArrayList<>(BASE_FIELDS);
+        ArrayList<FieldDef> result = new ArrayList<>(getBaseFields());
         for (FpColumn column : FpManager.getColumns()) {
             if (column != null && StringUtils.isNotEmpty(column.getId())) {
                 String label = StringUtils.isNotEmpty(column.getName()) ? column.getName() : column.getId();

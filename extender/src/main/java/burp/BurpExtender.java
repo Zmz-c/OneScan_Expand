@@ -168,6 +168,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private final AtomicInteger mTaskCommitCounter = new AtomicInteger(0);
     private final AtomicInteger mLFTaskOverCounter = new AtomicInteger(0);
     private final AtomicInteger mLFTaskCommitCounter = new AtomicInteger(0);
+    private final AtomicLong mScopeBlockedCounter = new AtomicLong();
     private final AtomicLong mTaskGeneration = new AtomicLong(0);
     private final AtomicLong mParameterFuzzGeneration = new AtomicLong(0);
     private final AtomicBoolean mParameterFuzzRunning = new AtomicBoolean(false);
@@ -437,6 +438,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             mDataBoardTab.refreshLFTaskStatus(mLFTaskOverCounter.get(), mLFTaskCommitCounter.get());
             mDataBoardTab.refreshTaskHistoryStatus();
             mDataBoardTab.refreshFpCacheStatus();
+            mDataBoardTab.refreshScopeStatus(mScopeBlockedCounter.get());
         });
         mStatusRefresh.start();
         mDataBoardTab.refreshAutoSaveTimer();
@@ -743,6 +745,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("doScan: task stop requested, intercept source: %s", from);
             return;
         }
+        if (!isRequestInBurpScope(httpReqResp.getHttpService(), httpReqResp.getRequest())) return;
         IRequestInfo info = mHelpers.analyzeRequest(httpReqResp);
         String host = httpReqResp.getHttpService().getHost();
         byte[] request = httpReqResp.getRequest();
@@ -1105,6 +1108,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             if (newUrl != null && pathBlocklistFilter(newUrl.getPath())) {
                 return;
             }
+            if (!isRequestInBurpScope(service, request)) return;
             String generatedReqId = generateReqId(newInfo, from, requestMode);
             if (FROM_PARAMETER_FUZZ.equals(from)) {
                 generatedReqId += "\nprobe=" + (StringUtils.isNotEmpty(variantIdOverride)
@@ -1414,6 +1418,44 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         }
     }
 
+    // Burp remains the authority; never cache or reimplement its include/exclude rules.
+    private boolean isBurpScopeAllowed(URL url) {
+        if (!Config.getBoolean(Config.KEY_SCOPE_ONLY)) return true;
+        try {
+            if (url != null && ("http".equalsIgnoreCase(url.getProtocol()) || "https".equalsIgnoreCase(url.getProtocol()))
+                    && mCallbacks != null && mCallbacks.isInScope(url)
+                    && !hostAllowlistFilter(url.getHost()) && !hostBlocklistFilter(url.getHost())
+                    && !pathBlocklistFilter(url.getPath())) return true;
+        } catch (Exception e) {
+            Logger.debug("Burp Scope check unavailable; request blocked");
+        }
+        mScopeBlockedCounter.incrementAndGet();
+        return false;
+    }
+
+    private boolean isBrowserUrlInBurpScope(String url) {
+        try {
+            return isBurpScopeAllowed(new URL(url));
+        } catch (Exception e) {
+            mScopeBlockedCounter.incrementAndGet();
+            return false;
+        }
+    }
+
+    private boolean isRequestInBurpScope(IHttpService service, byte[] request) {
+        if (!Config.getBoolean(Config.KEY_SCOPE_ONLY)) return true;
+        try {
+            if (service == null || request == null || request.length == 0) return isBurpScopeAllowed(null);
+            URL url = getUrlByRequestInfo(mHelpers.analyzeRequest(service, request));
+            if (!isBurpScopeAllowed(url)) return false;
+            // Host/absolute-form rewrites must not conceal an out-of-scope transport destination.
+            URL transport = new URL(service.getProtocol(), service.getHost(), service.getPort(), url.getFile());
+            return url.toExternalForm().equals(transport.toExternalForm()) || isBurpScopeAllowed(transport);
+        } catch (Exception e) {
+            return isBurpScopeAllowed(null);
+        }
+    }
+
     private boolean requestPathBlocklistFilter(IHttpService service, byte[] request) {
         if (service == null || request == null || request.length == 0) {
             return false;
@@ -1603,6 +1645,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("doBurpRequest: task stop requested, intercept req id: %s", reqId);
             return;
         }
+        if (!isRequestInBurpScope(service, reqRawBytes)) return;
         if (!registerRequestGroupTask(requestGroup)) {
             return;
         }
@@ -1882,6 +1925,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("doMakeHttpRequest: task stop requested, intercept task");
             return HttpReqRespAdapter.from(service, reqRawBytes);
         }
+        if (!isRequestInBurpScope(service, reqRawBytes)) return null;
         IHttpRequestResponse reqResp;
         String reqHost = getReqHostByHttpService(service);
         // 如果启用拦截超时主机，并检测到当前请求主机超时，直接拦截
@@ -1979,18 +2023,27 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("doBrowserRequest: task stop requested after browser pause check");
             return null;
         }
+        if (!isRequestInBurpScope(service, reqRawBytes)) return null;
         try {
             IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
             URL url = getUrlByRequestInfo(info);
             Logger.debug("Do browser request: %s", url);
             BrowserRequest browserRequest = buildBrowserRequest(info, reqRawBytes, isolateCookies, browserId);
             long browserTimeout = getBrowserRequestTimeout();
-            BrowserRequestManager.BrowserResult result = mBrowserRequestManager.navigate(
-                    browserRequest, Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
-                    Config.get(Config.KEY_BROWSER_BINARY_PATH),
-                    browserTimeout, Config.getWorkDir(),
-                    Config.get(Config.KEY_BROWSER_PYTHON_PATH),
-                    Config.getBoolean(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES));
+            BrowserRequestManager.BrowserResult result;
+            if (Config.getBoolean(Config.KEY_SCOPE_ONLY)) {
+                result = mBrowserRequestManager.navigate(browserRequest,
+                        Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
+                        Config.get(Config.KEY_BROWSER_BINARY_PATH), browserTimeout, Config.getWorkDir(),
+                        Config.get(Config.KEY_BROWSER_PYTHON_PATH),
+                        Config.getBoolean(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES), this::isBrowserUrlInBurpScope);
+            } else {
+                result = mBrowserRequestManager.navigate(browserRequest,
+                        Config.sanitizeBrowserType(Config.get(Config.KEY_BROWSER_TYPE)),
+                        Config.get(Config.KEY_BROWSER_BINARY_PATH), browserTimeout, Config.getWorkDir(),
+                        Config.get(Config.KEY_BROWSER_PYTHON_PATH),
+                        Config.getBoolean(Config.KEY_BROWSER_LOAD_STATIC_RESOURCES));
+            }
             IHttpRequestResponse reqResp = HttpReqRespAdapter.from(service, reqRawBytes);
             reqResp.setResponse(buildBrowserResponseBytes(result));
             reqResp.setComment(FROM_BROWSER);
@@ -2975,7 +3028,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     case PayloadRule.SCOPE_URL:
                         String newUrl = rule.handleProcess(url);
                         // 截取请求头第一行，用于定位要处理的位置
-                        String reqLine = header.substring(0, header.indexOf("\r\n"));
+                        int reqLineEnd = header.indexOf("\r\n");
+                        String reqLine = reqLineEnd < 0 ? header : header.substring(0, reqLineEnd);
                         Matcher matcher = Constants.REGEX_REQ_LINE_URL.matcher(reqLine);
                         if (matcher.find()) {
                             int start = matcher.start(1);
@@ -3003,6 +3057,14 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         request = rule.handleProcess(request);
                         break;
                 }
+                // Keep all scopes in sync after every sub-rule. A full-request rewrite
+                // must not be lost when the next sub-rule edits the URL, headers or body.
+                IRequestInfo processedInfo = mHelpers.analyzeRequest(service, mHelpers.stringToBytes(request));
+                int processedBodyOffset = processedInfo.getBodyOffset();
+                if (processedBodyOffset < 4 || processedBodyOffset > request.length()) return null;
+                header = request.substring(0, processedBodyOffset - 4);
+                body = request.substring(processedBodyOffset);
+                url = getReqPathByRequestInfo(processedInfo);
             } catch (Exception e) {
                 Logger.debug("handlePayloadProcess exception: " + e.getMessage());
                 return null;

@@ -190,10 +190,12 @@ public class SimplePayloadList extends JPanel implements ActionListener {
             }
             ruleTypeBox.addItem(((PayloadRule) rule).ruleName());
         }
+        JComboBox<String> ruleScopeBox = new JComboBox<>();
         ruleTypeBox.addActionListener(e -> {
             int index = ruleTypeBox.getSelectedIndex() - 1;
             if (index < 0) {
                 clearAllParamItemView(panel);
+                ruleScopeBox.setEnabled(true);
                 return;
             }
             clearAllParamItemView(panel);
@@ -211,7 +213,6 @@ public class SimplePayloadList extends JPanel implements ActionListener {
         });
         panel.add(ruleTypeBox);
         // 范围
-        JComboBox<String> ruleScopeBox = new JComboBox<>();
         ruleScopeBox.addItem(L.get("rule_scope_box_item.hint"));
         ruleScopeBox.addItem(L.get("rule_scope_box_item.url"));
         ruleScopeBox.addItem(L.get("rule_scope_box_item.header"));

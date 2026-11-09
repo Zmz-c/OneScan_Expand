@@ -10,7 +10,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>extender</artifactId>
-    <version>1.2.6</version>
+    <version>1.2.7</version>
 
     <properties>
         <plugin.name>OST</plugin.name>
@@ -55,6 +55,11 @@
                     <exclude>**/__pycache__/**</exclude>
                     <exclude>**/*.pyc</exclude>
                 </excludes>
+            </resource>
+            <resource>
+                <directory>../docs</directory>
+                <targetPath>help</targetPath>
+                <includes><include>user-guide.html</include></includes>
             </resource>
         </resources>
         <plugins>

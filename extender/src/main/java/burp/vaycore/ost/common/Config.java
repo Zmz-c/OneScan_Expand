@@ -5,6 +5,9 @@ import burp.vaycore.common.filter.FilterRule;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
 import burp.vaycore.ost.bean.IdentityProfile;
+import burp.vaycore.ost.bean.FpColumn;
+import burp.vaycore.ost.bean.FpData;
+import burp.vaycore.ost.bean.FpRule;
 import burp.vaycore.ost.bean.VariableDefinition;
 import burp.vaycore.ost.manager.CollectManager;
 import burp.vaycore.ost.manager.FpManager;
@@ -54,6 +57,7 @@ public class Config {
     public static final String KEY_FOLLOW_REDIRECT = "follow-redirect";
     public static final String KEY_REDIRECT_COOKIES_FOLLOW = "redirect-cookies-follow";
     public static final String KEY_REDIRECT_TARGET_HOST_LIMIT = "redirect-target-host-limit";
+    public static final String KEY_SCOPE_ONLY = "scope-only";
     public static final String KEY_INTERCEPT_TIMEOUT_HOST = "intercept-timeout-host";
     public static final String KEY_VARIABLE_DEFINITIONS = "variable-definitions";
     public static final String KEY_IDENTITY_PROFILES = "identity-profiles";
@@ -71,6 +75,7 @@ public class Config {
     public static final String KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION =
             "payload-process-defaults-version";
     private static final String PAYLOAD_PROCESS_DEFAULTS_VERSION = "2";
+    public static final String KEY_REFLECTION_PRESET_INITIALIZED = "reflection-preset-initialized";
     // 首页开关配置项
     public static final String KEY_ENABLE_LISTEN_PROXY = "enable-listen-proxy";
     public static final String KEY_ENABLE_BROWSER_REQUEST = "enable-browser-request";
@@ -130,6 +135,7 @@ public class Config {
         initDefaultConfig(Config.KEY_REDIRECT_COOKIES_FOLLOW, "true");
         initDefaultConfig(Config.KEY_REDIRECT_TARGET_HOST_LIMIT, "true");
         initDefaultConfig(Config.KEY_INTERCEPT_TIMEOUT_HOST, "false");
+        initDefaultConfig(Config.KEY_SCOPE_ONLY, "false");
         initDefaultConfig(Config.KEY_VARIABLE_DEFINITIONS, "[]");
         initDefaultConfig(Config.KEY_IDENTITY_PROFILES, "[]");
         // 默认开关配置
@@ -350,6 +356,7 @@ public class Config {
     private static void onPreloadConfig() {
         preparePayloadProcessList();
         ensureDefaultPayloadProcessRules();
+        ensureReflectionProbePreset();
         prepareDataboardFilterRules();
         prepareVariableDefinitions();
         ensureBundledNamedVariableDefinitions();
@@ -525,6 +532,95 @@ public class Config {
         put(KEY_PAYLOAD_PROCESS_DEFAULTS_VERSION, PAYLOAD_PROCESS_DEFAULTS_VERSION);
     }
 
+    /** A separate migration does not recreate previously deleted bypass rules. */
+    private static void ensureReflectionProbePreset() {
+        if (getBoolean(KEY_REFLECTION_PRESET_INITIALIZED)) {
+            migrateReflectionFingerprint();
+            return;
+        }
+        ArrayList<ProcessingItem> rules = getPayloadProcessList();
+        if (rules == null) rules = new ArrayList<>();
+        if (rules.stream().noneMatch(item -> item != null && item.getItems() != null
+                && item.getItems().stream().anyMatch(child -> child.getRule() != null
+                        && java.util.Arrays.stream(child.getRule().getParamValues())
+                        .anyMatch(value -> value != null && value.contains("ostref{{nonce}}end"))))) {
+            ProcessingItem preset = new ProcessingItem();
+            preset.setName(ReflectionProbe.PRESET_NAME);
+            preset.setEnabled(false);
+            preset.setMerge(false);
+            preset.setItems(ReflectionProbe.defaultItems());
+            rules.add(preset);
+            put(KEY_PAYLOAD_PROCESS_LIST, rules);
+        }
+        if (FpManager.getList().stream().noneMatch(item -> item.getRules().stream()
+                .anyMatch(group -> group.stream().anyMatch(rule -> ("reflection".equals(rule.getDataSource()) || "containsRequestMatch".equals(rule.getMethod())))))) {
+            String columnId = FpManager.getColumnId(0);
+            if (columnId == null) {
+                FpColumn column = FpManager.generateFpColumn();
+                column.setName("Notes");
+                FpManager.addColumnsItem(column);
+                columnId = column.getId();
+            }
+            FpData fingerprint = new FpData();
+            fingerprint.getParams().add(new FpData.Param(columnId, ReflectionProbe.FINDING));
+            fingerprint.setColor("yellow");
+            ArrayList<FpRule> conditions = new ArrayList<>();
+            conditions.add(fpRule("response", "body", "containsRequestMatch", ReflectionProbe.REQUEST_MARKER_PATTERN));
+            conditions.add(fpRule("response", "status", "regex", "^2\\d\\d$"));
+            conditions.add(fpRule("response", "header", "regex",
+                    "(?im)^Content-Type:[ \\t]*(?:text/html|application/xhtml\\+xml)(?:[; \\t]|$)"));
+            conditions.add(fpRule("response", "header", "notRegex",
+                    "(?im)^Content-Disposition:[ \\t]*attachment(?:[; \\t]|$)"));
+            String errors = "(?i)(?:\\b(?:error|not found|bad request|forbidden|access denied|unauthorized|"
+                    + "service unavailable|internal server error|just a moment|attention required|"
+                    + "verify (?:you are|your)|security check|captcha|request (?:blocked|rejected))\\b|"
+                    + "错误|出错|页面不存在|访问拒绝|拒绝访问|访问受限|安全验证|人机验证|验证码|系统异常)";
+            conditions.add(fpRule("response", "title", "notRegex", errors));
+            conditions.add(fpRule("response", "body", "notRegex",
+                    "(?is)<h[12]\\b[^>]*>\\s*(?:<(?!/?h[12]\\b)[^>]*>\\s*)*"
+                            + "(?:[45]\\d\\d[\\s:.-]*)?(?:error\\b|not found\\b|forbidden\\b|access denied\\b|"
+                            + "bad request\\b|internal server error\\b|request (?:blocked|rejected)\\b|"
+                            + "错误|出错|页面不存在|拒绝访问|访问受限|安全验证|人机验证|系统异常)"));
+            fingerprint.getRules().add(conditions);
+            FpManager.addItem(fingerprint);
+            FpManager.clearCache();
+        }
+        FpManager.saveNow();
+        put(KEY_REFLECTION_PRESET_INITIALIZED, "true");
+    }
+
+    private static void migrateReflectionFingerprint() {
+        boolean changed = false;
+        for (FpData fingerprint : FpManager.getList()) {
+            if (fingerprint.getParams().stream().noneMatch(p -> ReflectionProbe.FINDING.equals(p.getV()))) continue;
+            for (ArrayList<FpRule> group : fingerprint.getRules()) {
+                for (FpRule rule : group) {
+                    if ("reflection".equals(rule.getDataSource()) && "reflected".equals(rule.getField())
+                            && "equals".equals(rule.getMethod()) && "true".equals(rule.getContent())) {
+                        rule.setDataSource("response");
+                        rule.setField("body");
+                        rule.setMethod("containsRequestMatch");
+                        rule.setContent(ReflectionProbe.REQUEST_MARKER_PATTERN);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if (changed) {
+            FpManager.saveNow();
+            FpManager.clearCache();
+        }
+    }
+
+    private static FpRule fpRule(String source, String field, String method, String content) {
+        FpRule rule = new FpRule();
+        rule.setDataSource(source);
+        rule.setField(field);
+        rule.setMethod(method);
+        rule.setContent(content);
+        return rule;
+    }
+
     private static List<ProcessingItem> defaultProcessingRules() {
         return List.of(
                 defaultProcessingRule("GET to POST",
@@ -593,6 +689,11 @@ public class Config {
         // Older configurations can omit fields; keep valid rules and use safe defaults.
         for (Map<String, Object> mapItem : items) {
             if (mapItem == null) {
+                continue;
+            }
+            // Expand the previous development build's opaque action into ordinary editable rules.
+            if ("AppendReflectionMarker".equals(stringValue(mapItem.get("ruleType")))) {
+                result.addAll(ReflectionProbe.defaultItems());
                 continue;
             }
             PayloadRule rule = SimplePayloadList.getPayloadRuleByType(stringValue(mapItem.get("ruleType")));

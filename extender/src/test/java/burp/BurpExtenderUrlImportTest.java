@@ -39,6 +39,7 @@ public class BurpExtenderUrlImportTest {
     private final AtomicReference<Thread> importer = new AtomicReference<>();
     private final AtomicReference<Throwable> importFailure = new AtomicReference<>();
     private CountDownLatch started;
+    private java.util.function.Predicate<URL> scope = url -> true;
     private boolean directories;
     private boolean preprocessing;
     private String brokenHost;
@@ -71,6 +72,7 @@ public class BurpExtenderUrlImportTest {
         setField("mHelpers", helpers());
         setField("mCallbacks", Proxy.newProxyInstance(IBurpExtenderCallbacks.class.getClassLoader(),
                 new Class<?>[]{IBurpExtenderCallbacks.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("isInScope")) return scope.test((URL) args[0]);
                     if (!method.getName().equals("makeHttpRequest")) {
                         throw new AssertionError("Unexpected callback: " + method.getName());
                     }
@@ -93,6 +95,40 @@ public class BurpExtenderUrlImportTest {
             board.closeDataSaveExecutor();
         }
         CollectManager.closeThreadPool();
+    }
+
+    @Test public void scopeOnlyImportFiltersEachUrlWithoutDiscardingAllowedTargets() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        scope = url -> url.getHost().equals("127.0.0.1") && url.getPath().startsWith("/allowed");
+        importUrls(List.of("http://127.0.0.2/allowed", "http://127.0.0.1/outside", "http://127.0.0.1/allowed"));
+        assertEquals(1, requests.tasks.size());
+        requests.drain(); assertEquals(1, sent.size());
+    }
+
+    @Test public void generatedDirectoryPathsCannotEscapePathScopedTarget() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        directories = true;
+        scope = url -> url.getPath().equals("/allowed");
+        importUrls(List.of("http://127.0.0.1/allowed"));
+        assertEquals(1, requests.tasks.size());
+        requests.drain(); assertEquals(1, sent.size());
+    }
+
+    @Test public void payloadProcessingCannotRewriteIntoExcludedPath() throws Exception {
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        preprocessing = true;
+        var replace = new burp.vaycore.ost.ui.widget.payloadlist.rule.MatchReplace();
+        replace.setParamValue(0, "/allowed"); replace.setParamValue(1, "/outside");
+        var item = new burp.vaycore.ost.ui.widget.payloadlist.PayloadItem();
+        item.setScope(burp.vaycore.ost.ui.widget.payloadlist.PayloadRule.SCOPE_URL); item.setRule(replace);
+        var processing = new burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem();
+        processing.setName("scope-test"); processing.setEnabled(true); processing.setMerge(true);
+        processing.setItems(new ArrayList<>(List.of(item)));
+        Config.put(Config.KEY_PAYLOAD_PROCESS_LIST, new ArrayList<>(List.of(processing)));
+        scope = url -> url.getPath().equals("/allowed");
+        importUrls(List.of("http://127.0.0.1/allowed"));
+        requests.drain();
+        assertTrue(sent.stream().noneMatch(value -> value.contains("/outside")));
     }
 
     @Test public void twoDifferentDomainsQueueBothOriginalRequests() throws Exception {
@@ -302,12 +338,14 @@ public class BurpExtenderUrlImportTest {
         rules.forEach(rule -> rule.setEnabled(true));
         Config.put(Config.KEY_PAYLOAD_PROCESS_LIST, rules);
         importUrls(List.of("http://127.0.0.1/", "http://127.0.0.2/"));
-        assertEquals(6 * rules.size(), requests.tasks.size());
+        // These bare directory URLs have no parameter, so the reflection rule is a no-op.
+        long changedRules = rules.stream().filter(rule -> !rule.getName().equals("Reflection probe")).count();
+        assertEquals(6 * changedRules, requests.tasks.size());
         requests.drain();
-        assertEquals(6 * rules.size(), sent.size());
+        assertEquals(6 * changedRules, sent.size());
         List<TaskData> rows = board.getBurpTaskTable().getTaskDataList();
-        assertEquals(3 * rules.size(), rows.stream().filter(row -> row.getHost().equals("http://127.0.0.1")).count());
-        assertEquals(3 * rules.size(), rows.stream().filter(row -> row.getHost().equals("http://127.0.0.2")).count());
+        assertEquals(3 * changedRules, rows.stream().filter(row -> row.getHost().equals("http://127.0.0.1")).count());
+        assertEquals(3 * changedRules, rows.stream().filter(row -> row.getHost().equals("http://127.0.0.2")).count());
     }
 
     @Test public void freshBatchWithRealWorkerConcurrencyDisplaysBothHosts() throws Exception {

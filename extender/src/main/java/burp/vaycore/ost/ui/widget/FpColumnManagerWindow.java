@@ -322,9 +322,9 @@ public class FpColumnManagerWindow extends JPanel implements ActionListener {
 
     private static class ColumnTableModel extends AbstractTableModel {
 
-        private static final String[] COLUMN_NAMES = {
-                L.get("fingerprint_column_manager.table_columns.id"),
-                L.get("fingerprint_column_manager.table_columns.name"),
+        private static final String[] COLUMN_KEYS = {
+                "fingerprint_column_manager.table_columns.id",
+                "fingerprint_column_manager.table_columns.name",
         };
         private final List<FpColumn> mList = new ArrayList<>();
 
@@ -391,12 +391,12 @@ public class FpColumnManagerWindow extends JPanel implements ActionListener {
 
         @Override
         public int getColumnCount() {
-            return COLUMN_NAMES.length;
+            return COLUMN_KEYS.length;
         }
 
         @Override
         public String getColumnName(int column) {
-            return COLUMN_NAMES[column];
+            return L.get(COLUMN_KEYS[column]);
         }
 
         @Override

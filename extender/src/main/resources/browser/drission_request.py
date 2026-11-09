@@ -8,6 +8,7 @@ import socket
 import sys
 import time
 import traceback
+import threading
 from urllib.parse import parse_qsl, urlparse
 
 from DrissionPage import Chromium, ChromiumOptions
@@ -104,6 +105,7 @@ def read_request_file(request_file):
     return {
         "method": base64.b64decode(data.get("METHOD", "")).decode("utf-8", errors="replace").upper(),
         "url": base64.b64decode(data.get("URL", "")).decode("utf-8", errors="replace"),
+        "scope_check": data.get("SCOPE_CHECK", "false").strip().lower() == "true",
         "isolate_cookies": data.get("ISOLATE_COOKIES", "false").strip().lower() == "true",
         "headers": headers,
         "body": base64.b64decode(data.get("BODY", "") or ""),
@@ -336,6 +338,9 @@ def iter_browser_tabs(browser):
 
 
 def resolve_request_tab(browser, request):
+    if request.get("scope_check"):
+        # Keep the profile/cookies, not an old page with live timers or service workers.
+        return browser.new_tab()
     target_origin = origin_url(request["url"])
     referer = header_value(request, "Referer")
     tabs = iter_browser_tabs(browser)
@@ -2636,7 +2641,65 @@ def finish_browser_challenge(tab, request, initial_result, capture, cookies_befo
     return last_result
 
 
+_scope_pipe_lock = threading.Lock()
+
+
+def burp_scope_allows(url):
+    """Ask Java/Burp over the existing process pipes; no copied rules or extra server."""
+    if not is_http_url(url):
+        return False
+    try:
+        with _scope_pipe_lock:
+            print("SCOPE_CHECK=" + b64_text(url), flush=True)
+            return sys.stdin.readline().strip() == "ALLOW"
+    except Exception:
+        return False
+
+
+class BurpScopeGuard:
+    def __init__(self, tab):
+        self.tab = tab
+        self.active = True
+
+    def paused(self, **event):
+        request_id = event.get("requestId")
+        allowed = self.active and burp_scope_allows((event.get("request") or {}).get("url", ""))
+        try:
+            if allowed:
+                self.tab.run_cdp("Fetch.continueRequest", requestId=request_id)
+            else:
+                self.tab.run_cdp("Fetch.failRequest", requestId=request_id, errorReason="BlockedByClient")
+        except Exception:
+            # Never resume a paused request when a policy check or CDP command fails.
+            pass
+
+    def start(self):
+        self.tab.driver.set_callback("Fetch.requestPaused", self.paused)
+        self.tab.run_cdp("Network.setBypassServiceWorker", bypass=True)
+        self.tab.run_cdp("Fetch.enable", patterns=[{"urlPattern": "*", "requestStage": "Request"}])
+
+    def finish(self):
+        # Keep Fetch blocking until navigate() closes this temporary tab. Disabling it
+        # would release pending requests during the gap before the Python process exits.
+        self.active = False
+        stop_page_loading(self.tab)
+
+
 def execute_network_request(tab, request, timeout_seconds, allow_static_resources):
+    guard = None
+    if request.get("scope_check"):
+        if not burp_scope_allows(request["url"]):
+            raise RuntimeError("Request blocked by Burp Scope")
+        guard = BurpScopeGuard(resolve_live_tab(tab))
+        guard.start()
+    try:
+        return _execute_network_request(tab, request, timeout_seconds, allow_static_resources)
+    finally:
+        if guard is not None:
+            guard.finish()
+
+
+def _execute_network_request(tab, request, timeout_seconds, allow_static_resources):
     current_tab = resolve_live_tab(tab)
     deadline = time.monotonic() + timeout_seconds
     configure_tab_network(current_tab, allow_static_resources)
@@ -2747,8 +2810,12 @@ def navigate(args):
                 pass
             raise last_error
         finally:
-            if cookie_snapshot is not None:
-                restore_request_cookies(tab, cookie_snapshot)
+            try:
+                if cookie_snapshot is not None:
+                    restore_request_cookies(tab, cookie_snapshot)
+            finally:
+                if request.get("scope_check") and tab is not None:
+                    tab.close()
 
     launch_port = next_launch_port(args)
     tab = None
@@ -2774,8 +2841,12 @@ def navigate(args):
         except Exception:
             pass
     finally:
-        if cookie_snapshot is not None:
-            restore_request_cookies(tab, cookie_snapshot)
+        try:
+            if cookie_snapshot is not None:
+                restore_request_cookies(tab, cookie_snapshot)
+        finally:
+            if request.get("scope_check") and tab is not None:
+                tab.close()
 
     if last_error is not None:
         raise last_error

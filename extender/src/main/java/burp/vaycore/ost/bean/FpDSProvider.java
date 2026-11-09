@@ -18,6 +18,7 @@ public class FpDSProvider {
 
     private FpHttpReqDS request;
     private FpHttpRespDS response;
+    private final FpReflectionDS reflection;
 
     private boolean _hasRequest;
     private boolean _hasResponse;
@@ -66,6 +67,7 @@ public class FpDSProvider {
         } catch (Exception e) {
             this._hasResponse = false;
         }
+        this.reflection = new FpReflectionDS(this.request, this.response);
     }
 
     /**
@@ -79,7 +81,11 @@ public class FpDSProvider {
             key.append(getRequest().calculateCacheKey());
         }
         if (hasResponse()) {
-            key.append(getResponse().calculateCacheKey());
+            String responseKey = getResponse().calculateCacheKey();
+            // Set-Cookie responses deliberately opt out of caching. Appending null would
+            // collapse every such response for the same request into one cached result.
+            if (responseKey == null) return "";
+            key.append(responseKey);
         }
         return key.toString();
     }

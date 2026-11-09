@@ -89,7 +89,7 @@ public class UIHelper {
      * @return 返回选择的文件绝对路径
      */
     public static String selectFileDialog(String title, File defaultFile) {
-        JFileChooser chooser = new JFileChooser();
+        JFileChooser chooser = createFileChooser();
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.setDialogTitle(title);
         chooser.setSelectedFile(defaultFile);
@@ -120,7 +120,7 @@ public class UIHelper {
      * @return 返回选择的目录绝对路径
      */
     public static String selectDirDialog(String title, File defaultDir) {
-        JFileChooser chooser = new JFileChooser();
+        JFileChooser chooser = createFileChooser();
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         chooser.setDialogTitle(title);
         chooser.setSelectedFile(defaultDir);
@@ -130,6 +130,28 @@ public class UIHelper {
             return defaultDir.toString();
         }
         return chooser.getSelectedFile().toString();
+    }
+
+    /** Localize this chooser only; never change Burp's global Swing defaults or JVM locale. */
+    public static JFileChooser createFileChooser() {
+        JFileChooser chooser = new JFileChooser();
+        // Swing's English resources live in the root bundle. en_US can fall back to
+        // the Chinese JVM default when no en_US bundle exists; ROOT avoids that fallback.
+        chooser.setLocale(Locale.ENGLISH.getLanguage().equals(L.getLocale().getLanguage())
+                ? Locale.ROOT : L.getLocale());
+        chooser.updateUI();
+        // The stock AcceptAllFileFilter ignores the chooser locale and reads global defaults.
+        chooser.setAcceptAllFileFilterUsed(false);
+        String allFiles = L.get("file_chooser.all_files");
+        chooser.addChoosableFileFilter(new javax.swing.filechooser.FileFilter() {
+            @Override public boolean accept(File file) { return true; }
+            @Override public String getDescription() { return allFiles; }
+        });
+        return chooser;
+    }
+
+    public static String[] okCancelOptions() {
+        return new String[]{L.get("ok"), L.get("cancel")};
     }
 
     public static void setTableHeaderAlign(JTable table, int align) {
@@ -171,7 +193,8 @@ public class UIHelper {
     }
 
     public static void showTipsDialog(String title, String message, Component parentComponent) {
-        JOptionPane.showConfirmDialog(parentComponent, message, title, JOptionPane.DEFAULT_OPTION);
+        JOptionPane.showOptionDialog(parentComponent, message, title, JOptionPane.DEFAULT_OPTION,
+                JOptionPane.INFORMATION_MESSAGE, null, new String[]{L.get("ok")}, L.get("ok"));
     }
 
     /**
@@ -215,8 +238,9 @@ public class UIHelper {
      * @return 用户的选择（{@link JOptionPane#OK_OPTION} or {@link JOptionPane#CANCEL_OPTION}）
      */
     public static int showOkCancelDialog(String title, String message, Component parentComponent) {
-        return JOptionPane.showConfirmDialog(parentComponent, message, title,
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        int result = JOptionPane.showOptionDialog(parentComponent, message, title,
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE, null, okCancelOptions(), L.get("ok"));
+        return result == 1 ? JOptionPane.CANCEL_OPTION : result;
     }
 
     /**
@@ -239,8 +263,8 @@ public class UIHelper {
      * @return 用户的选择（{@link JOptionPane#OK_OPTION} or {@link JOptionPane#CANCEL_OPTION}）
      */
     public static int showCustomDialog(String title, JComponent c, Component parentComponent) {
-        return JOptionPane.showConfirmDialog(parentComponent, c, title,
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        int result = showCustomDialog(title, okCancelOptions(), c, parentComponent);
+        return result == 1 ? JOptionPane.CANCEL_OPTION : result;
     }
 
     /**

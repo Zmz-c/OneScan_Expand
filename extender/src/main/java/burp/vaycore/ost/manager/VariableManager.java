@@ -5,6 +5,8 @@ import burp.vaycore.common.utils.Utils;
 import burp.vaycore.ost.bean.VariableDefinition;
 import burp.vaycore.ost.common.Config;
 
+import java.security.SecureRandom;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -18,6 +20,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class VariableManager {
+
+    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
 
     public static final String DEFAULT_VARIABLE_IP = "ip";
     public static final String DEFAULT_VARIABLE_LOCAL_IP = "local-ip";
@@ -87,7 +91,13 @@ public final class VariableManager {
             }
             result = result.replace(placeholder, value);
         }
-        return hasUnknownNamedVariables(result, definitions) ? null : result;
+        if (hasUnknownNamedVariables(result, definitions)) return null;
+        if (result.contains("{{nonce}}")) {
+            byte[] bytes = new byte[12];
+            NONCE_RANDOM.nextBytes(bytes);
+            result = result.replace("{{nonce}}", HexFormat.of().formatHex(bytes));
+        }
+        return result;
     }
 
     private static String resolveDefinition(String placeholder,
