@@ -1,0 +1,84 @@
+name: Deploy user manual to Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - docs/user-guide.html
+      - .github/workflows/docs-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'Zmz-c/OneScan_Expand'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Build static manual
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import shutil
+
+          class Manual(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.ids, self.links = [], []
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if 'id' in attrs:
+                      self.ids.append(attrs['id'])
+                  if tag == 'a':
+                      self.links.append(attrs.get('href', ''))
+
+          source = Path('docs/user-guide.html')
+          parser = Manual()
+          parser.feed(source.read_text(encoding='utf-8'))
+          assert len(parser.ids) == len(set(parser.ids)), 'Duplicate manual anchors'
+          assert {'overview', 'variables', 'dynamic-example', 'parameter-example'} <= set(parser.ids)
+          assert all(link.startswith('#') and link[1:] in parser.ids for link in parser.links), 'Broken manual link'
+
+          # Publish an explicit allowlist, never the entire docs or repository directory.
+          site = Path('_site')
+          site.mkdir()
+          shutil.copyfile(source, site / 'index.html')
+          shutil.copyfile(source, site / 'user-guide.html')
+          (site / '.nojekyll').touch()
+          assert {p.name for p in site.iterdir()} == {'index.html', 'user-guide.html', '.nojekyll'}
+          PY
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

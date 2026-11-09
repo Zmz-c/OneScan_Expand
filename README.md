@@ -1,6 +1,6 @@
 # OST
 
-[中文](README_zh_CN.md) · [User manual](docs/user-guide.html)
+[中文](README_zh_CN.md) · [Read online](https://zmz-c.github.io/OneScan_Expand/#en) · [Download offline manual](https://github.com/Zmz-c/OneScan_Expand/releases/latest/download/user-guide.html)
 
 OST is a Burp Suite extension for web-security testing, combining endpoint scanning, request transformations,
 parameter tests, browser replay, fingerprinting and identity comparison.
@@ -113,7 +113,7 @@ Ordinary request headers, path Payloads and processing rules support dynamic var
 | `{{timestamp}}` / `{{date.yyyy}}` / `{{time.HH}}` | Unix timestamp in seconds and date/time components. |
 | `{{profile.name}}` | Identity-local variable used during explicit Profile replay. |
 
-Names are case-sensitive and named variables must be defined and enabled. See the [variable reference](docs/user-guide.html#variables) for all domain, subdomain, directory and date/time fields and expansion boundaries.
+Names are case-sensitive and named variables must be defined and enabled. See the [variable reference](https://zmz-c.github.io/OneScan_Expand/#variables) for all domain, subdomain, directory and date/time fields and expansion boundaries.
 
 ### Configuration Examples
 
@@ -128,10 +128,10 @@ X-Request-ID-Copy: {{value.trace}}
 
 Enable header replacement, request processing and the `Reflection probe` group, then send an authorized search request to OST with ordinary Burp transport.
 Inspect the expanded headers, query marker and paired fingerprint in Databoard. Both trace headers share a value within that header expansion; the subsequent processing group generates its reflection marker independently.
-See the [dynamic-variable worked example](docs/user-guide.html#dynamic-example) for complete steps, expected messages and tenant rotation.
+See the [dynamic-variable worked example](https://zmz-c.github.io/OneScan_Expand/#dynamic-example) for complete steps, expected messages and tenant rotation.
 
 **Multi-position Parameter Fuzz**: mark `q` and `page` as separate positions. Assign a search dictionary containing `apple` and `orange`, and a page dictionary containing `1` and `2`.
-Preview should produce four combinations; inspect them in parameter-scan traffic after execution. See the [Parameter Fuzz worked example](docs/user-guide.html#parameter-example).
+Preview should produce four combinations; inspect them in parameter-scan traffic after execution. See the [Parameter Fuzz worked example](https://zmz-c.github.io/OneScan_Expand/#parameter-example).
 
 Parameter Fuzz uses literal Payload dictionary content: **dynamic variables are not expanded, and global headers and ordinary processing groups are not reapplied**.
 Assign changing content to position dictionaries; concrete headers inherited from ordinary scans remain unchanged.
@@ -146,10 +146,13 @@ and sanitize data before sharing it.
 
 ## User Manual
 
-Open `Other → Open user guide` inside the extension, or download the [HTML manual](docs/user-guide.html)
-and open it directly in a browser. It covers installation, workflow, configuration, rule editing, parameter scans,
-identity replay, browser requests, fingerprints and data management. Language switching, search and printing
-work offline without a web server.
+[Read online](https://zmz-c.github.io/OneScan_Expand/#en) for the current manual, or [download the offline manual](https://github.com/Zmz-c/OneScan_Expand/releases/latest/download/user-guide.html) from the latest release.
+Inside the extension, use `Other → Open user guide` to open the manual bundled with that plugin version.
+
+The manual covers installation, workflow, configuration, rule editing, parameter scans, identity replay,
+browser requests, fingerprints and data management. Language switching, search, copying and printing are available.
+The downloaded HTML works offline without a web server. The online edition is deployed automatically from
+`docs/user-guide.html` when it changes on `master`; plugin-bundled and release downloads remain versioned snapshots.
 
 ## MCP Integration
 

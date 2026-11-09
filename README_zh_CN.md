@@ -1,6 +1,6 @@
 # OST
 
-[English](README.md) · [用户手册](docs/user-guide.html)
+[English](README.md) · [在线阅读](https://zmz-c.github.io/OneScan_Expand/#zh) · [下载离线手册](https://github.com/Zmz-c/OneScan_Expand/releases/latest/download/user-guide.html)
 
 OST 是用于 Web 安全测试的 Burp Suite 扩展，集成端点扫描、请求处理、参数测试、浏览器重放、指纹识别与身份比较。(项目进入长草期了喵，基本上已经完善了，短期内不会有新功能更新，如有需要，请提Issus)
 
@@ -109,7 +109,7 @@ python -m pip install DrissionPage
 | `{{timestamp}}` / `{{date.yyyy}}` / `{{time.HH}}` | 秒级时间戳及日期时间字段。 |
 | `{{profile.tenant}}` | 显式 Profile 重放时使用该身份的局部变量。 |
 
-变量名称区分大小写，命名变量须定义并启用。完整域名、子域、目录、日期时间变量及展开边界见[变量参考](docs/user-guide.html#variables)。
+变量名称区分大小写，命名变量须定义并启用。完整域名、子域、目录、日期时间变量及展开边界见[变量参考](https://zmz-c.github.io/OneScan_Expand/#variables)。
 
 ### 配置案例
 
@@ -124,10 +124,10 @@ X-Request-ID-Copy: {{value.trace}}
 
 启用请求头替换、请求包处理及 `Reflection probe` 组，将已授权的搜索请求通过普通 Burp 方式发送到 OST。
 在数据看板核对头部展开、查询参数标记及配套指纹结果。两个追踪头共用本次头部展开的值，后续处理组的反射标记独立生成。
-完整步骤、预期请求和租户轮询配置见[动态变量组合案例](docs/user-guide.html#dynamic-example)。
+完整步骤、预期请求和租户轮询配置见[动态变量组合案例](https://zmz-c.github.io/OneScan_Expand/#dynamic-example)。
 
 **多位置参数 Fuzz**：为 `q` 和 `page` 分别标记两个位置，绑定包含 `apple`、`orange` 的关键词字典和包含 `1`、`2` 的页码字典。
-预览应得到 4 个组合，执行后在参数扫描流量中检查。详见[参数 Fuzz 组合案例](docs/user-guide.html#parameter-example)。
+预览应得到 4 个组合，执行后在参数扫描流量中检查。详见[参数 Fuzz 组合案例](https://zmz-c.github.io/OneScan_Expand/#parameter-example)。
 
 参数 Fuzz 使用 Payload 字典原文，**不会展开动态变量，也不重新应用全局请求头和普通处理组**。
 需要逐项变化的内容应绑定位置字典；从普通扫描继承的具体头部值会保持不变。
@@ -141,8 +141,11 @@ Burp Scope 是现有主机与路径排除规则的补充；数据表过滤仅控
 
 ## 使用说明
 
-在插件内打开 `其他配置 → 打开使用说明`，或下载 [HTML 用户手册](docs/user-guide.html) 后直接用浏览器打开。
-手册包含安装、工作流程、配置参考、规则编辑、参数扫描、身份重放、浏览器请求、指纹和数据管理，支持中英切换、搜索及打印，无需部署服务器。
+通过[在线阅读](https://zmz-c.github.io/OneScan_Expand/#zh)查看当前手册，或从最新 Release [下载离线手册](https://github.com/Zmz-c/OneScan_Expand/releases/latest/download/user-guide.html)。
+插件内可通过 `其他配置 → 打开使用说明` 打开随当前插件版本打包的说明。
+
+手册包含安装、工作流程、配置参考、规则编辑、参数扫描、身份重放、浏览器请求、指纹和数据管理，支持中英切换、搜索、复制及打印。
+下载后的 HTML 可直接离线打开，无需部署服务器。在线版在 `master` 的 `docs/user-guide.html` 更新后自动部署；插件内置版和 Release 附件则对应各自发布版本。
 
 ## MCP 集成
 
