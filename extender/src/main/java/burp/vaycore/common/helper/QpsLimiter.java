@@ -1,79 +1,115 @@
 package burp.vaycore.common.helper;
 
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
 /**
- * QPS 限制器
- * <p>
- * Created by vaycore on 2023-02-23.
+ * Shared request pacing. No lock is held while waiting or performing network I/O.
  */
 public class QpsLimiter {
 
-    /**
-     * 以每秒的间隔计算
-     */
-    private static final long PERIOD = 1000;
-
-    /**
-     * 接收请求时间数组
-     */
-    private final long[] accessTime;
-
-    /**
-     * 限制数量，最低为1
-     */
-    private final int limit;
-
-    /**
-     * 限制延时（0 表示不延时）
-     */
-    private final int delay;
-
-    /**
-     * 指向最早请求时间的位置
-     */
+    private static final long PERIOD = TimeUnit.SECONDS.toNanos(1);
+    private final ReentrantLock lock = new ReentrantLock(true);
+    private final Condition changed = lock.newCondition();
+    private long[] accessTime;
     private int position;
+    private int count;
+    private int delay;
+    private boolean randomEnabled;
+    private int randomMin;
+    private int randomMax;
+    private boolean pacedDeadlineSet;
+    private long pacedDeadline;
 
     public QpsLimiter(int limit) {
         this(limit, 0);
     }
 
     public QpsLimiter(int limit, int delay) {
-        if (limit <= 0) {
-            throw new IllegalArgumentException("Illegal limit value: " + limit);
-        }
-        if (delay < 0) {
-            delay = 0;
-        }
-        this.position = 0;
-        this.limit = limit;
-        this.delay = delay;
-        this.accessTime = new long[limit];
+        configure(limit, delay, false, 0, 0);
     }
 
     /**
-     * 对执行点进行限制
+     * Updates the existing gate and wakes its waiters, including on disable.
      */
-    public synchronized void limit() throws InterruptedException {
-        // 如果线程中断，不继续往下执行
-        if (Thread.currentThread().isInterrupted()) {
-            throw new InterruptedException("Thread interrupted, can't limit it");
+    public void configure(int limit, int delay, boolean randomEnabled, int randomMin, int randomMax) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("Illegal limit value: " + limit);
         }
-        long sleepMillis = 0;
-        // 优先使用 delay 限制
-        if (this.delay > 0) {
-            Thread.sleep(this.delay);
-            return;
+        if (randomMin < 0 || randomMax < randomMin) {
+            throw new IllegalArgumentException("Illegal random delay range");
         }
-        long curTime = System.currentTimeMillis();
-        if (curTime - this.accessTime[this.position] < PERIOD) {
-            // 未达到处理间隔， 计算休眠间隔剩余时间
-            sleepMillis = PERIOD - (curTime - this.accessTime[this.position]) + 1;
-            curTime = System.currentTimeMillis() + sleepMillis;
+        lock.lock();
+        try {
+            this.accessTime = new long[limit];
+            this.position = 0;
+            this.count = 0;
+            this.delay = Math.max(0, delay);
+            this.randomEnabled = randomEnabled;
+            this.randomMin = randomMin;
+            this.randomMax = randomMax;
+            this.pacedDeadlineSet = false;
+            changed.signalAll();
+        } finally {
+            lock.unlock();
         }
-        this.accessTime[this.position++] = curTime;
-        this.position = this.position % this.limit;
-        // 如果为0，没必要 sleep
-        if (sleepMillis > 0) {
-            Thread.sleep(sleepMillis);
+    }
+
+    public void limit() throws InterruptedException {
+        limit(true);
+    }
+
+    /**
+     * Random pacing covers every caller, even lanes that bypass legacy limits.
+     * Fixed delay retains its original precedence over QPS. With random pacing,
+     * fixed delay is replaced and the regular HTTP lane still observes QPS.
+     */
+    public void limit(boolean applyLegacyLimit) throws InterruptedException {
+        lock.lockInterruptibly();
+        try {
+            while (true) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("Request pacing interrupted");
+                }
+                long now = System.nanoTime();
+                boolean paced = randomEnabled || (applyLegacyLimit && delay > 0);
+                boolean useQps = applyLegacyLimit && (randomEnabled || delay == 0);
+                long wait = 0;
+                if (paced) {
+                    if (!pacedDeadlineSet) {
+                        pacedDeadline = now + nextDelayNanos();
+                        pacedDeadlineSet = true;
+                    }
+                    wait = Math.max(0, pacedDeadline - now);
+                }
+                if (useQps && count == accessTime.length) {
+                    wait = Math.max(wait, PERIOD - (now - accessTime[position]));
+                }
+                if (wait > 0) {
+                    changed.awaitNanos(wait);
+                    continue;
+                }
+                if (useQps) {
+                    accessTime[position] = now;
+                    position = (position + 1) % accessTime.length;
+                    count = Math.min(count + 1, accessTime.length);
+                }
+                if (paced) {
+                    pacedDeadline = now + nextDelayNanos();
+                }
+                return;
+            }
+        } finally {
+            lock.unlock();
         }
+    }
+
+    private long nextDelayNanos() {
+        long millis = randomEnabled
+                ? ThreadLocalRandom.current().nextLong(randomMin, (long) randomMax + 1)
+                : delay;
+        return TimeUnit.MILLISECONDS.toNanos(millis);
     }
 }

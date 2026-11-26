@@ -11,7 +11,7 @@ public interface Constants {
 
     // 插件信息
     String PLUGIN_NAME = "OST";
-    String PLUGIN_VERSION = "1.2.7";
+    String PLUGIN_VERSION = "1.2.8-dev.3";
     String PARAMETER_FUZZ_SOURCE = "Parameter Fuzz";
     boolean DEBUG = false;
 

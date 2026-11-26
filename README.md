@@ -45,7 +45,7 @@ macOS / Linux:
 ./mvnw package
 ```
 
-Artifact: `extender/target/OST-v1.2.7.jar`.
+Current source build: `extender/target/OST-v1.2.8-dev.3.jar` (development version).
 
 Ordinary Burp transport needs no Python. Browser transport requires Edge or Chrome and Python 3.9+ with DrissionPage:
 
@@ -74,6 +74,29 @@ Select that interpreter and the browser executable in Browser settings.
 | Host | Burp Scope, timeout-host blocking and host allow/blocklists. |
 | Redirect | Following policy, cookie propagation and destination-host restriction. |
 | Other | Language, user manual, persistence and MCP service. |
+
+### Fold Responses
+
+Use **Fold responses** next to **Filter** on the Databoard. When a group reaches the threshold (50 by default), the
+table shows one representative with the group size. Double-click its Length badge or use the context menu to expand or
+collapse a group. Turning off folding restores all rows matching the current search and filters.
+
+Groups are counted after filtering, separately for Burp and Browser, by site, status, body length and identity. Folding
+does not remove records or affect storage and export.
+
+### Random Delay · 1.2.8-dev.1
+
+In `Request → Random request delay`, enable the option, enter minimum/maximum milliseconds and save. For example,
+`300–1200 ms` samples an inclusive interval per dispatch. Workers share one schedule rather than waking independently in
+a burst.
+
+Disabled by default; accepted range: `0–99999 ms`. Random pacing replaces fixed delay; ordinary HTTP requests still obey
+QPS. Equal bounds give a fixed interval, and `0–0` adds no delay. Disabling restores existing fixed-delay/QPS settings
+without overwriting them.
+
+Applies to plugin-dispatched HTTP, parameter scans, browser tasks, retries and browser fallback—not browser-internal
+resources or challenge requests. QPS, network time and browser queues can make observed intervals longer. Random pacing
+does not guarantee bypassing protection. Saving applies immediately and persists across restarts.
 
 ### Processing Templates
 

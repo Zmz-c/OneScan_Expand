@@ -4,13 +4,14 @@ import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.FileUtils;
 import burp.vaycore.common.utils.IOUtils;
 import burp.vaycore.common.utils.StringUtils;
+import burp.vaycore.ost.common.Config;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -238,12 +239,24 @@ public class BrowserRequestManager {
         }
     }
 
+    /**
+     * SSRF guard for page requests; stays on if the setting cannot be read.
+     */
+    private static boolean localNetworkGuardEnabled() {
+        try {
+            return Config.getBoolean(Config.KEY_BLOCK_INTERNAL_ACCESS);
+        } catch (RuntimeException e) {
+            return true;
+        }
+    }
+
     private void writeRequestFile(File requestFile, BrowserRequest request, boolean scopeCheck) throws IOException {
         BufferedWriter writer = null;
         try {
             writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(requestFile),
                     StandardCharsets.UTF_8));
             writeLine(writer, "SCOPE_CHECK", String.valueOf(scopeCheck));
+            writeLine(writer, "LOCAL_GUARD", String.valueOf(localNetworkGuardEnabled()));
             writeLine(writer, "METHOD", encodeString(request.getMethod()));
             writeLine(writer, "URL", encodeString(request.getUrl()));
             writeLine(writer, "ISOLATE_COOKIES", String.valueOf(request.isolateCookies()));

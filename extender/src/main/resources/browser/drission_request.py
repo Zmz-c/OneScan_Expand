@@ -1,5 +1,6 @@
 import argparse
 import base64
+import ipaddress
 import json
 from html import unescape
 import os
@@ -106,6 +107,7 @@ def read_request_file(request_file):
         "method": base64.b64decode(data.get("METHOD", "")).decode("utf-8", errors="replace").upper(),
         "url": base64.b64decode(data.get("URL", "")).decode("utf-8", errors="replace"),
         "scope_check": data.get("SCOPE_CHECK", "false").strip().lower() == "true",
+        "local_guard": data.get("LOCAL_GUARD", "true").strip().lower() != "false",
         "isolate_cookies": data.get("ISOLATE_COOKIES", "false").strip().lower() == "true",
         "headers": headers,
         "body": base64.b64decode(data.get("BODY", "") or ""),
@@ -2643,6 +2645,150 @@ def finish_browser_challenge(tab, request, initial_result, capture, cookies_befo
 
 _scope_pipe_lock = threading.Lock()
 
+# SSRF guard. The browser runs with web security disabled so that page scripts can complete
+# dynamic challenges; in exchange, page requests must not reach an address more internal than
+# the target the user chose. Keep the ranges in sync with InternalNetGuard.java.
+NET_PUBLIC = 0
+NET_PRIVATE = 1
+NET_LOOPBACK = 2
+NET_FORBIDDEN = 3  # link-local, cloud metadata, unspecified, multicast: never a cross-host target
+
+_FORBIDDEN_V4_NETS = [ipaddress.ip_network(net) for net in (
+    "0.0.0.0/8", "169.254.0.0/16", "100.100.100.200/32", "168.63.129.16/32", "192.0.0.192/32", "224.0.0.0/3")]
+_PRIVATE_V4_NETS = [ipaddress.ip_network(net) for net in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "198.18.0.0/15", "192.0.0.0/24")]
+_LOOPBACK_V4_NET = ipaddress.ip_network("127.0.0.0/8")
+_FORBIDDEN_V6_NETS = [ipaddress.ip_network(net) for net in ("ff00::/8", "fe80::/10", "fd00:ec2::/32")]
+_PRIVATE_V6_NETS = [ipaddress.ip_network(net) for net in ("fc00::/7", "fec0::/10")]
+_NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+_COMPAT_V6_NET = ipaddress.ip_network("::/96")
+_host_rank_cache = {}
+_host_rank_lock = threading.Lock()
+
+
+def _ipv4_rank(address):
+    if address in _LOOPBACK_V4_NET:
+        return NET_LOOPBACK
+    if any(address in net for net in _FORBIDDEN_V4_NETS):
+        return NET_FORBIDDEN
+    if any(address in net for net in _PRIVATE_V4_NETS):
+        return NET_PRIVATE
+    return NET_PUBLIC
+
+
+def address_rank(address):
+    if isinstance(address, ipaddress.IPv4Address):
+        return _ipv4_rank(address)
+    value = int(address)
+    if value == 0:
+        return NET_FORBIDDEN
+    if value == 1:
+        return NET_LOOPBACK
+    if address.ipv4_mapped is not None:
+        return _ipv4_rank(address.ipv4_mapped)
+    if address in _COMPAT_V6_NET or address in _NAT64_NET:
+        return _ipv4_rank(ipaddress.IPv4Address(value & 0xFFFFFFFF))
+    if address.sixtofour is not None:
+        return _ipv4_rank(address.sixtofour)
+    if any(address in net for net in _FORBIDDEN_V6_NETS):
+        return NET_FORBIDDEN
+    if any(address in net for net in _PRIVATE_V6_NETS):
+        return NET_PRIVATE
+    return NET_PUBLIC
+
+
+def parse_legacy_ipv4(host):
+    """inet_aton spellings: 127.1, 2130706433, 0x7f000001, 017700000001."""
+    parts = host.split(".")
+    if not host or len(parts) > 4:
+        return None
+    values = []
+    for part in parts:
+        try:
+            if part.startswith("0x"):
+                number = int(part[2:], 16)
+            elif len(part) > 1 and part.startswith("0"):
+                number = int(part[1:], 8)
+            elif part.isascii() and part.isdigit():
+                number = int(part)
+            else:
+                return None
+        except ValueError:
+            return None
+        values.append(number)
+    if any(value > 0xFF for value in values[:-1]) or values[-1] > (0xFFFFFFFF >> (8 * (len(values) - 1))):
+        return None
+    result = values[-1]
+    for index, value in enumerate(values[:-1]):
+        result |= value << (8 * (3 - index))
+    return ipaddress.IPv4Address(result)
+
+
+def normalize_host(host):
+    value = (host or "").strip().lower()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    value = value.split("%", 1)[0]
+    return value.rstrip(".")
+
+
+def host_rank(host):
+    """Classify a host name or IP literal; names are resolved so internal DNS records count."""
+    value = normalize_host(host)
+    if not value:
+        return NET_FORBIDDEN
+    if value == "localhost" or value.endswith(".localhost"):
+        return NET_LOOPBACK
+    legacy = parse_legacy_ipv4(value)
+    if legacy is not None:
+        return _ipv4_rank(legacy)
+    try:
+        return address_rank(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    with _host_rank_lock:
+        if value in _host_rank_cache:
+            return _host_rank_cache[value]
+    rank = NET_PUBLIC
+    try:
+        for info in socket.getaddrinfo(value, None):
+            try:
+                rank = max(rank, address_rank(ipaddress.ip_address(info[4][0].split("%", 1)[0])))
+            except ValueError:
+                continue
+    except Exception:
+        # Unresolvable here: the request cannot reach an internal address through this name.
+        rank = NET_PUBLIC
+    with _host_rank_lock:
+        _host_rank_cache[value] = rank
+    return rank
+
+
+def local_network_blocks(url, origin, debug_port=0, debug_port_only=False):
+    """True if a page request to url must be refused for a request whose target is origin."""
+    try:
+        parsed = urlparse(url or "")
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https", "ws", "wss"):
+            return False
+        target = normalize_host(parsed.hostname)
+        port = parsed.port or (443 if scheme in ("https", "wss") else 80)
+        rank = host_rank(target)
+        # The DevTools endpoint gives full control of the browser; no page may ever reach it.
+        if debug_port and port == int(debug_port) and rank in (NET_LOOPBACK, NET_FORBIDDEN):
+            return True
+        if debug_port_only or rank == NET_PUBLIC:
+            return False
+        origin_host = normalize_host(urlparse(origin or "").hostname)
+        if target and target == origin_host:
+            return False
+        if rank == NET_FORBIDDEN:
+            return True
+        return rank > host_rank(origin_host)
+    except Exception:
+        # Never let a malformed URL through on a parsing error.
+        return True
+
 
 def burp_scope_allows(url):
     """Ask Java/Burp over the existing process pipes; no copied rules or extra server."""
@@ -2657,13 +2803,39 @@ def burp_scope_allows(url):
 
 
 class BurpScopeGuard:
-    def __init__(self, tab):
+    """Pauses every page request and lets it continue only if policy allows it.
+
+    scope_check: ask Burp's live scope (authoritative; only the DevTools port is refused on top).
+    request with local_guard: refuse page requests that reach into a more internal network.
+    """
+
+    def __init__(self, tab, request=None, scope_check=True):
         self.tab = tab
         self.active = True
+        self.scope_check = scope_check
+        self.local_guard = bool(request and request.get("local_guard"))
+        # Hosts the user's own request names: its target and, if present, its Referer page.
+        self.origins = [(request or {}).get("url", "")]
+        referer = header_value(request, "Referer") if request and request.get("headers") else ""
+        if is_http_url(referer):
+            self.origins.append(referer)
+        self.debug_port = (request or {}).get("debug_port", 0)
+
+    def allows(self, url):
+        if not self.active:
+            return False
+        if self.local_guard and all(
+                local_network_blocks(url, origin, self.debug_port, debug_port_only=self.scope_check)
+                for origin in self.origins):
+            return False
+        return burp_scope_allows(url) if self.scope_check else True
 
     def paused(self, **event):
         request_id = event.get("requestId")
-        allowed = self.active and burp_scope_allows((event.get("request") or {}).get("url", ""))
+        try:
+            allowed = self.allows((event.get("request") or {}).get("url", ""))
+        except Exception:
+            allowed = False
         try:
             if allowed:
                 self.tab.run_cdp("Fetch.continueRequest", requestId=request_id)
@@ -2679,6 +2851,14 @@ class BurpScopeGuard:
         self.tab.run_cdp("Fetch.enable", patterns=[{"urlPattern": "*", "requestStage": "Request"}])
 
     def finish(self):
+        if not self.scope_check:
+            # The tab is reused by later requests: release interception instead of leaving
+            # its page with every request failing.
+            try:
+                self.tab.run_cdp("Fetch.disable")
+            except Exception:
+                pass
+            return
         # Keep Fetch blocking until navigate() closes this temporary tab. Disabling it
         # would release pending requests during the gap before the Python process exits.
         self.active = False
@@ -2690,7 +2870,10 @@ def execute_network_request(tab, request, timeout_seconds, allow_static_resource
     if request.get("scope_check"):
         if not burp_scope_allows(request["url"]):
             raise RuntimeError("Request blocked by Burp Scope")
-        guard = BurpScopeGuard(resolve_live_tab(tab))
+        guard = BurpScopeGuard(resolve_live_tab(tab), request)
+        guard.start()
+    elif request.get("local_guard"):
+        guard = BurpScopeGuard(resolve_live_tab(tab), request, scope_check=False)
         guard.start()
     try:
         return _execute_network_request(tab, request, timeout_seconds, allow_static_resources)
@@ -2781,6 +2964,7 @@ def navigate(args):
         try:
             browser = Chromium(build_options(args, port, existing_only=True))
             save_state(args.state_file, port)
+            request["debug_port"] = port
             tab = resolve_request_tab(browser, request)
             if request["isolate_cookies"]:
                 cookie_snapshot = snapshot_request_cookies(tab)
@@ -2823,6 +3007,7 @@ def navigate(args):
     try:
         browser = Chromium(build_options(args, launch_port))
         save_state(args.state_file, launch_port)
+        request["debug_port"] = launch_port
         tab = resolve_request_tab(browser, request)
         if request["isolate_cookies"]:
             cookie_snapshot = snapshot_request_cookies(tab)

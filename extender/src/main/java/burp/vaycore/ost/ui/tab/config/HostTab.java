@@ -15,6 +15,9 @@ public class HostTab extends BaseConfigTab {
     @Override
     protected void initView() {
         addEnabledConfigPanel(L.get("scope_only"), L.get("scope_only_description"), Config.KEY_SCOPE_ONLY);
+        // 拦截响应诱导的本地/内网访问（SSRF 防护）
+        addEnabledConfigPanel(L.get("block_internal_access"), L.get("block_internal_access_description"),
+                Config.KEY_BLOCK_INTERNAL_ACCESS);
         // 拦截超时主机
         addEnabledConfigPanel(L.get("intercept_timeout_host"), L.get("intercept_timeout_host_sub_title"),
                 Config.KEY_INTERCEPT_TIMEOUT_HOST);

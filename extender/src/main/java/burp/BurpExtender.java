@@ -6,34 +6,26 @@ import burp.vaycore.common.helper.UIHelper;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
 import burp.vaycore.ost.Ost;
-import burp.vaycore.ost.bean.CollectNode;
-import burp.vaycore.ost.bean.FpData;
-import burp.vaycore.ost.bean.IdentityProfile;
-import burp.vaycore.ost.bean.TaskData;
-import burp.vaycore.ost.bean.VariableDefinition;
+import burp.vaycore.ost.bean.*;
 import burp.vaycore.ost.browser.BrowserRequest;
 import burp.vaycore.ost.browser.BrowserRequestManager;
 import burp.vaycore.ost.common.*;
 import burp.vaycore.ost.info.OstInfoTab;
-import burp.vaycore.ost.manager.CollectManager;
-import burp.vaycore.ost.manager.FpManager;
-import burp.vaycore.ost.manager.TaskPersistenceManager;
-import burp.vaycore.ost.manager.VariableManager;
-import burp.vaycore.ost.manager.WordlistManager;
-import burp.zm.mcp.McpServer;
-import burp.zm.mcp.McpTool;
-import burp.zm.mcp.McpToolProvider;
+import burp.vaycore.ost.manager.*;
 import burp.vaycore.ost.ui.tab.DataBoardTab;
 import burp.vaycore.ost.ui.tab.FingerprintTab;
 import burp.vaycore.ost.ui.tab.ParameterFuzzScanOptions;
 import burp.vaycore.ost.ui.tab.ParameterFuzzScanOptions.TargetOptions;
 import burp.vaycore.ost.ui.tab.config.OtherTab;
 import burp.vaycore.ost.ui.tab.config.RequestTab;
-import burp.vaycore.ost.ui.widget.TaskTable;
 import burp.vaycore.ost.ui.widget.HttpMessageView;
+import burp.vaycore.ost.ui.widget.TaskTable;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadItem;
 import burp.vaycore.ost.ui.widget.payloadlist.PayloadRule;
 import burp.vaycore.ost.ui.widget.payloadlist.ProcessingItem;
+import burp.zm.mcp.McpServer;
+import burp.zm.mcp.McpTool;
+import burp.zm.mcp.McpToolProvider;
 
 import javax.swing.*;
 import javax.swing.Timer;
@@ -48,9 +40,9 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -199,7 +191,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
 
     private ExecutorService mFpThreadPool;
     private ExecutorService mRefreshMsgTask;
-    private QpsLimiter mQpsLimit;
+    private volatile QpsLimiter mQpsLimit;
     private volatile BrowserTrafficScope mBrowserTrafficScope;
     private volatile ParameterFuzzProgress mActiveParameterFuzzProgress;
     private Timer mStatusRefresh;
@@ -357,12 +349,20 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      * 初始化 QPS 限制器
      */
     private void initQpsLimiter() {
-        // 检测范围，如果不符合条件，不创建限制器
         int limit = Config.getInt(Config.KEY_QPS_LIMIT);
-        int delay = Config.getInt(Config.KEY_REQUEST_DELAY);
-        if (limit > 0 && limit <= 9999) {
-            this.mQpsLimit = new QpsLimiter(limit, delay);
+        if (limit < 1 || limit > 9999) limit = 1024;
+        int delay = Math.max(0, Math.min(99999, Config.getInt(Config.KEY_REQUEST_DELAY)));
+        int min = Config.getInt(Config.KEY_RANDOM_DELAY_MIN);
+        int max = Config.getInt(Config.KEY_RANDOM_DELAY_MAX);
+        boolean randomEnabled = Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED);
+        if (min < 0 || max < min || max > 99999) {
+            randomEnabled = false;
+            min = 100;
+            max = 500;
         }
+        // Keep one gate: replacing it strands waiters on stale delay settings.
+        if (mQpsLimit == null) mQpsLimit = new QpsLimiter(limit, delay);
+        mQpsLimit.configure(limit, delay, randomEnabled, min, max);
     }
 
     private long captureTaskGeneration() {
@@ -1382,7 +1382,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
      *
      * @param service     请求目标服务实例
      * @param reqId       请求 ID
-     * @param reqRawBytes 请求数据包
+     * @param
      * @param from        请求来源
      */
 
@@ -1661,10 +1661,6 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         if (isTaskStopRequested()) {
                             return;
                         }
-                        // 低频任务不进行 QPS 限制
-                        if (requestMode != RequestMode.BROWSER && !isLowFrequencyTask(from) && checkQPSLimit()) {
-                            return;
-                        }
                         Logger.debug("Do Send Request id: %s", getReqId());
                         try {
                             waitForRequestMode(requestMode);
@@ -1677,7 +1673,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         }
                         int retryCount = Config.getInt(Config.KEY_RETRY_COUNT);
                         IHttpRequestResponse newReqResp = doMakeHttpRequest(service, reqRawBytes, retryCount,
-                                requestMode, !StringUtils.isEmpty(profileName), browserId);
+                                requestMode, !StringUtils.isEmpty(profileName), browserId,
+                                !isLowFrequencyTask(from));
                         if (newReqResp == null || isTaskStopRequested()) {
                             return;
                         }
@@ -1805,7 +1802,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             if (UrlUtils.isHTTP(reqPath)) {
                 URL originUrl = UrlUtils.parseURL(reqPath);
                 URL redirectUrl = UrlUtils.parseRedirectTargetURL(originUrl, location);
-                if (redirectUrl == null) {
+                if (redirectUrl == null || isInternalRedirectBlocked(originUrl, redirectUrl)) {
                     return;
                 }
                 IHttpService service = reqResp.getHttpService();
@@ -1814,7 +1811,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             } else {
                 URL originUrl = UrlUtils.parseURL(reqHost + reqPath);
                 URL redirectUrl = UrlUtils.parseRedirectTargetURL(originUrl, location);
-                if (redirectUrl == null) {
+                if (redirectUrl == null || isInternalRedirectBlocked(originUrl, redirectUrl)) {
                     return;
                 }
                 IHttpService service = buildHttpServiceByURL(redirectUrl);
@@ -1830,6 +1827,38 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
         } catch (Exception e) {
             Logger.error("Follow redirect error: " + e.getMessage());
         }
+    }
+
+    /**
+     * SSRF guard: a response must not redirect the scanner to an address more internal than the
+     * host it came from (loopback, private ranges, link-local, cloud metadata, in any spelling).
+     * Hosts the user explicitly allowed (Host allowlist, Burp Scope) are exempt.
+     *
+     * @return true=拦截；false=不拦截
+     */
+    private boolean isInternalRedirectBlocked(URL originUrl, URL redirectUrl) {
+        if (!Config.getBoolean(Config.KEY_BLOCK_INTERNAL_ACCESS)) {
+            return false;
+        }
+        String originHost = originUrl == null ? null : originUrl.getHost();
+        String targetHost = redirectUrl.getHost();
+        if (!InternalNetGuard.isBlocked(originHost, targetHost)) {
+            return false;
+        }
+        for (String item : WordlistManager.getHostAllowlist()) {
+            if (matchHost(targetHost, item)) {
+                return false;
+            }
+        }
+        try {
+            if (Config.getBoolean(Config.KEY_SCOPE_ONLY) && mCallbacks != null && mCallbacks.isInScope(redirectUrl)) {
+                return false;
+            }
+        } catch (Exception e) {
+            Logger.debug("Burp Scope check unavailable; internal redirect stays blocked");
+        }
+        Logger.info("Redirect to internal address blocked: %s -> %s", originHost, targetHost);
+        return true;
     }
 
     static boolean isFragmentOnlyRedirect(String location) {
@@ -1921,6 +1950,12 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount,
                                                    RequestMode requestMode, boolean isolateCookies,
                                                    String browserId) {
+        return doMakeHttpRequest(service, reqRawBytes, retryCount, requestMode, isolateCookies, browserId, true);
+    }
+
+    private IHttpRequestResponse doMakeHttpRequest(IHttpService service, byte[] reqRawBytes, int retryCount,
+                                                   RequestMode requestMode, boolean isolateCookies,
+                                                   String browserId, boolean applyLegacyLimit) {
         if (isTaskStopRequested()) {
             Logger.debug("doMakeHttpRequest: task stop requested, intercept task");
             return HttpReqRespAdapter.from(service, reqRawBytes);
@@ -1937,6 +1972,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                     ? doBrowserRequest(service, reqRawBytes, true, isolateCookies)
                     : doBrowserRequest(service, reqRawBytes, true, isolateCookies, browserId);
         }
+        if (!awaitRequestDispatch(requestMode, applyLegacyLimit)) return null;
+        // Scope can change while pacing or paused. Recheck at the send boundary.
+        if (!isRequestInBurpScope(service, reqRawBytes)) return null;
         try {
             reqResp = mCallbacks.makeHttpRequest(service, reqRawBytes);
             byte[] respRawBytes = reqResp.getResponse();
@@ -1970,17 +2008,19 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             try {
                 Thread.sleep(retryInterval);
             } catch (InterruptedException e) {
-                // 如果线程中断，返回目前的响应结果
+                // Preserve interruption so no retry can escape cancellation.
+                Thread.currentThread().interrupt();
                 return reqResp;
             }
         }
-        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode, isolateCookies, browserId);
+        return doMakeHttpRequest(service, reqRawBytes, retryCount - 1, requestMode, isolateCookies,
+                browserId, applyLegacyLimit);
     }
 
     /**
      * 检测当前请求主机是否超时
      *
-     * @param reqHost Host（格式：http://x.x.x.x、http://x.x.x.x:8080）
+     * @param Host（格式：http://x.x.x.x、http://x.x.x.x:8080）
      * @return true=存在；false=不存在
      */
     private IHttpRequestResponse doBrowserRequest(IHttpService service, byte[] reqRawBytes, boolean forceBrowser,
@@ -2013,16 +2053,8 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             Logger.debug("doBrowserRequest: task stop requested before browser navigation");
             return null;
         }
-        try {
-            waitForRequestMode(RequestMode.BROWSER);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        }
-        if (isTaskStopRequested()) {
-            Logger.debug("doBrowserRequest: task stop requested after browser pause check");
-            return null;
-        }
+        // Shared random gate only; do not hold it across browser navigation.
+        if (!awaitRequestDispatch(RequestMode.BROWSER, false)) return null;
         if (!isRequestInBurpScope(service, reqRawBytes)) return null;
         try {
             IRequestInfo info = mHelpers.analyzeRequest(service, reqRawBytes);
@@ -2733,20 +2765,23 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
     }
 
     /**
-     * 检测 QPS 限制
-     *
-     * @return true=拦截；false=不拦截
+     * Pace actual send attempts, including retries and browser fallback.
      */
-    private boolean checkQPSLimit() {
-        if (mQpsLimit != null) {
-            try {
-                mQpsLimit.limit();
-            } catch (InterruptedException e) {
-                // 线程强制停止时，拦截请求
-                return true;
-            }
+    private boolean awaitRequestDispatch(RequestMode requestMode, boolean applyLegacyLimit) {
+        try {
+            do {
+                waitForRequestMode(requestMode);
+                if (isTaskStopRequested()) return false;
+                QpsLimiter limiter = mQpsLimit;
+                if (limiter != null) limiter.limit(applyLegacyLimit);
+                if (isTaskStopRequested()) return false;
+                // A pause during the delay must not release a burst on resume.
+            } while (mPausedRequestModes.contains(normalizeTaskMode(requestMode)));
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
-        return false;
     }
 
     /**
@@ -3424,6 +3459,7 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
             case RequestTab.EVENT_QPS_LIMIT:
                 changeQpsLimit(String.valueOf(params[0]));
                 break;
+            case RequestTab.EVENT_RANDOM_DELAY:
             case RequestTab.EVENT_REQUEST_DELAY:
                 changeRequestDelay(String.valueOf(params[0]));
                 break;
@@ -4507,6 +4543,9 @@ public class BurpExtender implements IBurpExtender, IProxyListener, IMessageEdit
                         "browser_type", Config.get(Config.KEY_BROWSER_TYPE),
                         "qps_limit", Config.getInt(Config.KEY_QPS_LIMIT),
                         "request_delay", Config.getInt(Config.KEY_REQUEST_DELAY),
+                        "random_delay_enabled", Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED),
+                        "random_delay_min", Config.getInt(Config.KEY_RANDOM_DELAY_MIN),
+                        "random_delay_max", Config.getInt(Config.KEY_RANDOM_DELAY_MAX),
                         "follow_redirect", Config.getBoolean(Config.KEY_FOLLOW_REDIRECT),
                         "persistence_enabled", TaskPersistenceManager.isEnabled(),
                         "persistence_db_path", TaskPersistenceManager.getDatabasePath()

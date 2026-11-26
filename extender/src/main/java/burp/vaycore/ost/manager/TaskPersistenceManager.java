@@ -5,8 +5,6 @@ import burp.vaycore.common.utils.FileUtils;
 import burp.vaycore.common.utils.GsonUtils;
 import burp.vaycore.common.utils.PathUtils;
 import burp.vaycore.common.utils.StringUtils;
-
-import java.util.Base64;
 import burp.vaycore.ost.bean.FpColumn;
 import burp.vaycore.ost.bean.TaskData;
 import burp.vaycore.ost.common.Config;
@@ -803,12 +801,34 @@ public class TaskPersistenceManager {
         writer.newLine();
     }
 
-    private static String escapeCsv(String value) {
-        String text = value == null ? "" : value;
+    static String escapeCsv(String value) {
+        String text = neutralizeFormula(value == null ? "" : value);
         if (text.contains("\"") || text.contains(",") || text.contains("\r") || text.contains("\n")) {
             return "\"" + text.replace("\"", "\"\"") + "\"";
         }
         return text;
+    }
+
+    /**
+     * Exported values come from scanned sites (title, URL, headers). A cell that a spreadsheet
+     * would read as a formula is prefixed with an apostrophe so it stays text. Plain numbers
+     * such as -1 are left alone.
+     */
+    private static String neutralizeFormula(String text) {
+        int start = 0;
+        // Leading blanks (space, NBSP, ideographic space) do not make a formula safe.
+        while (start < text.length() && " \u00A0\u3000".indexOf(text.charAt(start)) >= 0) {
+            start++;
+        }
+        if (start >= text.length()) {
+            return text;
+        }
+        // = + - @, tab / CR / LF, and the full-width = + - @ that some locales also evaluate.
+        boolean trigger = "=+-@\t\r\n\uFF1D\uFF0B\uFF0D\uFF20".indexOf(text.charAt(start)) >= 0;
+        if (!trigger || text.matches("\\s*[+-]?\\d+(\\.\\d+)?\\s*")) {
+            return text;
+        }
+        return "'" + text;
     }
 
     private static String normalizeLabel(String label) {

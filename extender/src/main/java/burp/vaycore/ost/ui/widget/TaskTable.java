@@ -29,8 +29,8 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * 任务列表
@@ -57,14 +57,37 @@ public class TaskTable extends JTable implements ActionListener {
             180, // Variant
     };
 
+    private static final int LENGTH_COLUMN = 8;
     private final TaskTableModel mTaskTableModel;
-    private TableRowSorter<TaskTableModel> mTableRowSorter;
+    private final Set<ResponseGroupKey> mExpandedResponseGroups = new HashSet<>();
+    private ResponseFoldSorter mTableRowSorter;
+    private int mResponseFoldThreshold;
     private Consumer<List<TaskData>> mParameterFuzzRequestedHandler;
     private ArrayList<TableFilter<AbstractTableModel>> mTableFilters = new ArrayList<>();
     private final ArrayList<TableFilter<AbstractTableModel>> mTempFilters = new ArrayList<>();
     private volatile String mSearchText = "";
     private OnTaskTableEventListener mOnTaskTableEventListener;
     private int mLastSelectedRow;
+
+    public TaskTable() {
+        mTaskTableModel = new TaskTableModel();
+        mLastSelectedRow = -1;
+        setModel(mTaskTableModel);
+        setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        // 使组件垂直填充父容器
+        setFillsViewportHeight(true);
+        // 不可拖动表头
+        getTableHeader().setReorderingAllowed(false);
+        mTableRowSorter = new ResponseFoldSorter();
+        // 初始化颜色等级排序
+        initColorLevelSorter();
+        // 初始化列宽
+        initColumnWidth();
+        // 设置排序器
+        setRowSorter(mTableRowSorter);
+        // 初始化监听器
+        initEvent();
+    }
 
     @Override
     public TableCellRenderer getCellRenderer(int row, int column) {
@@ -88,6 +111,16 @@ public class TaskTable extends JTable implements ActionListener {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int rowIndex, int columnIndex) {
                 Component c = renderer.getTableCellRendererComponent(table, value, isSelected, hasFocus, rowIndex, columnIndex);
+                if (c instanceof JLabel label && mResponseFoldThreshold > 0
+                        && convertColumnIndexToModel(columnIndex) == LENGTH_COLUMN) {
+                    int modelRow = convertRowIndexToModel(rowIndex);
+                    ResponseGroup group = mTableRowSorter.groupAt(modelRow);
+                    if (group != null && modelRow == group.firstRow) {
+                        boolean expanded = mExpandedResponseGroups.contains(group.key);
+                        label.setText((expanded ? "\u25BE " : "\u25B8 ")
+                                + L.get("response_fold.badge", group.key.length(), group.count));
+                    }
+                }
                 if (matchesSearch(rowIndex)) {
                     Color searchColor = new Color(255, 244, 180);
                     c.setBackground(isSelected ? darkerColor(searchColor) : searchColor);
@@ -121,28 +154,17 @@ public class TaskTable extends JTable implements ActionListener {
         };
     }
 
-    public TaskTable() {
-        mTaskTableModel = new TaskTableModel();
-        mLastSelectedRow = -1;
-        setModel(mTaskTableModel);
-        setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        // 使组件垂直填充父容器
-        setFillsViewportHeight(true);
-        // 不可拖动表头
-        getTableHeader().setReorderingAllowed(false);
-        mTableRowSorter = new TableRowSorter<>(mTaskTableModel);
-        // 初始化颜色等级排序
-        initColorLevelSorter();
-        // 初始化列宽
-        initColumnWidth();
-        // 设置排序器
-        setRowSorter(mTableRowSorter);
-        // 初始化监听器
-        initEvent();
-    }
-
     private void initEvent() {
         addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (mResponseFoldThreshold > 0 && SwingUtilities.isLeftMouseButton(e)
+                        && e.getClickCount() == 2
+                        && convertColumnIndexToModel(columnAtPoint(e.getPoint())) == LENGTH_COLUMN) {
+                    toggleResponseGroupAt(rowAtPoint(e.getPoint()));
+                }
+            }
+
             @Override
             public void mouseReleased(MouseEvent e) {
                 // 鼠标右键事件
@@ -210,6 +232,13 @@ public class TaskTable extends JTable implements ActionListener {
 
     private void showPopupMenu(int x, int y) {
         JPopupMenu menu = new JPopupMenu();
+        ResponseGroup responseGroup = responseGroupAt(rowAtPoint(new Point(x, y)));
+        if (responseGroup != null) {
+            JMenuItem toggle = new JMenuItem(responseGroupAction(responseGroup));
+            toggle.addActionListener(e -> toggleResponseGroup(responseGroup.key));
+            menu.add(toggle);
+            menu.addSeparator();
+        }
         addPopupMenuItem(menu, L.get("task_table_menu.get_body_md5"), "fetch-body-md5");
         addPopupMenuItem(menu, L.get("task_table_menu.get_body_hash"), "fetch-body-hash");
         addPopupMenuItem(menu, L.get("task_table_menu.copy_url"), "copy-url");
@@ -333,8 +362,58 @@ public class TaskTable extends JTable implements ActionListener {
             });
         }
         synchronized (mTaskTableModel) {
-            mTableRowSorter.setRowFilter(RowFilter.andFilter(result));
+            mTableRowSorter.applyBaseFilter(result.isEmpty() ? null : RowFilter.andFilter(result));
         }
+    }
+
+    /**
+     * Zero disables folding; enabled thresholds are at least two matching records.
+     */
+    public void setResponseFoldThreshold(int minimum) {
+        if (minimum < 0 || minimum == 1) throw new IllegalArgumentException("Invalid fold threshold");
+        if (minimum == mResponseFoldThreshold) return;
+        mResponseFoldThreshold = minimum;
+        if (minimum == 0) mExpandedResponseGroups.clear();
+        updateRowFilter();
+        if (minimum > 0) {
+            var length = getColumnModel().getColumn(convertColumnIndexToView(LENGTH_COLUMN));
+            length.setPreferredWidth(Math.max(165, length.getPreferredWidth()));
+        }
+        repaint();
+    }
+
+    @Override
+    public String getToolTipText(MouseEvent event) {
+        if (mResponseFoldThreshold > 0
+                && convertColumnIndexToModel(columnAtPoint(event.getPoint())) == LENGTH_COLUMN) {
+            ResponseGroup group = responseGroupAt(rowAtPoint(event.getPoint()));
+            if (group != null) return responseGroupAction(group);
+        }
+        return super.getToolTipText(event);
+    }
+
+    private ResponseGroup responseGroupAt(int viewRow) {
+        return mResponseFoldThreshold > 0 && viewRow >= 0 && viewRow < getRowCount()
+                ? mTableRowSorter.groupAt(convertRowIndexToModel(viewRow))
+                : null;
+    }
+
+    private String responseGroupAction(ResponseGroup group) {
+        String key = mExpandedResponseGroups.contains(group.key) ? "response_fold.collapse" : "response_fold.expand";
+        return L.get(key, group.count);
+    }
+
+    boolean toggleResponseGroupAt(int viewRow) {
+        ResponseGroup group = responseGroupAt(viewRow);
+        if (group == null) return false;
+        toggleResponseGroup(group.key);
+        return true;
+    }
+
+    private void toggleResponseGroup(ResponseGroupKey key) {
+        if (!mExpandedResponseGroups.remove(key)) mExpandedResponseGroups.add(key);
+        mTableRowSorter.sort();
+        repaint();
     }
 
     private boolean matchesSearch(int viewRow) {
@@ -375,6 +454,7 @@ public class TaskTable extends JTable implements ActionListener {
     }
 
     public void loadTaskData(List<TaskData> items) {
+        mExpandedResponseGroups.clear();
         mTaskTableModel.replaceAll(items);
         clearSelection();
         if (mOnTaskTableEventListener != null) {
@@ -759,6 +839,7 @@ public class TaskTable extends JTable implements ActionListener {
      * 清空所有记录
      */
     public void clearAll() {
+        mExpandedResponseGroups.clear();
         mTaskTableModel.clearAll();
         if (mOnTaskTableEventListener != null) {
             mOnTaskTableEventListener.onChangeSelection(null);
@@ -781,7 +862,7 @@ public class TaskTable extends JTable implements ActionListener {
      * 获取扫描任务的数量
      */
     public int getTaskCount() {
-        return mTaskTableModel.getRowCount();
+        return mTaskTableModel.getDataCount();
     }
 
     /**
@@ -800,12 +881,15 @@ public class TaskTable extends JTable implements ActionListener {
             return;
         }
         // 重新初始化排序器实例
-        mTableRowSorter = new TableRowSorter<>(mTaskTableModel);
-        updateRowFilter();
+        mTableRowSorter = new ResponseFoldSorter();
         setRowSorter(mTableRowSorter);
         mTaskTableModel.fireTableStructureChanged();
         initColorLevelSorter();
         initColumnWidth();
+        if (mResponseFoldThreshold > 0) {
+            getColumnModel().getColumn(convertColumnIndexToView(LENGTH_COLUMN)).setPreferredWidth(165);
+        }
+        updateRowFilter();
     }
 
     /**
@@ -885,6 +969,27 @@ public class TaskTable extends JTable implements ActionListener {
         void addHostToBlocklist(ArrayList<String> hosts);
     }
 
+    private record ResponseGroupKey(String site, int status, int length, String profile) {
+        static ResponseGroupKey from(TaskData data) {
+            if (data == null || data.getStatus() <= 0 || data.getLength() < 0
+                    || data.getHost() == null || data.getHost().isBlank()) return null;
+            // Host already carries scheme and the non-default port, the same origin shown on the board.
+            return new ResponseGroupKey(data.getHost().trim().toLowerCase(Locale.ROOT), data.getStatus(),
+                    data.getLength(), Objects.toString(data.getProfile(), ""));
+        }
+    }
+
+    private static final class ResponseGroup {
+        final ResponseGroupKey key;
+        final int firstRow;
+        int count;
+
+        ResponseGroup(ResponseGroupKey key, int firstRow) {
+            this.key = key;
+            this.firstRow = firstRow;
+        }
+    }
+
     /**
      * 列表适配器
      */
@@ -912,6 +1017,8 @@ public class TaskTable extends JTable implements ActionListener {
         private final AtomicInteger mCounter;
         private final AtomicLong mDataVersion;
         private final DataTableItemLoader<TaskData> mItemLoader;
+        private int mPublishedRows;
+        private boolean mPublishScheduled;
 
         public TaskTableModel() {
             mData = Collections.synchronizedList(new ArrayList<>());
@@ -939,12 +1046,24 @@ public class TaskTable extends JTable implements ActionListener {
                 return;
             }
             synchronized (this) {
-                int firstRow = getRowCount();
                 mData.addAll(validItems);
-                int lastRow = getRowCount() - 1;
                 mDataVersion.incrementAndGet();
-                fireTableRowsInserted(firstRow, lastRow);
+                // The loader/persistence can accept rows off-EDT. The sorter only sees
+                // the published prefix, with an EDT event for each appended batch.
+                if (SwingUtilities.isEventDispatchThread()) {
+                    publishRows();
+                } else if (!mPublishScheduled) {
+                    mPublishScheduled = true;
+                    SwingUtilities.invokeLater(this::publishRows);
+                }
             }
+        }
+
+        private synchronized void publishRows() {
+            mPublishScheduled = false;
+            int first = mPublishedRows;
+            mPublishedRows = mData.size();
+            if (first < mPublishedRows) fireTableRowsInserted(first, mPublishedRows - 1);
         }
 
         public synchronized void removeItems(List<TaskData> list) {
@@ -952,6 +1071,7 @@ public class TaskTable extends JTable implements ActionListener {
                 return;
             }
             mData.removeAll(list);
+            mPublishedRows = mData.size();
             mDataVersion.incrementAndGet();
             fireTableDataChanged();
         }
@@ -962,6 +1082,7 @@ public class TaskTable extends JTable implements ActionListener {
             mItemLoader.flush();
             synchronized (this) {
                 mData.clear();
+                mPublishedRows = 0;
                 mDataVersion.incrementAndGet();
                 fireTableDataChanged();
             }
@@ -974,6 +1095,7 @@ public class TaskTable extends JTable implements ActionListener {
                 if (items != null && !items.isEmpty()) {
                     mData.addAll(items.stream().filter(Objects::nonNull).collect(Collectors.toList()));
                 }
+                mPublishedRows = mData.size();
                 int maxId = mData.stream().mapToInt(TaskData::getId).max().orElse(-1);
                 mCounter.set(maxId + 1);
                 mDataVersion.incrementAndGet();
@@ -1000,9 +1122,13 @@ public class TaskTable extends JTable implements ActionListener {
             }
         }
 
+        private synchronized int getDataCount() {
+            return mData.size();
+        }
+
         @Override
         public synchronized int getRowCount() {
-            return mData.size();
+            return mPublishedRows;
         }
 
         @Override
@@ -1069,6 +1195,114 @@ public class TaskTable extends JTable implements ActionListener {
         public void startAddTaskData() {
             // DataTableItemLoader 会在新数据入队时自动恢复，这里只刷新一次当前队列。
             mItemLoader.flush();
+        }
+    }
+
+    /**
+     * Presents a grouped view without modifying the rows used by history, export or persistence.
+     */
+    private final class ResponseFoldSorter extends TableRowSorter<TaskTableModel> {
+        private final Map<ResponseGroupKey, ResponseGroup> groups = new HashMap<>();
+        private final ArrayList<ResponseGroup> rows = new ArrayList<>();
+        private final BitSet matches = new BitSet();
+        private final RowFilter.Entry<TaskTableModel, Integer> modelEntry = new RowFilter.Entry<>() {
+            @Override
+            public TaskTableModel getModel() {
+                return mTaskTableModel;
+            }
+
+            @Override
+            public Integer getIdentifier() {
+                return rows.size();
+            }
+
+            @Override
+            public int getValueCount() {
+                return mTaskTableModel.getColumnCount();
+            }
+
+            @Override
+            public Object getValue(int index) {
+                return mTaskTableModel.getValueAt(rows.size(), index);
+            }
+        };
+        private final RowFilter<TaskTableModel, Integer> foldFilter = new RowFilter<>() {
+            @Override
+            public boolean include(Entry<? extends TaskTableModel, ? extends Integer> entry) {
+                int row = entry.getIdentifier();
+                if (!matches.get(row)) return false;
+                ResponseGroup group = groupAt(row);
+                return group == null || row == group.firstRow || mExpandedResponseGroups.contains(group.key);
+            }
+        };
+        private RowFilter<? super TaskTableModel, ? super Integer> baseFilter;
+
+        ResponseFoldSorter() {
+            super(mTaskTableModel);
+        }
+
+        void applyBaseFilter(RowFilter<? super TaskTableModel, ? super Integer> filter) {
+            baseFilter = filter;
+            rebuild();
+            setRowFilter(mResponseFoldThreshold > 0 ? foldFilter : filter);
+        }
+
+        private void rebuild() {
+            groups.clear();
+            rows.clear();
+            matches.clear();
+            if (mResponseFoldThreshold > 0) appendThrough(mTaskTableModel.getRowCount() - 1);
+        }
+
+        private boolean appendThrough(int end) {
+            boolean visibilityChanged = false;
+            for (int row = rows.size(); row <= end; row++) {
+                ResponseGroup group = null;
+                if (baseFilter == null || baseFilter.include(modelEntry)) {
+                    matches.set(row);
+                    ResponseGroupKey key = ResponseGroupKey.from(mTaskTableModel.getItemData(row));
+                    if (key != null) {
+                        group = groups.get(key);
+                        if (group == null) {
+                            group = new ResponseGroup(key, row);
+                            groups.put(key, group);
+                        }
+                        if (++group.count == mResponseFoldThreshold && !mExpandedResponseGroups.contains(key)) {
+                            visibilityChanged = true;
+                        }
+                    }
+                }
+                rows.add(group);
+            }
+            return visibilityChanged;
+        }
+
+        ResponseGroup groupAt(int row) {
+            if (row < 0 || row >= rows.size()) return null;
+            ResponseGroup group = rows.get(row);
+            return group != null && group.count >= mResponseFoldThreshold ? group : null;
+        }
+
+        @Override
+        public void rowsInserted(int first, int end) {
+            if (mResponseFoldThreshold == 0) {
+                super.rowsInserted(first, end);
+                return;
+            }
+            // Model appends batches. Only a threshold crossing can hide previously visible rows.
+            if (first == rows.size()) {
+                if (appendThrough(end)) super.allRowsChanged();
+                else super.rowsInserted(first, end);
+            } else {
+                allRowsChanged();
+            }
+            repaint();
+        }
+
+        @Override
+        public void allRowsChanged() {
+            rebuild();
+            super.allRowsChanged();
         }
     }
 

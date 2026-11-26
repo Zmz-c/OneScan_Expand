@@ -4,11 +4,7 @@ import burp.vaycore.common.config.ConfigManager;
 import burp.vaycore.common.filter.FilterRule;
 import burp.vaycore.common.log.Logger;
 import burp.vaycore.common.utils.*;
-import burp.vaycore.ost.bean.IdentityProfile;
-import burp.vaycore.ost.bean.FpColumn;
-import burp.vaycore.ost.bean.FpData;
-import burp.vaycore.ost.bean.FpRule;
-import burp.vaycore.ost.bean.VariableDefinition;
+import burp.vaycore.ost.bean.*;
 import burp.vaycore.ost.manager.CollectManager;
 import burp.vaycore.ost.manager.FpManager;
 import burp.vaycore.ost.manager.VariableManager;
@@ -38,6 +34,9 @@ public class Config {
     public static final String KEY_PAYLOAD_PROCESS_LIST = "payload-process-list";
     public static final String KEY_QPS_LIMIT = "qps-limit";
     public static final String KEY_REQUEST_DELAY = "request-delay";
+    public static final String KEY_RANDOM_DELAY_ENABLED = "random-delay-enabled";
+    public static final String KEY_RANDOM_DELAY_MIN = "random-delay-min";
+    public static final String KEY_RANDOM_DELAY_MAX = "random-delay-max";
     public static final String KEY_SCAN_LEVEL_DIRECT = "scan-level-direct";
     public static final String KEY_SCAN_LEVEL = "scan-level";
     public static final String KEY_RETRY_COUNT = "retry-count";
@@ -58,6 +57,7 @@ public class Config {
     public static final String KEY_REDIRECT_COOKIES_FOLLOW = "redirect-cookies-follow";
     public static final String KEY_REDIRECT_TARGET_HOST_LIMIT = "redirect-target-host-limit";
     public static final String KEY_SCOPE_ONLY = "scope-only";
+    public static final String KEY_BLOCK_INTERNAL_ACCESS = "block-internal-access";
     public static final String KEY_INTERCEPT_TIMEOUT_HOST = "intercept-timeout-host";
     public static final String KEY_VARIABLE_DEFINITIONS = "variable-definitions";
     public static final String KEY_IDENTITY_PROFILES = "identity-profiles";
@@ -113,6 +113,9 @@ public class Config {
         L.configure(language);
         initDefaultConfig(Config.KEY_QPS_LIMIT, "1024");
         initDefaultConfig(Config.KEY_REQUEST_DELAY, "0");
+        initDefaultConfig(Config.KEY_RANDOM_DELAY_ENABLED, "false");
+        initDefaultConfig(Config.KEY_RANDOM_DELAY_MIN, "100");
+        initDefaultConfig(Config.KEY_RANDOM_DELAY_MAX, "500");
         initDefaultConfig(Config.KEY_SCAN_LEVEL_DIRECT, "left");
         initDefaultConfig(Config.KEY_SCAN_LEVEL, "99");
         initDefaultConfig(Config.KEY_RETRY_COUNT, "3");
@@ -136,6 +139,7 @@ public class Config {
         initDefaultConfig(Config.KEY_REDIRECT_TARGET_HOST_LIMIT, "true");
         initDefaultConfig(Config.KEY_INTERCEPT_TIMEOUT_HOST, "false");
         initDefaultConfig(Config.KEY_SCOPE_ONLY, "false");
+        initDefaultConfig(Config.KEY_BLOCK_INTERNAL_ACCESS, "true");
         initDefaultConfig(Config.KEY_VARIABLE_DEFINITIONS, "[]");
         initDefaultConfig(Config.KEY_IDENTITY_PROFILES, "[]");
         // 默认开关配置

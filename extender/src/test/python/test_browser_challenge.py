@@ -86,6 +86,105 @@ class ChallengeUnitTest(unittest.TestCase):
                 bridge.execute_network_request(Mock(), req, 1, False)
             execute.assert_not_called()
 
+    def test_local_guard_classifies_every_spelling_of_internal_addresses(self):
+        dns = {'rebind.test': '127.0.0.1', 'intranet.test': '10.1.2.3', 'public.test': '93.184.216.34'}
+
+        def resolve(host, *_):
+            if host not in dns:
+                raise OSError(host)
+            return [(None, None, None, '', (dns[host], 0))]
+
+        bridge._host_rank_cache.clear()
+        with patch.object(bridge.socket, 'getaddrinfo', side_effect=resolve):
+            for host in ('127.0.0.1', '127.1', '2130706433', '0x7f000001', '0x7f.1', '017700000001', '0177.0.0.1',
+                         'localhost', 'app.localhost', 'LOCALHOST.', '::1', '[::1]', '::ffff:127.0.0.1',
+                         '::127.0.0.1', '64:ff9b::7f00:1', '2002:7f00:1::', 'rebind.test'):
+                self.assertEqual(bridge.NET_LOOPBACK, bridge.host_rank(host), host)
+            for host in ('10.0.0.1', '172.16.0.1', '192.168.1.1', '100.64.0.1', '167772161', 'fc00::1', 'fec0::1',
+                         'intranet.test'):
+                self.assertEqual(bridge.NET_PRIVATE, bridge.host_rank(host), host)
+            for host in ('169.254.169.254', '2852039166', '0.0.0.0', '0', '100.100.100.200', '168.63.129.16',
+                         '192.0.0.192', '224.0.0.1', '255.255.255.255', '::', 'fe80::1', 'fe80::1%eth0',
+                         'fd00:ec2::254', 'ff02::1', '', None):
+                self.assertEqual(bridge.NET_FORBIDDEN, bridge.host_rank(host), host)
+            for host in ('8.8.8.8', '172.32.0.1', '100.128.0.1', '2001:4860:4860::8888', '2002:808:808::',
+                         'public.test', 'nxdomain.test', '256.1.1.1', '09.1.1.1'):
+                self.assertEqual(bridge.NET_PUBLIC, bridge.host_rank(host), host)
+        bridge._host_rank_cache.clear()
+
+    def test_local_guard_blocks_only_requests_that_reach_inward(self):
+        blocks = bridge.local_network_blocks
+        public = 'https://8.8.8.8/page'
+        for url in ('http://127.0.0.1:8080/admin', 'http://localhost/', 'http://2130706433/', 'http://0x7f.1/',
+                    'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://user@127.0.0.1/', 'ws://127.0.0.1:9/',
+                    'http://10.0.0.5/', 'http://192.168.1.1/', 'http://169.254.169.254/latest/meta-data/',
+                    'http://0.0.0.0/', 'http://127.0.0.1:99999/'):
+            self.assertTrue(blocks(url, public), url)
+        for url in ('https://1.1.1.1/x.js', public, 'data:text/plain,x', 'blob:https://8.8.8.8/id', 'about:blank'):
+            self.assertFalse(blocks(url, public), url)
+        # A local or intranet target keeps working, but cannot escalate.
+        self.assertFalse(blocks('http://127.0.0.1:8000/api', 'http://127.0.0.1:8000/task'))
+        self.assertFalse(blocks('http://localhost:3000/api', 'http://127.0.0.1:8000/task'))
+        self.assertFalse(blocks('http://10.0.0.9/sso', 'http://10.0.0.5/task'))
+        self.assertTrue(blocks('http://127.0.0.1/', 'http://10.0.0.5/task'))
+        self.assertTrue(blocks('http://169.254.169.254/', 'http://127.0.0.1/task'))
+
+    def test_local_guard_never_exposes_the_devtools_port(self):
+        blocks = bridge.local_network_blocks
+        local = 'http://127.0.0.1:8000/task'
+        for url in ('http://127.0.0.1:9777/json/version', 'http://localhost:9777/json/list',
+                    'http://[::1]:9777/json', 'http://0.0.0.0:9777/json', 'ws://127.0.0.1:9777/devtools/browser/x'):
+            self.assertTrue(blocks(url, local, 9777), url)
+            self.assertTrue(blocks(url, local, 9777, debug_port_only=True), url)
+        self.assertFalse(blocks('http://127.0.0.1:9777/json', local))
+        self.assertFalse(blocks('http://127.0.0.1:8000/api', local, 9777))
+        # Same host and port as the target is still the DevTools endpoint.
+        self.assertTrue(blocks('http://127.0.0.1:9777/json', 'http://127.0.0.1:9777/', 9777))
+
+    def test_local_guard_runs_without_scope_and_releases_the_reused_tab(self):
+        req = request(url='https://8.8.8.8/task'); req['local_guard'] = True; req['debug_port'] = 9777
+        tab = Mock()
+        guard = bridge.BurpScopeGuard(tab, req, scope_check=False)
+        with patch.object(bridge, 'burp_scope_allows') as query:
+            guard.paused(requestId='inward', request={'url': 'http://127.0.0.1:8080/admin'})
+            tab.run_cdp.assert_called_with('Fetch.failRequest', requestId='inward', errorReason='BlockedByClient')
+            guard.paused(requestId='outward', request={'url': 'https://1.1.1.1/app.js'})
+            tab.run_cdp.assert_called_with('Fetch.continueRequest', requestId='outward')
+            query.assert_not_called()
+        guard.finish()
+        tab.run_cdp.assert_called_with('Fetch.disable')
+
+    def test_local_guard_trusts_the_requests_own_referer_host(self):
+        req = request(url='https://8.8.8.8/task'); req['local_guard'] = True
+        req['headers'] = ['Referer: http://10.0.0.5/portal']
+        guard = bridge.BurpScopeGuard(Mock(), req, scope_check=False)
+        self.assertTrue(guard.allows('http://10.0.0.5/portal'))
+        self.assertTrue(guard.allows('http://10.0.0.9/sso'))
+        self.assertFalse(guard.allows('http://127.0.0.1/'))
+
+    def test_scope_mode_still_refuses_the_devtools_port_before_asking_burp(self):
+        req = request(url='http://127.0.0.1:8000/task'); req['local_guard'] = True; req['debug_port'] = 9777
+        guard = bridge.BurpScopeGuard(Mock(), req)
+        with patch.object(bridge, 'burp_scope_allows', return_value=True) as query:
+            self.assertFalse(guard.allows('http://127.0.0.1:9777/json/version'))
+            query.assert_not_called()
+            self.assertTrue(guard.allows('http://127.0.0.1:8000/api'))
+
+    def test_local_guard_is_installed_by_default_and_can_be_switched_off(self):
+        req = request(); req['local_guard'] = True
+        tab = Mock(spec=['run_cdp', 'driver'])
+        with patch.object(bridge, '_execute_network_request', return_value='ok'):
+            self.assertEqual('ok', bridge.execute_network_request(tab, req, 1, False))
+        tab.driver.set_callback.assert_called_once()
+        self.assertIn('Fetch.enable', [call.args[0] for call in tab.run_cdp.call_args_list])
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 'request.txt')
+            for line, expected in (('', True), ('LOCAL_GUARD=true\n', True), ('LOCAL_GUARD=false\n', False)):
+                with open(path, 'w', encoding='utf-8') as file:
+                    file.write(line + 'METHOD=R0VU\nURL=aHR0cDovL3gudGVzdC8=\nHEADER_COUNT=0\nBODY=\n')
+                self.assertEqual(expected, bridge.read_request_file(path)['local_guard'], line)
+
     def test_auxiliary_host_matching_is_exact_and_not_based_on_path_text(self):
         auxiliary = 'http://me.kis.v2.scr.kaspersky-labs.com/token/to/wsm.sessionActivated'
         self.assertTrue(bridge.is_auxiliary_browser_url(auxiliary))

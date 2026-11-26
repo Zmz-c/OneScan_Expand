@@ -23,10 +23,10 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
-import java.awt.event.ComponentAdapter;
-import java.awt.event.ComponentEvent;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,6 +55,9 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
     private ArrayList<FilterRule> mLastFilters;
     private HintTextField mFilterRuleText;
     private HintTextField mSearchText;
+    private JButton mResponseFoldButton;
+    private boolean mResponseFoldEnabled;
+    private int mResponseFoldMinimum = 50;
     private AbstractButton mPayloadProcessing;
     private JPopupMenu mRequestProcessingMenu;
     private ImportUrlWindow mImportUrlWindow;
@@ -180,6 +183,17 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         mOpenParameterFuzzPanel = openPanelHandler;
     }
 
+    static JPanel createResponseFoldForm(JTextField field) {
+        // The option pane packs to the form's preferred size. Use a layout that
+        // accounts for both the label and the text field.
+        JPanel form = new JPanel(new BorderLayout(0, 6));
+        JLabel label = new JLabel(L.get("response_fold.threshold_hint"));
+        label.setLabelFor(field);
+        form.add(label, BorderLayout.NORTH);
+        form.add(field, BorderLayout.CENTER);
+        return form;
+    }
+
     private void initControlPanel() {
         JPanel panel = new JPanel(new HLayout(5, true));
         panel.setBorder(new EmptyBorder(0, 0, 0, 5));
@@ -275,6 +289,49 @@ public class DataBoardTab extends BaseTab implements ImportUrlWindow.OnImportUrl
         filterBtn.setActionCommand("filter-data");
         filterBtn.addActionListener(this);
         panel.add(filterBtn, "65px");
+
+        mResponseFoldButton = new JButton(L.get("response_fold.menu"));
+        mResponseFoldButton.setToolTipText(L.get("response_fold.hint"));
+        mResponseFoldButton.addActionListener(e ->
+                createResponseFoldMenu().show(mResponseFoldButton, 0, mResponseFoldButton.getHeight()));
+        panel.add(mResponseFoldButton);
+    }
+
+    JPopupMenu createResponseFoldMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        JCheckBoxMenuItem toggle = new JCheckBoxMenuItem(L.get("response_fold.enable"), mResponseFoldEnabled);
+        toggle.addActionListener(e -> setResponseFolding(toggle.isSelected(), mResponseFoldMinimum));
+        menu.add(toggle);
+        JMenuItem threshold = new JMenuItem(L.get("response_fold.threshold_item", mResponseFoldMinimum));
+        threshold.addActionListener(e -> editResponseFoldMinimum());
+        menu.add(threshold);
+        return menu;
+    }
+
+    private void editResponseFoldMinimum() {
+        JTextField field = new JTextField(Integer.toString(mResponseFoldMinimum), 12);
+        JPanel form = createResponseFoldForm(field);
+        while (UIHelper.showCustomDialog(L.get("response_fold.menu"), form, this) == JOptionPane.OK_OPTION) {
+            try {
+                int value = Integer.parseInt(field.getText().trim());
+                if (value < 2) throw new NumberFormatException();
+                setResponseFolding(mResponseFoldEnabled, value);
+                return;
+            } catch (NumberFormatException e) {
+                UIHelper.showTipsDialog(L.get("response_fold.threshold_invalid"), this);
+                field.selectAll();
+            }
+        }
+    }
+
+    void setResponseFolding(boolean enabled, int minimum) {
+        if (minimum < 2) throw new IllegalArgumentException("Invalid fold threshold");
+        mResponseFoldEnabled = enabled;
+        mResponseFoldMinimum = minimum;
+        mResponseFoldButton.setText(enabled ? L.get("response_fold.active", minimum) : L.get("response_fold.menu"));
+        for (TaskTable table : getTaskTables()) {
+            table.setResponseFoldThreshold(enabled ? minimum : 0);
+        }
     }
 
     private void initStatusPanel() {

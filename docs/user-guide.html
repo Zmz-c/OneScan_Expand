@@ -6,7 +6,8 @@
 @media(max-width:850px){.layout{grid-template-columns:1fr;padding:16px;gap:16px}aside{position:static;height:auto;padding:0}nav{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}nav a{border:1px solid var(--line);border-radius:5px}.language{margin:8px 0}section{padding:20px}.hero{padding:24px}.brand{font-size:26px}}@media print{aside,.copy,.no-results{display:none!important}.layout{display:block;padding:0}.hero{background:white;color:#172d39;border:1px solid #bbb}section{break-inside:avoid}pre{white-space:pre-wrap}.chips{display:none}}
 </style></head>
 <body data-lang="zh"><div class="layout"><aside aria-label="Manual navigation">
-<div class="brand">OST<span>.</span></div><div class="muted">1.2.7 · <span class="zh">用户手册</span><span class="en">User Manual</span></div>
+    <div class="brand">OST<span>.</span></div>
+    <div class="muted">1.2.8-dev.3 · <span class="zh">用户手册</span><span class="en">User Manual</span></div>
 <div class="language"><button id="lang-zh" aria-pressed="true">中文</button><button id="lang-en" aria-pressed="false">English</button></div>
 <label for="search" class="muted"><span class="zh">搜索功能与配置</span><span class="en">Search features and settings</span></label>
 <input id="search" type="search" autocomplete="off" placeholder="搜索功能与配置"><nav><a href="#overview"><span class="zh">01　产品概览</span><span class="en">01　Overview</span></a><a href="#installation"><span class="zh">02　安装与环境</span><span class="en">02　Installation</span></a><a href="#workflow"><span class="zh">03　基本工作流程</span><span class="en">03　Workflow</span></a><a href="#configuration"><span class="zh">04　配置参考</span><span class="en">04　Configuration</span></a><a href="#processing"><span class="zh">05　请求处理</span><span class="en">05　Request Processing</span></a><a href="#parameters"><span class="zh">06　参数扫描</span><span class="en">06　Parameter Scanning</span></a><a href="#variables"><span class="zh">07　字典与变量</span><span class="en">07　Dictionaries and Variables</span></a><a href="#profiles"><span class="zh">08　身份重放与比较</span><span class="en">08　Identity Replay</span></a><a href="#browser"><span class="zh">09　浏览器请求</span><span class="en">09　Browser Requests</span></a><a href="#fingerprints"><span class="zh">10　指纹识别与结果过滤</span><span class="en">10　Fingerprints and Filters</span></a><a href="#storage"><span class="zh">11　数据管理与集成</span><span class="en">11　Data and Integration</span></a><a href="#troubleshooting"><span class="zh">12　故障排查</span><span class="en">12　Troubleshooting</span></a></nav>
@@ -16,13 +17,147 @@
 <div class="chips"><span>Burp Suite</span><span>Java 21</span><span>HTTP / Browser</span></div></header>
 <p id="no-results" class="no-results" role="status" hidden><span class="zh">没有匹配的章节。</span><span class="en">No matching sections.</span></p>
 <section id="overview"><div class="num">01 / OST</div><div class="zh"><h2>产品概览</h2><p>OST 是面向 Web 安全测试的 Burp Suite 扩展，将端点扫描、请求处理、参数测试、浏览器重放、指纹识别和身份比较集成在同一工作台。</p><p>扫描结果支持检索、条件过滤、本地持久化和导出。可选 MCP 接口用于与本地自动化工具集成。</p><div class="table-wrap"><table><thead><tr><th>工作区</th><th>用途</th></tr></thead><tbody><tr><td>数据看板</td><td>查看普通端点扫描结果、导入 URL、控制任务和检查请求响应。</td></tr><tr><td>参数扫描</td><td>为端点配置参数测试计划，并在独立流量列表中查看执行结果。</td></tr><tr><td>插件配置</td><td>管理字典、请求策略、身份、浏览器、范围和存储设置。</td></tr><tr><td>指纹管理</td><td>维护识别条件、输出字段和显示颜色，使用请求响应样本验证规则。</td></tr><tr><td>数据收集</td><td>查看按照配置收集的内容。</td></tr></tbody></table></div></div><div class="en"><h2>Overview</h2><p>OST is a Burp Suite extension for web-security testing. It combines endpoint scanning, request transformations, parameter testing, browser replay, fingerprinting and identity comparison in one workspace.</p><p>Results support search, conditional filtering, local persistence and export. An optional MCP interface connects trusted local automation clients.</p><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Purpose</th></tr></thead><tbody><tr><td>Databoard</td><td>Inspect ordinary endpoint traffic, import URLs and control tasks.</td></tr><tr><td>Parameter scan</td><td>Configure endpoint-specific parameter tests and inspect their dedicated traffic view.</td></tr><tr><td>Config</td><td>Manage dictionaries, request policies, identities, browser settings, scope and storage.</td></tr><tr><td>Fingerprint</td><td>Manage detection conditions, result fields and colors; test rules against paired messages.</td></tr><tr><td>Collect</td><td>Review content collected according to the configured rules.</td></tr></tbody></table></div></div></section>
-<section id="installation"><div class="num">02 / OST</div><div class="zh"><h2>安装与环境</h2><ol><li>使用 Java 21 启动支持 Java 扩展的 Burp Suite。</li><li>在 Extensions → Add 中选择 Java，加载 <code>OST-v1.2.7.jar</code>。</li><li>确认 OST 标签页出现。通过“插件配置 → 其他配置”设置界面语言；重新加载扩展后应用到整个界面。</li></ol><p>源码构建在项目根目录执行：</p><pre><code>.\mvnw.cmd package
+    <section id="installation">
+        <div class="num">02 / OST</div>
+        <div class="zh"><h2>安装与环境</h2>
+            <ol>
+                <li>使用 Java 21 启动支持 Java 扩展的 Burp Suite。</li>
+                <li>在 Extensions → Add 中选择 Java，加载 <code>OST-v1.2.8-dev.3.jar</code>。</li>
+                <li>确认 OST 标签页出现。通过“插件配置 → 其他配置”设置界面语言；重新加载扩展后应用到整个界面。</li>
+            </ol>
+            <p>源码构建在项目根目录执行：</p>
+            <pre><code>.\mvnw.cmd package
 # macOS / Linux
-./mvnw package</code></pre><p>构建产物位于 <code>extender/target/</code>。加载包含依赖的 OST 包，不使用独立的 extender 包。</p><p>普通 Burp 请求无需 Python。浏览器模式需要 Edge 或 Chrome，以及安装了 DrissionPage 的 Python 3.9+ 解释器。</p><pre><code>python -m pip install DrissionPage</code></pre></div><div class="en"><h2>Installation</h2><ol><li>Run a Java-extension-compatible Burp Suite with Java 21.</li><li>In Extensions → Add, select Java and load <code>OST-v1.2.7.jar</code>.</li><li>Open the OST tab. Set the interface language in Config → Other and reload the extension to apply it throughout the interface.</li></ol><p>Build from the repository root:</p><pre><code>.\mvnw.cmd package
+./mvnw package</code></pre>
+            <p>构建产物位于 <code>extender/target/</code>。加载包含依赖的 OST 包，不使用独立的 extender 包。</p>
+            <p>普通 Burp 请求无需 Python。浏览器模式需要 Edge 或 Chrome，以及安装了 DrissionPage 的 Python 3.9+
+                解释器。</p>
+            <pre><code>python -m pip install DrissionPage</code></pre>
+        </div>
+        <div class="en"><h2>Installation</h2>
+            <ol>
+                <li>Run a Java-extension-compatible Burp Suite with Java 21.</li>
+                <li>In Extensions → Add, select Java and load <code>OST-v1.2.8-dev.3.jar</code>.</li>
+                <li>Open the OST tab. Set the interface language in Config → Other and reload the extension to apply it
+                    throughout the interface.
+                </li>
+            </ol>
+            <p>Build from the repository root:</p>
+            <pre><code>.\mvnw.cmd package
 # macOS / Linux
 ./mvnw package</code></pre><p>The artifact is in <code>extender/target/</code>. Load the bundled OST JAR rather than the thin extender JAR.</p><p>Burp transport needs no Python. Browser transport requires Edge or Chrome and a Python 3.9+ interpreter with DrissionPage installed.</p><pre><code>python -m pip install DrissionPage</code></pre></div></section>
 <section id="workflow"><div class="num">03 / OST</div><div class="zh"><h2>基本工作流程</h2><ol><li>确定授权测试范围。在 Burp Target Scope 配置允许的目标，并按需开启“主机配置 → 仅扫描 Burp Scope”。</li><li>在请求配置中设置 QPS、延迟、重试和扫描层级。启用所需的字典及请求处理组。</li><li>从 Burp 右键发送请求到 OST，或在数据看板导入 URL，每行一个。选择 Burp 或浏览器请求方式。</li><li>在结果表查看状态码、长度、指纹和身份信息；选中条目查看完整请求与响应。</li><li>对选定端点进行参数扫描或身份重放，将需要进一步验证的请求发送到 Repeater。</li></ol><p>主机黑白名单、路径排除和 Burp Scope 是请求范围控制；数据表过滤仅改变结果显示，不控制请求发送。Scope Only 默认关闭，启用后直接使用 Burp 的当前范围设置。</p><div class="callout warn">浏览器范围检查针对被拦截的页面请求，不等同于进程级网络隔离。对严格范围项目，应同时配置网络边界。仅对已获授权的系统执行测试。</div></div><div class="en"><h2>Workflow</h2><ol><li>Define authorized targets in Burp Target Scope. Enable Config → Host → Scope Only when required.</li><li>Set QPS, delay, retries and scan depth in Request settings. Enable the dictionaries and processing groups needed for the assessment.</li><li>Send requests from the Burp context menu or import one URL per line in Databoard. Choose Burp or browser transport.</li><li>Review status, length, fingerprints and identity information. Select a row to inspect the paired request and response.</li><li>Run parameter tests or identity replay for selected endpoints, and send requests requiring further verification to Repeater.</li></ol><p>Host lists, path exclusions and Burp Scope control request eligibility. Table filters only control displayed results. Scope Only is disabled by default and uses Burp's live scope when enabled.</p><div class="callout warn">Browser scope checks apply to intercepted page requests, not every process connection. Use network isolation for strict scope requirements. Test only authorized systems.</div></div></section>
-<section id="configuration"><div class="num">04 / OST</div><div class="zh"><h2>配置参考</h2><div class="table-wrap"><table><thead><tr><th>配置页</th><th>内容</th></tr></thead><tbody><tr><td>变量与字典</td><td>命名变量及变量字典。</td></tr><tr><td>字典配置</td><td>路径/Payload 字典和请求包处理组。</td></tr><tr><td>请求配置</td><td>QPS、延迟、扫描层级、重试、身份 Profile、方法/后缀过滤、请求头和路径黑名单。</td></tr><tr><td>浏览器配置</td><td>Python/浏览器路径、超时、静态资源加载和目标主机正则。</td></tr><tr><td>主机配置</td><td>Burp Scope、超时主机拦截及主机黑白名单。</td></tr><tr><td>重定向配置</td><td>跟随策略、Cookie 传递和目标主机限制。</td></tr><tr><td>其他配置</td><td>语言、使用说明、SQLite 持久化、保存字段和 MCP 服务。</td></tr></tbody></table></div><p>路径黑名单匹配 URL 路径中的片段，忽略大小写，不包含主机和查询串。重定向策略可独立配置是否传递 Cookie 以及是否限制目标主机。</p><p>请求头替换、目录扫描和请求包处理还受数据看板对应开关控制。配置内容与功能开关共同决定实际请求。</p></div><div class="en"><h2>Configuration</h2><div class="table-wrap"><table><thead><tr><th>Page</th><th>Settings</th></tr></thead><tbody><tr><td>Variables</td><td>Named variables and variable dictionaries.</td></tr><tr><td>Payload</td><td>Path/Payload dictionaries and request-processing groups.</td></tr><tr><td>Request</td><td>QPS, delay, scan depth, retries, identity Profiles, method/suffix filters, headers and path blocklist.</td></tr><tr><td>Browser</td><td>Python/browser paths, timeout, static resources and target-host regex.</td></tr><tr><td>Host</td><td>Burp Scope, timeout-host blocking and host allow/blocklists.</td></tr><tr><td>Redirect</td><td>Following policy, cookie propagation and target-host restriction.</td></tr><tr><td>Other</td><td>Language, user guide, SQLite persistence, stored fields and MCP service.</td></tr></tbody></table></div><p>The path blocklist performs case-insensitive fragment matching on the URL path, excluding the host and query. Redirect options control cookie propagation and destination-host restrictions.</p><p>Header replacement, directory scanning and request processing also have master switches on Databoard. Both configuration and switch state determine the generated request.</p></div></section>
+    <section id="configuration">
+        <div class="num">04 / OST</div>
+        <div class="zh"><h2>配置参考</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>配置页</th>
+                        <th>内容</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td>变量与字典</td>
+                        <td>命名变量及变量字典。</td>
+                    </tr>
+                    <tr>
+                        <td>字典配置</td>
+                        <td>路径/Payload 字典和请求包处理组。</td>
+                    </tr>
+                    <tr>
+                        <td>请求配置</td>
+                        <td>QPS、延迟、扫描层级、重试、身份 Profile、方法/后缀过滤、请求头和路径黑名单。</td>
+                    </tr>
+                    <tr>
+                        <td>浏览器配置</td>
+                        <td>Python/浏览器路径、超时、静态资源加载和目标主机正则。</td>
+                    </tr>
+                    <tr>
+                        <td>主机配置</td>
+                        <td>Burp Scope、超时主机拦截及主机黑白名单。</td>
+                    </tr>
+                    <tr>
+                        <td>重定向配置</td>
+                        <td>跟随策略、Cookie 传递和目标主机限制。</td>
+                    </tr>
+                    <tr>
+                        <td>其他配置</td>
+                        <td>语言、使用说明、SQLite 持久化、保存字段和 MCP 服务。</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <h3>随机请求延迟</h3>
+            <p>在“请求配置 → 随机请求延迟”勾选启用，设置最小、最大值并保存，例如 <code>300–1200 ms</code>。范围包含两端，支持
+                <code>0–99999 ms</code>，默认关闭。多线程共用发送节奏，首个请求也参与延迟。</p>
+            <p>启用后替代固定延迟，普通 HTTP 请求仍受 QPS 上限约束。两端相等时为固定间隔，<code>0–0</code>
+                不增加延迟；关闭后恢复原有策略，不覆盖固定延迟设置。保存立即生效并持久化，等待可被停止任务中断。</p>
+            <p>适用于插件提交的
+                HTTP、参数扫描和浏览器任务，包括重试和浏览器回退；不控制浏览器内部资源或挑战请求。QPS、网络耗时和浏览器排队可能让实际间隔更长，不保证绕过防护。</p>
+            <p>路径黑名单匹配 URL 路径中的片段，忽略大小写，不包含主机和查询串。重定向策略可独立配置是否传递 Cookie
+                以及是否限制目标主机。</p>
+            <p>请求头替换、目录扫描和请求包处理还受数据看板对应开关控制。配置内容与功能开关共同决定实际请求。</p></div>
+        <div class="en"><h2>Configuration</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Page</th>
+                        <th>Settings</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td>Variables</td>
+                        <td>Named variables and variable dictionaries.</td>
+                    </tr>
+                    <tr>
+                        <td>Payload</td>
+                        <td>Path/Payload dictionaries and request-processing groups.</td>
+                    </tr>
+                    <tr>
+                        <td>Request</td>
+                        <td>QPS, delay, scan depth, retries, identity Profiles, method/suffix filters, headers and path
+                            blocklist.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Browser</td>
+                        <td>Python/browser paths, timeout, static resources and target-host regex.</td>
+                    </tr>
+                    <tr>
+                        <td>Host</td>
+                        <td>Burp Scope, timeout-host blocking and host allow/blocklists.</td>
+                    </tr>
+                    <tr>
+                        <td>Redirect</td>
+                        <td>Following policy, cookie propagation and target-host restriction.</td>
+                    </tr>
+                    <tr>
+                        <td>Other</td>
+                        <td>Language, user guide, SQLite persistence, stored fields and MCP service.</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <h3>Random request delay</h3>
+            <p>In Request → Random request delay, enable the option, set minimum/maximum values and save, e.g. <code>300–1200
+                ms</code>. Bounds are inclusive; the accepted range is <code>0–99999 ms</code>. Disabled by default.
+                Workers share one pacing schedule, including the first request.</p>
+            <p>Random pacing replaces fixed delay; ordinary HTTP requests still obey QPS. Equal bounds give a fixed
+                interval; <code>0–0</code> adds no delay. Disabling restores the original policy without changing
+                fixed-delay settings. Saving applies immediately and persists; stopping tasks interrupts waits.</p>
+            <p>Applies to plugin-dispatched HTTP, parameter scans and browser tasks, including retries and browser
+                fallback, not browser-internal resources or challenge requests. QPS, network time and browser queues may
+                make observed intervals longer. Random pacing does not guarantee bypassing protection.</p>
+            <p>The path blocklist performs case-insensitive fragment matching on the URL path, excluding the host and
+                query. Redirect options control cookie propagation and destination-host restrictions.</p>
+            <p>Header replacement, directory scanning and request processing also have master switches on Databoard.
+                Both configuration and switch state determine the generated request.</p></div>
+    </section>
 <section id="processing"><div class="num">05 / OST</div><div class="zh"><h2>请求处理</h2><p>请求处理组由按顺序执行的子规则组成。可添加、编辑、删除或调整子规则，选择请求路径、请求头、请求体或整个请求作为作用范围。</p><div class="table-wrap"><table><thead><tr><th>规则类型</th><th>作用</th></tr></thead><tbody><tr><td>添加前缀 / 后缀</td><td>在选定范围添加文本。</td></tr><tr><td>匹配替换</td><td>使用 Java 正则表达式查找并替换文本，支持捕获组引用。</td></tr><tr><td>条件检查</td><td>仅在内容匹配条件时继续执行该组。</td></tr></tbody></table></div><p>非合并组各自从原始请求生成变体；启用“合并”的组按顺序组成一条处理链。没有有效变体时可能使用原始请求。处理后的正文长度由发送流程更新。</p><h3>内置模板</h3><p>内置模板默认禁用，启用后参与请求处理。模板与自建规则具有相同的编辑方式。</p><div class="table-wrap"><table><thead><tr><th>模板</th><th>用途</th></tr></thead><tbody><tr><td>GET to POST</td><td>替换请求方法。</td></tr><tr><td>路径后缀模板</td><td>生成不同路径形式，评估路由处理行为。</td></tr><tr><td>Reflection probe</td><td>通过查询参数和表单参数的匹配替换规则插入随机标记，配合反射指纹识别输入回显。</td></tr></tbody></table></div><h3>反射检测配置</h3><ol><li>在请求包处理列表编辑并启用 <code>Reflection probe</code>。组内两个“匹配替换”子规则分别处理查询参数和 POST URL 编码表单，默认优先处理首个查询参数值。</li><li>按测试需求调整子规则的范围、匹配表达式和替换内容。<code>{{nonce}}</code> 在请求变量展开时生成随机值。</li><li>在指纹管理编辑 <code>Reflection candidate</code> 的提取表达式和排除条件。修改标记格式时同步修改该表达式。</li><li>发送请求，结合请求响应内容和指纹结果进行验证。</li></ol><p>默认表单模板适用于 <code>application/x-www-form-urlencoded</code>，不处理压缩或分块表单正文。JSON、multipart 等格式可按业务结构配置自己的匹配替换规则。</p></div><div class="en"><h2>Request Processing</h2><p>A processing group contains ordered sub-rules. Add, edit, remove or reorder them, and choose URL, headers, body or the whole request as the scope.</p><div class="table-wrap"><table><thead><tr><th>Rule</th><th>Purpose</th></tr></thead><tbody><tr><td>Add prefix / suffix</td><td>Insert text at the boundary of the selected scope.</td></tr><tr><td>Match and replace</td><td>Apply a Java regex replacement, including capture-group references.</td></tr><tr><td>Condition check</td><td>Continue the group only when the content matches its condition.</td></tr></tbody></table></div><p>Non-merged groups generate independent variants from the original request. Enabled merged groups form one ordered pipeline. If no effective variant exists, the original request may be used. The sending pipeline updates body length.</p><h3>Built-in Templates</h3><p>Templates are disabled by default and use the same editors as custom rules.</p><div class="table-wrap"><table><thead><tr><th>Template</th><th>Purpose</th></tr></thead><tbody><tr><td>GET to POST</td><td>Replace the request method.</td></tr><tr><td>Path suffix templates</td><td>Generate alternative paths to assess routing behavior.</td></tr><tr><td>Reflection probe</td><td>Insert a random marker using query/form match-and-replace rules and correlate reflected input with a fingerprint.</td></tr></tbody></table></div><h3>Reflection Configuration</h3><ol><li>Edit and enable <code>Reflection probe</code>. Its two Match and replace sub-rules cover query parameters and POST URL-encoded forms; the default query rule takes precedence.</li><li>Adjust each rule's scope, match expression and replacement as required. <code>{{nonce}}</code> produces a fresh value during request variable expansion.</li><li>Edit the extraction expression and exclusions in the <code>Reflection candidate</code> fingerprint. Update the expression when changing the marker format.</li><li>Send the request and inspect its paired response and fingerprint result.</li></ol><p>The default form template supports <code>application/x-www-form-urlencoded</code>, excluding compressed or chunked form bodies. Define custom match-and-replace rules for other structures such as JSON or multipart.</p></div></section>
 <section id="parameters"><div class="num">06 / OST</div><div class="zh"><h2>参数扫描</h2><p>从端点列表选择目标并进入参数扫描，为各端点指定模式、字典、方法和请求方式。配置保存在各自端点上，一批任务可以包含多种模式。</p><div class="table-wrap"><table><thead><tr><th>模式</th><th>配置方式</th></tr></thead><tbody><tr><td>参数名探测</td><td>选择参数名和值字典，组合生成参数。</td></tr><tr><td>已有参数值测试</td><td>选择值字典，替换已有参数值。</td></tr><tr><td>自定义位置</td><td>在请求编辑器选择文本并添加编号标记，为每个编号指定字典。</td></tr></tbody></table></div><p>自定义位置支持参数名、参数值和正文片段。相同编号共用一个值，不同编号使用字典组合。</p><pre><code>GET /items?category=$1$&amp;page=$2$ HTTP/1.1
 
@@ -74,10 +209,67 @@ X-Request-ID-Copy: run-4a21bc907fe385d6120e8f3a
 </code></pre><p>Random values above are illustrative. The two trace headers share a value within that header expansion. The reflection marker generated later by the processing group need not match them. Only query parameter <code>q</code> should receive the marker.</p><p><code>Reflection candidate</code> appears when the paired response body contains the current request’s complete <code>ostref…end</code> marker and passes the 2xx, HTML, non-attachment and error-page conditions. If no match appears, inspect each condition. A match is an input-echo lead, not confirmed XSS.</p><p>To rotate tenants, create variable dictionary <code>demo-tenants</code> with <code>demo-a</code> and <code>demo-b</code> on separate lines. Set tenant to <code>round-robin</code>, select that dictionary and keep <code>{{value.tenant}}</code>. For <code>random</code>, use <code>{{random.tenant}}</code> instead. Variable selection does not multiply the scan plan; use Parameter scan to enumerate combinations.</p></div></div></section>
 <section id="profiles"><div class="num">08 / OST</div><div class="zh"><h2>身份重放与比较</h2><p>在“请求配置 → 身份 Profile”管理测试身份。Profile 支持 Cookie、Header、Query、Body 和局部变量配置。键值配置每行填写 <code>key=value</code>；Cookie 可填写原始值或完整 Cookie 头。</p><ol><li>创建并启用测试身份。</li><li>从 Burp 右键选择 Profile 重放，明确选择本次使用的身份。</li><li>在结果中选择同一请求变体的不同身份记录，执行响应比较。</li></ol><p>比较结果用于定位状态、长度、正文及 JSON 字段差异，权限结论仍需结合对象归属和业务规则判断。浏览器 Profile 重放隔离身份 Cookie。</p><div class="callout warn">身份凭据可能保存在本地配置、原始请求和导出数据中。使用测试账号并妥善保护工作目录。</div></div><div class="en"><h2>Identity Replay</h2><p>Manage test identities in Config → Request → Identity profiles. Profiles support Cookie, Header, Query, Body and local variables. Enter key/value overrides as one <code>key=value</code> pair per line. Cookie accepts either its value or a complete Cookie header.</p><ol><li>Create and enable the test identities.</li><li>Choose Profile replay from the Burp context menu and select the identities for this operation.</li><li>Select results from the same request variant under different identities and compare responses.</li></ol><p>Comparison highlights status, length, body and JSON differences. Authorization conclusions require business context and object ownership. Browser Profile replay isolates identity cookies.</p><div class="callout warn">Credentials can appear in local configuration, raw requests and exports. Use test accounts and protect the working directory.</div></div></section>
 <section id="browser"><div class="num">09 / OST</div><div class="zh"><h2>浏览器请求</h2><p>浏览器模式通过 DrissionPage 驱动 Edge 或 Chrome，用于需要浏览器会话或客户端执行环境的请求。</p><ol><li>在浏览器配置中选择已安装 DrissionPage 的 Python 解释器及浏览器路径。</li><li>设置超时、静态资源加载和目标主机规则。</li><li>在发送或导入请求时选择浏览器方式，并按任务需要区分 Browser ID。</li><li>检查返回的业务响应；涉及挑战页面时结合 Cookie 与响应内容确认会话状态。</li></ol><p>Browser ID 用于划分浏览器会话，不同任务应使用适当的身份及会话配置。浏览器网络行为与普通 HTTP 重放不同，子资源加载也应纳入范围管理。</p><p><code>599 Browser Bridge Error</code> 表示本地浏览器桥接失败。检查所选解释器、依赖、可执行文件路径及超时设置。</p></div><div class="en"><h2>Browser Requests</h2><p>Browser transport drives Edge or Chrome through DrissionPage for requests requiring a browser session or client-side execution.</p><ol><li>Select a Python interpreter with DrissionPage installed and configure the browser executable.</li><li>Set timeout, static-resource loading and target-host rules.</li><li>Choose browser transport when sending or importing requests, and assign Browser IDs according to the session requirements.</li><li>Inspect the application response and, where challenges are involved, verify cookies and session state.</li></ol><p>Browser IDs separate browser sessions. Choose appropriate identity and session settings for each task. Browser traffic differs from ordinary HTTP replay; scope management must account for subresource loading.</p><p><code>599 Browser Bridge Error</code> indicates a local bridge failure. Check the selected interpreter, dependencies, executable paths and timeout.</p></div></section>
-<section id="fingerprints"><div class="num">10 / OST</div><div class="zh"><h2>指纹识别与结果过滤</h2><p>指纹组由数据源、字段、匹配方法和匹配内容组成。组内条件使用 AND，多个组使用 OR。识别结果写入所选字段并应用指定颜色。</p><ol><li>在指纹管理创建或编辑规则，选择请求或响应字段。</li><li>配置相等、包含、正则或对应排除条件。</li><li>填写输出字段和颜色，并使用配对的请求响应样本测试。</li></ol><h3>关联请求的匹配</h3><p><code>containsRequestMatch</code> 使用“匹配内容”中的正则从当前请求提取文本，再检查所选字段是否包含该文本。存在捕获组时使用第一个捕获组，否则使用整个匹配；无匹配或空值不命中。</p><p>内置 <code>Reflection candidate</code> 使用此方法检查响应正文，同时要求 2xx、HTML/XHTML、非附件，并排除常见错误或挑战页面。提取表达式、状态条件、内容条件和颜色均可编辑。</p><div class="callout">反射结果是输入回显线索，不表示已确认 XSS。默认排除条件属于启发式筛选，应根据业务响应调整。</div><h3>结果过滤</h3><p>数据看板的指纹和身份过滤支持列表选择及手动输入。聚合指纹按单个命中匹配；原指纹列按完整字段文本匹配。跨字段条件为 AND，同字段条件按界面顺序组合。</p></div><div class="en"><h2>Fingerprints and Filters</h2><p>Fingerprint conditions define a data source, field, method and expression. Conditions within a group use AND; multiple groups use OR. Matching rules populate configured output fields and colors.</p><ol><li>Create or edit a rule and select request or response fields.</li><li>Configure equality, containment, regex or exclusion conditions.</li><li>Set output fields and color, then test using paired request and response samples.</li></ol><h3>Request-Correlated Matching</h3><p><code>containsRequestMatch</code> extracts text from the current request using the regex in the content field, then checks whether the selected field contains it. It uses the first capture group when present, otherwise the full match. Missing or empty matches do not qualify.</p><p>The bundled <code>Reflection candidate</code> applies this method to the response body and adds 2xx, HTML/XHTML, non-attachment and common error/challenge exclusions. Extraction patterns, status/content conditions and colors are editable.</p><div class="callout">A reflection result is an input-echo lead, not confirmed XSS. Default exclusions are heuristic and should be adapted to the application.</div><h3>Result Filtering</h3><p>Databoard fingerprint and Profile filters support dropdown selection and manual values. The aggregate fingerprint field matches individual hits; original fingerprint columns compare the full field text. Different fields use AND, while conditions within a field combine in display order.</p></div></section>
+    <section id="fingerprints">
+        <div class="num">10 / OST</div>
+        <div class="zh"><h2>指纹识别与结果过滤</h2>
+            <p>指纹组由数据源、字段、匹配方法和匹配内容组成。组内条件使用 AND，多个组使用
+                OR。识别结果写入所选字段并应用指定颜色。</p>
+            <ol>
+                <li>在指纹管理创建或编辑规则，选择请求或响应字段。</li>
+                <li>配置相等、包含、正则或对应排除条件。</li>
+                <li>填写输出字段和颜色，并使用配对的请求响应样本测试。</li>
+            </ol>
+            <h3>关联请求的匹配</h3>
+            <p><code>containsRequestMatch</code> 使用“匹配内容”中的正则从当前请求提取文本，再检查所选字段是否包含该文本。存在捕获组时使用第一个捕获组，否则使用整个匹配；无匹配或空值不命中。
+            </p>
+            <p>内置 <code>Reflection candidate</code> 使用此方法检查响应正文，同时要求
+                2xx、HTML/XHTML、非附件，并排除常见错误或挑战页面。提取表达式、状态条件、内容条件和颜色均可编辑。</p>
+            <div class="callout">反射结果是输入回显线索，不表示已确认
+                XSS。默认排除条件属于启发式筛选，应根据业务响应调整。
+            </div>
+            <h3>结果过滤</h3>
+            <p>数据看板的指纹和身份过滤支持列表选择及手动输入。聚合指纹按单个命中匹配；原指纹列按完整字段文本匹配。跨字段条件为
+                AND，同字段条件按界面顺序组合。</p>
+            <h3>折叠响应</h3>
+            <p>在数据看板「过滤」旁打开「折叠响应」。启用后，按站点、状态码、正文长度和身份分组；当前搜索和过滤结果中，达到阈值的组只显示一条代表记录。默认阈值
+                50 条，Burp 和浏览器分别统计。</p>
+            <p>
+                双击长度列的分组标记，或右键展开、折叠单组。关闭后恢复当前过滤条件下的全部记录。折叠只影响显示，不会删除历史或改变导出数据；相同长度不代表相同内容。</p>
+        </div>
+        <div class="en"><h2>Fingerprints and Filters</h2>
+            <p>Fingerprint conditions define a data source, field, method and expression. Conditions within a group use
+                AND; multiple groups use OR. Matching rules populate configured output fields and colors.</p>
+            <ol>
+                <li>Create or edit a rule and select request or response fields.</li>
+                <li>Configure equality, containment, regex or exclusion conditions.</li>
+                <li>Set output fields and color, then test using paired request and response samples.</li>
+            </ol>
+            <h3>Request-Correlated Matching</h3>
+            <p><code>containsRequestMatch</code> extracts text from the current request using the regex in the content
+                field, then checks whether the selected field contains it. It uses the first capture group when present,
+                otherwise the full match. Missing or empty matches do not qualify.</p>
+            <p>The bundled <code>Reflection candidate</code> applies this method to the response body and adds 2xx,
+                HTML/XHTML, non-attachment and common error/challenge exclusions. Extraction patterns, status/content
+                conditions and colors are editable.</p>
+            <div class="callout">A reflection result is an input-echo lead, not confirmed XSS. Default exclusions are
+                heuristic and should be adapted to the application.
+            </div>
+            <h3>Result Filtering</h3>
+            <p>Databoard fingerprint and Profile filters support dropdown selection and manual values. The aggregate
+                fingerprint field matches individual hits; original fingerprint columns compare the full field text.
+                Different fields use AND, while conditions within a field combine in display order.</p>
+            <h3>Fold Responses</h3>
+            <p>Open Fold responses next to Filter on the Databoard. Responses are grouped by site, status, body length
+                and identity after search and filters. A group at or above the threshold (50 by default) shows one
+                representative. Burp and Browser are counted separately.</p>
+            <p>Double-click a Length badge or use the context menu to expand or collapse a group. Disable folding to
+                restore all matching records. Folding affects display only, not history or export; equal length does not
+                mean equal content.</p></div>
+    </section>
 <section id="storage"><div class="num">11 / OST</div><div class="zh"><h2>数据管理与集成</h2><p>在其他配置中开启 SQLite 持久化，设置数据库路径、保存周期和保存字段。原始请求响应仅在选择对应字段时保存，后续重放或证据复核需要保留这些内容。</p><p>支持按历史标签保存和导入记录，以及导出 CSV。清空显示列表不等于停止任务，也不等于删除已保存数据。公开分享前应清理凭据和业务敏感信息。</p><h3>MCP 集成</h3><p>MCP 默认关闭。启用后面板显示实际本地端点及服务状态，客户端可读取状态、管理配置和提交支持的扫描操作。MCP 接口属于特权控制接口，应仅供可信本地客户端使用，不向公网暴露。</p><p>本手册为独立 HTML，可从“其他配置 → 打开使用说明”启动，也可直接用浏览器打开文件。支持搜索、中英切换和打印。</p></div><div class="en"><h2>Data and Integration</h2><p>Enable SQLite persistence in Other and configure the database, save interval and stored fields. Raw messages are retained only when selected; preserve them for later replay and evidence review.</p><p>Save and import history by label, or export CSV. Clearing a display does not stop tasks or delete saved records. Remove credentials and business-sensitive content before sharing exports.</p><h3>MCP Integration</h3><p>MCP is disabled by default. When enabled, the panel displays the local endpoint and service status. Clients can read status, manage supported configuration and submit scan operations. Treat MCP as a privileged control interface for trusted local clients only; do not expose it publicly.</p><p>This standalone HTML manual opens from Other → Open user guide or directly in a browser. Search, language switching and printing are available offline.</p></div></section>
 <section id="troubleshooting"><div class="num">12 / OST</div><div class="zh"><h2>故障排查</h2><div class="table-wrap"><table><thead><tr><th>现象</th><th>检查项</th></tr></thead><tbody><tr><td>没有扫描流量</td><td>确认任务已开始而非仅生成预览，并检查暂停状态、范围、方法过滤和字典。</td></tr><tr><td>请求处理没有变化</td><td>检查总开关、组启用状态、作用范围及正则是否匹配实际请求。</td></tr><tr><td>反射没有命中</td><td>检查当前请求标记、提取表达式、响应正文及状态/内容类型/错误页排除条件。</td></tr><tr><td>浏览器桥接失败</td><td>检查 Python 与浏览器路径、DrissionPage 安装位置及超时。</td></tr><tr><td>结果列表为空</td><td>检查当前流量工作区、搜索词和过滤条件。</td></tr><tr><td>身份响应相同</td><td>检查实际凭据覆盖及同一请求变体的身份选择，结合业务权限进一步验证。</td></tr></tbody></table></div><p>反馈问题时提供版本、操作入口、请求方式和脱敏后的样本，说明实际结果与预期结果。不要附带真实会话凭据或私人数据库。</p></div><div class="en"><h2>Troubleshooting</h2><div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Checks</th></tr></thead><tbody><tr><td>No scan traffic</td><td>Ensure execution has started rather than preview only; check pause state, scope, methods and dictionaries.</td></tr><tr><td>Request is unchanged</td><td>Check the master switch, enabled group, scope and regex against the actual request.</td></tr><tr><td>Reflection not detected</td><td>Check the current marker, extraction expression, response body and status/content/error exclusions.</td></tr><tr><td>Browser bridge failure</td><td>Check interpreter/browser paths, DrissionPage installation and timeout.</td></tr><tr><td>Empty results</td><td>Check the selected traffic workspace, search text and filters.</td></tr><tr><td>Identical identity responses</td><td>Check actual credential overrides and same-variant identity selection, then verify business permissions.</td></tr></tbody></table></div><p>Issue reports should include the version, entry point, transport and sanitized samples with expected and actual results. Do not include live credentials or private databases.</p></div></section>
-<footer>OST 1.2.7 · <span class="zh">仅用于授权测试</span><span class="en">Authorized testing only</span></footer>
+    <footer>OST 1.2.8-dev.3 · <span class="zh">仅用于授权测试</span><span class="en">Authorized testing only</span>
+    </footer>
 </main></div><script>
 (() => {
  'use strict';

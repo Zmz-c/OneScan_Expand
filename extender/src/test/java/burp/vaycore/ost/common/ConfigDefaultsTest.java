@@ -13,15 +13,40 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class ConfigDefaultsTest {
 
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Test
+    public void randomDelayDefaultsOffAndPersistsWithoutReplacingFixedSettings() throws Exception {
+        String dir = temporaryFolder.newFolder("random-delay").getAbsolutePath() + File.separator;
+        Config.init(dir);
+        assertFalse(Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED));
+        assertEquals(100, Config.getInt(Config.KEY_RANDOM_DELAY_MIN));
+        assertEquals(500, Config.getInt(Config.KEY_RANDOM_DELAY_MAX));
+        Config.put(Config.KEY_QPS_LIMIT, "17");
+        Config.put(Config.KEY_REQUEST_DELAY, "88");
+        Config.put(Config.KEY_RANDOM_DELAY_ENABLED, "true");
+        Config.put(Config.KEY_RANDOM_DELAY_MIN, "300");
+        Config.put(Config.KEY_RANDOM_DELAY_MAX, "1200");
+        Config.init(dir);
+        assertTrue(Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED));
+        assertEquals(300, Config.getInt(Config.KEY_RANDOM_DELAY_MIN));
+        assertEquals(1200, Config.getInt(Config.KEY_RANDOM_DELAY_MAX));
+        assertEquals(17, Config.getInt(Config.KEY_QPS_LIMIT));
+        assertEquals(88, Config.getInt(Config.KEY_REQUEST_DELAY));
+        // Existing installations without the new keys acquire disabled defaults only.
+        Config.removeKey(Config.KEY_RANDOM_DELAY_ENABLED);
+        Config.removeKey(Config.KEY_RANDOM_DELAY_MIN);
+        Config.removeKey(Config.KEY_RANDOM_DELAY_MAX);
+        Config.init(dir);
+        assertFalse(Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED));
+        assertEquals(88, Config.getInt(Config.KEY_REQUEST_DELAY));
+        assertEquals(17, Config.getInt(Config.KEY_QPS_LIMIT));
+    }
 
     @Test
     public void scopeOnlyDefaultsOffAndPersistsWithoutReplacingOtherSettings() throws Exception {

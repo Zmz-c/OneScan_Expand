@@ -28,6 +28,11 @@ public class RequestTab extends BaseConfigTab {
      * request delay 变量值变更事件
      */
     public static final String EVENT_REQUEST_DELAY = "event-request-delay";
+    public static final String EVENT_RANDOM_DELAY = "event-random-delay";
+
+    private JCheckBox mRandomDelayEnabled;
+    private JTextField mRandomDelayMin;
+    private JTextField mRandomDelayMax;
 
     @Override
     protected void initView() {
@@ -37,6 +42,7 @@ public class RequestTab extends BaseConfigTab {
         // 请求延时配置
         addTextConfigPanel(L.get("request_delay"), L.get("request_delay_sub_title"),
                 20, Config.KEY_REQUEST_DELAY).addKeyListener(new NumberFilter(5));
+        addRandomDelayConfigPanel();
         // 控制递归层数
         addScanLevelConfigPanel();
         // 请求重试配置
@@ -56,6 +62,54 @@ public class RequestTab extends BaseConfigTab {
         // 移除请求头配置
         addWordListPanel(L.get("remove_header"), L.get("remove_header_sub_title"), WordlistManager.KEY_REMOVE_HEADERS);
 
+    }
+
+    private void addRandomDelayConfigPanel() {
+        JPanel panel = new JPanel(new HLayout(6));
+        mRandomDelayEnabled = new JCheckBox(L.get("random_delay_enabled"),
+                Config.getBoolean(Config.KEY_RANDOM_DELAY_ENABLED));
+        mRandomDelayMin = new JTextField(Config.get(Config.KEY_RANDOM_DELAY_MIN), 7);
+        mRandomDelayMax = new JTextField(Config.get(Config.KEY_RANDOM_DELAY_MAX), 7);
+        mRandomDelayMin.addKeyListener(new NumberFilter(5));
+        mRandomDelayMax.addKeyListener(new NumberFilter(5));
+        mRandomDelayMin.setName(Config.KEY_RANDOM_DELAY_MIN);
+        mRandomDelayMax.setName(Config.KEY_RANDOM_DELAY_MAX);
+        JLabel minLabel = new JLabel(L.get("random_delay_min"));
+        JLabel maxLabel = new JLabel(L.get("random_delay_max"));
+        minLabel.setLabelFor(mRandomDelayMin);
+        maxLabel.setLabelFor(mRandomDelayMax);
+        panel.add(mRandomDelayEnabled);
+        panel.add(minLabel);
+        panel.add(mRandomDelayMin);
+        panel.add(maxLabel);
+        panel.add(mRandomDelayMax);
+        panel.add(new JLabel("ms"));
+        JButton save = new JButton(L.get("save"));
+        save.addActionListener(e -> UIHelper.showTipsDialog(saveRandomDelaySettings()
+                ? L.get("save_success") : L.get("random_delay_value_invalid")));
+        panel.add(save);
+        mRandomDelayEnabled.addItemListener(e -> refreshRandomDelayFields());
+        refreshRandomDelayFields();
+        addConfigItem(L.get("random_delay"), L.get("random_delay_sub_title"), panel);
+    }
+
+    private void refreshRandomDelayFields() {
+        mRandomDelayMin.setEnabled(mRandomDelayEnabled.isSelected());
+        mRandomDelayMax.setEnabled(mRandomDelayEnabled.isSelected());
+    }
+
+    // Validate the whole range before persisting or notifying the sender.
+    boolean saveRandomDelaySettings() {
+        int min = StringUtils.parseInt(mRandomDelayMin.getText().trim(), -1);
+        int max = StringUtils.parseInt(mRandomDelayMax.getText().trim(), -1);
+        if (min < 0 || max < min || max > 99999) {
+            return false;
+        }
+        Config.put(Config.KEY_RANDOM_DELAY_MIN, String.valueOf(min));
+        Config.put(Config.KEY_RANDOM_DELAY_MAX, String.valueOf(max));
+        Config.put(Config.KEY_RANDOM_DELAY_ENABLED, String.valueOf(mRandomDelayEnabled.isSelected()));
+        sendTabEvent(EVENT_RANDOM_DELAY, min + "-" + max);
+        return true;
     }
 
     protected void addScanLevelConfigPanel() {

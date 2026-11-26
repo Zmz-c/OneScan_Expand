@@ -2,22 +2,32 @@ package burp;
 
 import burp.vaycore.common.helper.DomainHelper;
 import burp.vaycore.ost.bean.TaskData;
-import burp.vaycore.ost.common.*;
+import burp.vaycore.ost.common.Config;
+import burp.vaycore.ost.common.HttpReqRespAdapter;
+import burp.vaycore.ost.common.RequestMode;
 import burp.vaycore.ost.manager.CollectManager;
 import burp.vaycore.ost.manager.WordlistManager;
 import burp.vaycore.ost.ui.tab.DataBoardTab;
 import burp.vaycore.ost.ui.tab.ParameterFuzzScanOptions;
-import org.junit.*;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import javax.swing.*;
 import java.io.File;
-import java.lang.reflect.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -35,43 +45,13 @@ public class BurpExtenderDispatchRegressionTest {
     private java.util.function.Predicate<URL> scope = url -> true;
     private Runnable afterSend = () -> {};
     private boolean noResponse;
+    private byte[] responseOverride;
     private final List<URL> scopeQueries = new ArrayList<>();
 
-    @Before public void setup() throws Exception {
-        Config.init(temp.newFolder().getAbsolutePath() + File.separator);
-        DomainHelper.init("public_suffix_list.json");
-        Config.put(Config.KEY_FOLLOW_REDIRECT, "false");
-        WordlistManager.putList(WordlistManager.KEY_PATH_BLOCKLIST, List.of());
-        extender = new BurpExtender();
-        SwingUtilities.invokeAndWait(() -> {
-            board = new DataBoardTab() {
-                @Override public boolean hasDirScan() { return false; }
-                @Override public boolean hasReplaceHeader() { return replaceHeaders; }
-                @Override public boolean hasRemoveHeader() { return replaceHeaders; }
-                @Override public boolean hasPayloadProcessing() { return false; }
-            };
-            board.init(new JTextArea(), new JTextArea());
-        });
-        set("mDataBoardTab", board);
-        set("mTaskThreadPool", http);
-        set("mLFTaskThreadPool", low);
-        set("mBrowserTaskThreadPool", browser);
-        set("mParameterFuzzBrowserTaskThreadPool", parameterBrowser);
-        set("mHelpers", helpers());
-        set("mCallbacks", Proxy.newProxyInstance(IBurpExtenderCallbacks.class.getClassLoader(),
-                new Class<?>[]{IBurpExtenderCallbacks.class}, (proxy, method, args) -> {
-                    if (method.getName().equals("isInScope")) {
-                        scopeQueries.add((URL) args[0]);
-                        return scope.test((URL) args[0]);
-                    }
-                    assertEquals("makeHttpRequest", method.getName());
-                    byte[] request = ((byte[]) args[1]).clone();
-                    sent.add(request);
-                    afterSend.run();
-                    var response = HttpReqRespAdapter.from((IHttpService) args[0], request);
-                    if (!noResponse) response.setResponse(bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
-                    return response;
-                }));
+    private static void awaitPacingWait(Thread worker) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (worker.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) Thread.sleep(2);
+        assertEquals(Thread.State.TIMED_WAITING, worker.getState());
     }
 
     @After public void cleanup() throws Exception {
@@ -192,6 +172,95 @@ public class BurpExtenderDispatchRegressionTest {
         invoke("handleFollowRedirect", new Class<?>[]{TaskData.class}, data);
         assertTrue(scopeQueries.stream().anyMatch(url -> url.getPath().equals("/outside")));
         assertTrue(low.tasks.isEmpty()); assertTrue(http.tasks.isEmpty());
+    }
+
+    @Before
+    public void setup() throws Exception {
+        Config.init(temp.newFolder().getAbsolutePath() + File.separator);
+        DomainHelper.init("public_suffix_list.json");
+        Config.put(Config.KEY_FOLLOW_REDIRECT, "false");
+        WordlistManager.putList(WordlistManager.KEY_PATH_BLOCKLIST, List.of());
+        extender = new BurpExtender();
+        SwingUtilities.invokeAndWait(() -> {
+            board = new DataBoardTab() {
+                @Override
+                public boolean hasDirScan() {
+                    return false;
+                }
+
+                @Override
+                public boolean hasReplaceHeader() {
+                    return replaceHeaders;
+                }
+
+                @Override
+                public boolean hasRemoveHeader() {
+                    return replaceHeaders;
+                }
+
+                @Override
+                public boolean hasPayloadProcessing() {
+                    return false;
+                }
+            };
+            board.init(new JTextArea(), new JTextArea());
+        });
+        set("mDataBoardTab", board);
+        set("mTaskThreadPool", http);
+        set("mLFTaskThreadPool", low);
+        set("mBrowserTaskThreadPool", browser);
+        set("mParameterFuzzBrowserTaskThreadPool", parameterBrowser);
+        set("mHelpers", helpers());
+        set("mCallbacks", Proxy.newProxyInstance(IBurpExtenderCallbacks.class.getClassLoader(),
+                new Class<?>[]{IBurpExtenderCallbacks.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("isInScope")) {
+                        scopeQueries.add((URL) args[0]);
+                        return scope.test((URL) args[0]);
+                    }
+                    assertEquals("makeHttpRequest", method.getName());
+                    byte[] request = ((byte[]) args[1]).clone();
+                    sent.add(request);
+                    afterSend.run();
+                    var response = HttpReqRespAdapter.from((IHttpService) args[0], request);
+                    if (!noResponse) response.setResponse(responseOverride != null ? responseOverride
+                            : bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
+                    return response;
+                }));
+    }
+
+    private Object followRedirect(String origin, String location) throws Exception {
+        set("mFpThreadPool", new QueueExecutor()); // a followed redirect reaches fingerprinting in doScan
+        Config.put(Config.KEY_FOLLOW_REDIRECT, "true");
+        Config.put(Config.KEY_REDIRECT_COOKIES_FOLLOW, "false");
+        var response = HttpReqRespAdapter.from(origin + "/start");
+        response.setResponse(bytes("HTTP/1.1 302 Found\r\nLocation: " + location + "\r\nContent-Length: 0\r\n\r\n"));
+        TaskData data = new TaskData();
+        data.setReqResp(response);
+        data.setHost(origin);
+        data.setUrl("/start");
+        data.setStatus(302);
+        return invoke("handleFollowRedirect", new Class<?>[]{TaskData.class}, data);
+    }
+
+    @Test
+    public void redirectCannotReachMoreInternalAddressThanItsTarget() throws Exception {
+        // 10.0.0.5 is the chosen target; its responses must not steer requests into this machine or metadata.
+        for (String location : List.of("http://127.0.0.1:8080/admin", "http://localhost/admin",
+                "http://2130706433/", "http://0x7f.1/", "http://[::1]/", "http://[::ffff:127.0.0.1]/",
+                "http://user@127.0.0.1/", "//127.0.0.1/x", "http://169.254.169.254/latest/meta-data/",
+                "http://0.0.0.0/")) {
+            followRedirect("http://10.0.0.5", location);
+            assertTrue(location, low.tasks.isEmpty());
+            assertTrue(location, http.tasks.isEmpty());
+        }
+        assertTrue(sent.isEmpty());
+    }
+
+    @Test
+    public void redirectWithinTheSameHostOrNetworkClassStillFollows() throws Exception {
+        followRedirect("http://127.0.0.1", "/next");
+        followRedirect("http://10.0.0.5", "http://10.0.0.9/next");
+        assertEquals(2, low.tasks.size() + http.tasks.size());
     }
 
     @Test public void absoluteTargetCannotHideAnOutOfScopeTransportHost() throws Exception {
@@ -608,6 +677,192 @@ public class BurpExtenderDispatchRegressionTest {
         assertTrue(browser.tasks.isEmpty());
         assertTrue(parameterBrowser.tasks.isEmpty());
         assertFalse(((AtomicBoolean) get("mParameterFuzzRunning")).get());
+    }
+
+    @Test
+    public void allowlistedOrUnguardedInternalRedirectStillFollows() throws Exception {
+        WordlistManager.putList(WordlistManager.KEY_HOST_ALLOWLIST, List.of("10.0.0.5", "127.0.0.1"));
+        followRedirect("http://10.0.0.5", "http://127.0.0.1/allowed");
+        assertEquals(1, low.tasks.size() + http.tasks.size());
+        WordlistManager.putList(WordlistManager.KEY_HOST_ALLOWLIST, List.of());
+        Config.put(Config.KEY_BLOCK_INTERNAL_ACCESS, "false");
+        followRedirect("http://10.0.0.5", "http://127.0.0.1/unguarded");
+        assertEquals(2, low.tasks.size() + http.tasks.size());
+    }
+
+    @Test
+    public void actualHttpLowFrequencyParameterAndBrowserAttemptsUseOnePacingGate() throws Exception {
+        RecordingLimiter limiter = new RecordingLimiter();
+        set("mQpsLimit", limiter);
+        AtomicInteger navigations = stubBrowser();
+        enqueue("Directory", RequestMode.BURP);
+        http.drain();
+        enqueue("Send", RequestMode.BURP);
+        low.drain();
+        scan("GET /probe?id=$1$ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", List.of("one", "two"));
+        enqueue("Send (Browser)", RequestMode.BROWSER);
+        browser.drain();
+        invoke("startParameterFuzzScan", new Class<?>[]{ParameterFuzzScanOptions.class}, browserOptions());
+        ((ExecutorService) get("mParameterFuzzPreparationExecutor")).submit(() -> {
+        }).get(5, TimeUnit.SECONDS);
+        parameterBrowser.drain();
+        SwingUtilities.invokeAndWait(() -> {
+        });
+        assertEquals(4, sent.size());
+        assertEquals(3, navigations.get());
+        assertEquals(List.of(true, false, true, true, false, false, false), limiter.calls);
+        assertFalse(((AtomicBoolean) get("mParameterFuzzRunning")).get());
+    }
+
+    @Test
+    public void everyRetryAndBrowserFallbackIsPacedAtTheSendBoundary() throws Exception {
+        RecordingLimiter limiter = new RecordingLimiter();
+        set("mQpsLimit", limiter);
+        Config.put(Config.KEY_RETRY_INTERVAL, "0");
+        noResponse = true;
+        var request = HttpReqRespAdapter.from("http://127.0.0.1/retry");
+        invoke("doMakeHttpRequest", new Class<?>[]{IHttpService.class, byte[].class, int.class},
+                request.getHttpService(), request.getRequest(), 2);
+        assertEquals(3, sent.size());
+        assertEquals(List.of(true, true, true), limiter.calls);
+        noResponse = false;
+        limiter.calls.clear();
+        Config.put(Config.KEY_ENABLE_BROWSER_REQUEST, "true");
+        responseOverride = bytes("HTTP/1.1 412 Precondition Failed\r\nContent-Type: text/html\r\n\r\n<title>Security challenge</title>");
+        AtomicInteger navigations = stubBrowser();
+        request = HttpReqRespAdapter.from("http://127.0.0.2/challenge");
+        invoke("doMakeHttpRequest", new Class<?>[]{IHttpService.class, byte[].class, int.class},
+                request.getHttpService(), request.getRequest(), 0);
+        assertEquals(1, navigations.get());
+        assertEquals(List.of(true, false), limiter.calls);
+    }
+
+    @Test
+    public void randomSettingsReconfigureTheSameGateAndInvalidConfigFailsSafe() throws Exception {
+        Config.put(Config.KEY_RANDOM_DELAY_ENABLED, "true");
+        Config.put(Config.KEY_RANDOM_DELAY_MIN, "0");
+        Config.put(Config.KEY_RANDOM_DELAY_MAX, "0");
+        invoke("initQpsLimiter", new Class<?>[0]);
+        Object limiter = get("mQpsLimit");
+        Config.put(Config.KEY_RANDOM_DELAY_ENABLED, "false");
+        extender.onTabEventMethod(burp.vaycore.ost.ui.tab.config.RequestTab.EVENT_RANDOM_DELAY, "0-0");
+        assertSame(limiter, get("mQpsLimit"));
+        Config.put(Config.KEY_RANDOM_DELAY_ENABLED, "true");
+        Config.put(Config.KEY_RANDOM_DELAY_MIN, "900");
+        Config.put(Config.KEY_RANDOM_DELAY_MAX, "1");
+        invoke("initQpsLimiter", new Class<?>[0]);
+        Field enabled = limiter.getClass().getDeclaredField("randomEnabled");
+        enabled.setAccessible(true);
+        assertEquals(false, enabled.get(limiter));
+    }
+
+    @Test
+    public void cancellingWhileRandomDelayWaitsSendsNothingAndBalancesCounters() throws Exception {
+        var limiter = new burp.vaycore.common.helper.QpsLimiter(100);
+        limiter.configure(100, 0, true, 99999, 99999);
+        set("mQpsLimit", limiter);
+        enqueue("Send", RequestMode.BURP);
+        Thread worker = new Thread(low::drain);
+        worker.start();
+        try {
+            awaitPacingWait(worker);
+            worker.interrupt();
+            worker.join(2000);
+            assertFalse(worker.isAlive());
+            assertTrue(worker.isInterrupted());
+            assertTrue(sent.isEmpty());
+            assertEquals(count("mLFTaskCommitCounter"), count("mLFTaskOverCounter"));
+        } finally {
+            worker.interrupt();
+            worker.join(2000);
+        }
+    }
+
+    @Test
+    public void scopeChangesDuringDelayAreRecheckedBeforeDispatch() throws Exception {
+        var limiter = new burp.vaycore.common.helper.QpsLimiter(100);
+        limiter.configure(100, 0, true, 99999, 99999);
+        set("mQpsLimit", limiter);
+        Config.put(Config.KEY_SCOPE_ONLY, "true");
+        enqueue("Send", RequestMode.BURP);
+        Thread worker = new Thread(low::drain);
+        worker.start();
+        try {
+            awaitPacingWait(worker);
+            scope = url -> false;
+            limiter.configure(100, 0, false, 0, 0);
+            worker.join(2000);
+            assertFalse(worker.isAlive());
+            assertTrue(sent.isEmpty());
+        } finally {
+            worker.interrupt();
+            worker.join(2000);
+        }
+    }
+
+    @Test
+    public void pauseDuringDelayDoesNotReleaseTheRequestUntilResumeAndRepace() throws Exception {
+        var limiter = new RecordingLimiter();
+        limiter.configure(100, 0, true, 99999, 99999);
+        set("mQpsLimit", limiter);
+        enqueue("Send", RequestMode.BURP);
+        Object pauseLock = get("mRequestPauseLock");
+        @SuppressWarnings("unchecked") Set<RequestMode> paused = (Set<RequestMode>) get("mPausedRequestModes");
+        Thread worker = new Thread(low::drain);
+        worker.start();
+        try {
+            awaitPacingWait(worker);
+            synchronized (pauseLock) {
+                paused.add(RequestMode.BURP);
+            }
+            limiter.configure(100, 0, false, 0, 0);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (worker.getState() != Thread.State.WAITING && System.nanoTime() < deadline) Thread.sleep(2);
+            assertEquals(Thread.State.WAITING, worker.getState());
+            assertTrue(sent.isEmpty());
+            synchronized (pauseLock) {
+                paused.clear();
+                pauseLock.notifyAll();
+            }
+            worker.join(2000);
+            assertFalse(worker.isAlive());
+            assertEquals(1, sent.size());
+            assertEquals(List.of(false, false), limiter.calls);
+        } finally {
+            synchronized (pauseLock) {
+                paused.clear();
+                pauseLock.notifyAll();
+            }
+            worker.interrupt();
+            worker.join(2000);
+        }
+    }
+
+    private AtomicInteger stubBrowser() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        set("mBrowserRequestManager", new burp.vaycore.ost.browser.BrowserRequestManager() {
+            @Override
+            public BrowserResult navigate(burp.vaycore.ost.browser.BrowserRequest request,
+                                          String type, String binary, long timeout, String dir, String python, boolean resources) {
+                calls.incrementAndGet();
+                return new BrowserResult(200, "OK", Map.of(), bytes("OK"), request.url(), "");
+            }
+        });
+        return calls;
+    }
+
+    private static final class RecordingLimiter extends burp.vaycore.common.helper.QpsLimiter {
+        final List<Boolean> calls = new CopyOnWriteArrayList<>();
+
+        RecordingLimiter() {
+            super(100);
+        }
+
+        @Override
+        public void limit(boolean legacy) throws InterruptedException {
+            calls.add(legacy);
+            super.limit(legacy);
+        }
     }
 
     private void enqueue(String from, RequestMode mode) throws Exception {
